@@ -1,3 +1,5 @@
+mod ai_backend;
+mod editor_pane;
 mod theme;
 mod ui;
 mod workspace;
@@ -23,6 +25,7 @@ fn main() {
             .add_fonts(FONTS.iter().map(|font| Cow::Borrowed(*font)).collect());
         theme::apply(theme::mood_indigo(), cx);
         workspace::init(cx);
+        editor_pane::init(cx);
         let mut options = component::TitleBar::window_options();
         options.window_bounds = Some(WindowBounds::Windowed(Bounds::centered(
             None,

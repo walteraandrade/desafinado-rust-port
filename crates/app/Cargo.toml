@@ -7,3 +7,5 @@ publish.workspace = true
 [dependencies]
 gpui-kit.workspace = true
 serde_json.workspace = true
+desafinado-core = { path = "../core" }
+desafinado-ai = { path = "../ai" }

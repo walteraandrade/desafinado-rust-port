@@ -1,15 +1,14 @@
 use std::path::PathBuf;
 
 use gpui_kit::{
-    component::{
-        TitleBar,
-        input::{Editor, EditorState, InputEvent},
-    },
+    component::TitleBar,
     prelude::FluentBuilder as _,
     *,
 };
 
 use crate::{
+    ai_backend,
+    editor_pane::{EditorPane, PaneEvent},
     theme::{self, Roles},
     ui::{self, ButtonKind},
 };
@@ -69,7 +68,7 @@ struct MenuRow {
 }
 
 pub struct Workspace {
-    editor: Entity<EditorState>,
+    pane: Entity<EditorPane>,
     path: Option<PathBuf>,
     saved_text: String,
     open_menu: Option<MenuKind>,
@@ -82,19 +81,10 @@ pub struct Workspace {
 
 impl Workspace {
     pub fn new(launch: Option<PathBuf>, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let editor = cx.new(|cx| {
-            EditorState::new(window, cx)
-                .language("markdown")
-                .line_number(false)
-                .soft_wrap(true)
-        });
-        let subscription = cx.subscribe(&editor, |_, _, event: &InputEvent, cx| {
-            if matches!(event, InputEvent::Change) {
-                cx.notify();
-            }
-        });
+        let pane = cx.new(|cx| EditorPane::new(ai_backend::backend(), window, cx));
+        let subscription = cx.subscribe(&pane, |_, _, _: &PaneEvent, cx| cx.notify());
         let mut workspace = Self {
-            editor,
+            pane,
             path: None,
             saved_text: String::new(),
             open_menu: None,
@@ -111,7 +101,7 @@ impl Workspace {
     }
 
     fn text(&self, cx: &App) -> String {
-        self.editor.read(cx).value().to_string()
+        self.pane.read(cx).text(cx)
     }
 
     fn dirty(&self, cx: &App) -> bool {
@@ -121,8 +111,7 @@ impl Workspace {
     fn load(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
         match std::fs::read_to_string(&path) {
             Ok(text) => {
-                self.editor
-                    .update(cx, |state, cx| state.set_value(text.clone(), window, cx));
+                self.pane.update(cx, |pane, cx| pane.set_text(&text, window, cx));
                 self.saved_text = text;
                 self.path = Some(path);
                 self.notice = None;
@@ -193,8 +182,7 @@ impl Workspace {
     }
 
     fn clear_document(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.editor
-            .update(cx, |state, cx| state.set_value("", window, cx));
+        self.pane.update(cx, |pane, cx| pane.set_text("", window, cx));
         self.saved_text = String::new();
         self.path = None;
         cx.notify();
@@ -262,7 +250,8 @@ impl Workspace {
         cx.notify();
     }
 
-    fn menu_rows(&self, kind: MenuKind) -> Vec<MenuRow> {
+    fn menu_rows(&self, kind: MenuKind, cx: &App) -> Vec<MenuRow> {
+        let open = self.pane.read(cx).open_count();
         match kind {
             MenuKind::File => vec![
                 row("New", Some("Ctrl+N"), Box::new(NewDocument), false),
@@ -278,9 +267,9 @@ impl Workspace {
                 row("Review…", None, Box::new(StartReview), false),
                 MenuRow {
                     separated: true,
-                    ..row("Accept all suggestions", None, Box::new(AcceptAll), true)
+                    ..row("Accept all suggestions", None, Box::new(AcceptAll), open == 0)
                 },
-                row("Reject all suggestions", None, Box::new(RejectAll), true),
+                row("Reject all suggestions", None, Box::new(RejectAll), open == 0),
             ],
         }
     }
@@ -339,7 +328,7 @@ impl Workspace {
             .border_1()
             .border_color(roles.hairline)
             .py(px(4.))
-            .children(self.menu_rows(kind).into_iter().enumerate().map(|(index, item)| {
+            .children(self.menu_rows(kind, cx).into_iter().enumerate().map(|(index, item)| {
                 let action = item.action.boxed_clone();
                 div()
                     .when(item.separated, |this| {
@@ -470,19 +459,7 @@ impl Render for Workspace {
             .children(self.notice.clone().map(|notice| {
                 div().text_size(px(13.)).text_color(roles.danger).child(notice)
             }));
-        let editor = div()
-            .flex_1()
-            .min_h_0()
-            .flex()
-            .justify_center()
-            .child(
-                div()
-                    .w(px(768.))
-                    .max_w_full()
-                    .h_full()
-                    .px(px(24.))
-                    .child(Editor::new(&self.editor).h_full().bordered(false)),
-            );
+        let editor = div().flex_1().min_h_0().child(self.pane.clone());
         div()
             .id("workspace")
             .track_focus(&self.focus)
@@ -491,6 +468,14 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::save_document))
             .on_action(cx.listener(Self::save_document_as))
             .on_action(cx.listener(Self::close_menu))
+            .on_action(cx.listener(|this, _: &AcceptAll, window, cx| {
+                this.open_menu = None;
+                this.pane.update(cx, |pane, cx| pane.accept_all(window, cx));
+            }))
+            .on_action(cx.listener(|this, _: &RejectAll, _, cx| {
+                this.open_menu = None;
+                this.pane.update(cx, |pane, cx| pane.reject_all(cx));
+            }))
             .size_full()
             .flex()
             .flex_col()
