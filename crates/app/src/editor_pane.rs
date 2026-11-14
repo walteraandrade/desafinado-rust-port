@@ -1,4 +1,23 @@
-use std::{cell::Cell, collections::HashMap, rc::Rc, sync::Arc};
+use std::{
+    cell::Cell,
+    collections::HashMap,
+    rc::Rc,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+};
+
+use desafinado_ai::{
+    edits::ReviewValidationContext,
+    prompts::{ReviewPromptInput, build_review_prompt},
+    review_stream::{ReviewStream, ReviewStreamEvent},
+};
+use desafinado_core::suggestions::{
+    PlaceReviewEditInput, ReviewPlacement, occupied_block_ids, place_review_edit,
+    review_notice_text, review_task_label, review_too_large, review_too_large_text,
+};
+use futures::{StreamExt as _, channel::mpsc};
 
 use desafinado_ai::{
     editor::ask_menu::{self, AskMenu, AskRow},
@@ -29,7 +48,7 @@ use gpui_kit::{
 };
 
 use crate::{
-    ai_backend::{AiBackend, TargetCall},
+    ai_backend::{AiBackend, ReviewCall, ReviewEvent, TargetCall},
     theme::{self, Roles},
     ui::{self, ButtonKind, ButtonSize},
 };
@@ -104,7 +123,15 @@ pub struct EditorPane {
     ai: Arc<dyn AiBackend>,
     bounds: Rc<Cell<Bounds<Pixels>>>,
     notice: Option<SharedString>,
+    pub review: Option<ReviewRun>,
     _subscriptions: Vec<Subscription>,
+}
+
+pub struct ReviewRun {
+    pub added: usize,
+    stop: Arc<AtomicBool>,
+    changes: ChangeSet,
+    _task: Task<()>,
 }
 
 fn edit_change(edit_start: usize, old_end: usize, new_end: usize, after: &str) -> ChangeSet {
@@ -132,6 +159,9 @@ impl EditorPane {
             for (edit, rope) in event.edits() {
                 let after = rope.to_string();
                 let changes = edit_change(edit.start_byte, edit.old_end_byte, edit.new_end_byte, &after);
+                if let Some(review) = this.review.as_mut() {
+                    review.changes = review.changes.compose(&changes);
+                }
                 this.suggestions = match this.applying.clone() {
                     Some(id) => accept_suggestion(&this.suggestions, &id, &changes),
                     None => map_suggestions(&this.suggestions, &changes, frontmatter.as_ref()),
@@ -162,6 +192,7 @@ impl EditorPane {
             ai,
             bounds: Rc::new(Cell::new(Bounds::default())),
             notice: None,
+            review: None,
             _subscriptions: vec![edits, changes],
         }
     }
@@ -553,6 +584,126 @@ impl EditorPane {
         self.suggestions = resolve_suggestion(&self.suggestions, &id, result);
         self.refresh_decorations(cx);
         cx.notify();
+    }
+
+    pub fn start_review(&mut self, focus: String, cx: &mut Context<Self>) {
+        if self.review.is_some() {
+            return;
+        }
+        let text = self.text(cx);
+        if review_too_large(text.len()) {
+            self.notice = Some(review_too_large_text(text.len()).into());
+            cx.notify();
+            return;
+        }
+        let blocks = extract_blocks(&text);
+        let occupied = occupied_block_ids(&self.suggestions, &blocks);
+        let parts = build_review_prompt(&ReviewPromptInput {
+            blocks: blocks.clone(),
+            focus: Some(focus.clone()).filter(|focus| !focus.trim().is_empty()),
+        });
+        let call = ReviewCall {
+            task: review_task_label(&focus),
+            parts,
+        };
+        let stop = Arc::new(AtomicBool::new(false));
+        let (sender, mut receiver) = mpsc::unbounded::<ReviewEvent>();
+        let ai = self.ai.clone();
+        let flag = stop.clone();
+        cx.background_spawn(async move {
+            ai.review(call, &mut |event| {
+                let open = sender.unbounded_send(event).is_ok();
+                open && !flag.load(Ordering::SeqCst)
+            });
+        })
+        .detach();
+        let mut stream = ReviewStream::new(ReviewValidationContext { blocks, occupied });
+        let task = cx.spawn(async move |this, cx| {
+            let mut failure: Option<ClientError> = None;
+            while let Some(event) = receiver.next().await {
+                match event {
+                    ReviewEvent::Chunk(chunk) => {
+                        let events = stream.feed(&chunk);
+                        let alive = this
+                            .update(cx, |this, cx| {
+                                for event in events {
+                                    if let ReviewStreamEvent::Edit(edit) = event {
+                                        this.place_review(edit, &focus, cx);
+                                    }
+                                }
+                                this.review.as_ref().is_some_and(|run| !run.stop.load(Ordering::SeqCst))
+                            })
+                            .unwrap_or(false);
+                        if !alive {
+                            break;
+                        }
+                    }
+                    ReviewEvent::Done => {
+                        failure = stream.finish().err();
+                        break;
+                    }
+                    ReviewEvent::Failed(error) => {
+                        failure = Some(error);
+                        break;
+                    }
+                }
+            }
+            let _ = this.update(cx, |this, cx| this.end_review(failure, cx));
+        });
+        self.review = Some(ReviewRun {
+            added: 0,
+            stop,
+            changes: ChangeSet::empty(text.len()),
+            _task: task,
+        });
+        self.notice = None;
+        cx.emit(PaneEvent::Changed);
+        cx.notify();
+    }
+
+    fn place_review(&mut self, edit: desafinado_core::suggestions::ValidatedEdit, focus: &str, cx: &mut Context<Self>) {
+        let Some(changes) = self.review.as_ref().map(|run| run.changes.clone()) else {
+            return;
+        };
+        let doc = self.text(cx);
+        let id = self.next_suggestion_id();
+        let placement = place_review_edit(&PlaceReviewEditInput {
+            state: &self.suggestions,
+            edit: &edit,
+            changes: &changes,
+            doc: &doc,
+            id: &id,
+            focus,
+        });
+        if let ReviewPlacement::Placed { draft, result } = placement {
+            self.add_review_suggestion(draft, &result, cx);
+            if let Some(run) = self.review.as_mut() {
+                run.added += 1;
+            }
+            cx.emit(PaneEvent::Changed);
+        }
+    }
+
+    fn end_review(&mut self, failure: Option<ClientError>, cx: &mut Context<Self>) {
+        let Some(run) = self.review.take() else {
+            return;
+        };
+        let stopped = run.stop.load(Ordering::SeqCst);
+        self.notice = Some(if stopped {
+            desafinado_core::suggestions::review_summary(run.added, true)
+        } else {
+            review_notice_text(run.added, failure.as_ref())
+        }
+        .into());
+        cx.emit(PaneEvent::Changed);
+        cx.notify();
+    }
+
+    pub fn stop_review(&mut self, cx: &mut Context<Self>) {
+        if let Some(run) = self.review.as_ref() {
+            run.stop.store(true, Ordering::SeqCst);
+        }
+        self.end_review(None, cx);
     }
 
     pub fn next_suggestion_id(&mut self) -> String {

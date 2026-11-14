@@ -7,3 +7,19 @@ publish.workspace = true
 [dependencies]
 serde.workspace = true
 serde_json.workspace = true
+similar.workspace = true
+thiserror.workspace = true
+rusqlite = { version = "0.42.0", features = ["bundled"] }
+flate2 = "1.1.11"
+sha2 = "0.11.1"
+dirs = "6.0.0"
+notify = "8.2.2"
+rfd = "0.18.0"
+keyring = { version = "3.6.3", default-features = false, features = ["async-secret-service", "async-io", "crypto-rust"] }
+ureq = { version = "3.5.2", default-features = false, features = ["rustls", "gzip", "json"] }
+webpki-root-certs = "1.0.12"
+libc = "0.2.191"
+serde_norway = "0.9.42"
+
+[dev-dependencies]
+tempfile = "3.27.0"

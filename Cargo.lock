@@ -1253,6 +1253,7 @@ version = "0.1.0"
 dependencies = [
  "desafinado-ai",
  "desafinado-core",
+ "futures",
  "gpui-kit",
  "serde_json",
 ]

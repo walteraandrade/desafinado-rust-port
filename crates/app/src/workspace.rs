@@ -22,6 +22,8 @@ actions!(
         SaveDocumentAs,
         OpenPreferences,
         StartReview,
+        StopReview,
+        ConfirmReview,
         AcceptAll,
         RejectAll,
         CloseMenu,
@@ -36,6 +38,8 @@ pub fn init(cx: &mut App) {
         KeyBinding::new("ctrl-shift-s", SaveDocumentAs, None),
         KeyBinding::new("ctrl-,", OpenPreferences, None),
         KeyBinding::new("escape", CloseMenu, Some("Menu")),
+        KeyBinding::new("enter", ConfirmReview, Some("ReviewPopover > Input")),
+        KeyBinding::new("escape", CloseMenu, Some("ReviewPopover > Input")),
     ]);
 }
 
@@ -74,6 +78,7 @@ pub struct Workspace {
     open_menu: Option<MenuKind>,
     notice: Option<SharedString>,
     leave: Option<LeaveIntent>,
+    review_focus: Option<Entity<gpui_kit::component::input::InputState>>,
     after_save: Option<LeaveIntent>,
     focus: FocusHandle,
     _subscriptions: Vec<Subscription>,
@@ -90,6 +95,7 @@ impl Workspace {
             open_menu: None,
             notice: None,
             leave: None,
+            review_focus: None,
             after_save: None,
             focus: cx.focus_handle(),
             _subscriptions: vec![subscription],
@@ -245,8 +251,11 @@ impl Workspace {
         .detach();
     }
 
-    fn close_menu(&mut self, _: &CloseMenu, _: &mut Window, cx: &mut Context<Self>) {
+    fn close_menu(&mut self, _: &CloseMenu, window: &mut Window, cx: &mut Context<Self>) {
         self.open_menu = None;
+        if self.review_focus.take().is_some() {
+            self.pane.update(cx, |pane, cx| pane.focus(window, cx));
+        }
         cx.notify();
     }
 
@@ -264,7 +273,11 @@ impl Workspace {
                 },
             ],
             MenuKind::Edit => vec![
-                row("Review…", None, Box::new(StartReview), false),
+                if self.pane.read(cx).review.is_some() {
+                    row("Stop Review", None, Box::new(StopReview), false)
+                } else {
+                    row("Review…", None, Box::new(StartReview), false)
+                },
                 MenuRow {
                     separated: true,
                     ..row("Accept all suggestions", None, Box::new(AcceptAll), open == 0)
@@ -361,6 +374,73 @@ impl Workspace {
             }))
     }
 
+    fn open_review(&mut self, _: &StartReview, window: &mut Window, cx: &mut Context<Self>) {
+        self.open_menu = None;
+        let input = cx.new(|cx| {
+            gpui_kit::component::input::InputState::new(window, cx)
+                .placeholder("Focus (optional), such as tone or clarity")
+        });
+        input.update(cx, |state, cx| state.focus(window, cx));
+        self.review_focus = Some(input);
+        cx.notify();
+    }
+
+    fn confirm_review(&mut self, _: &ConfirmReview, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(input) = self.review_focus.take() else {
+            return;
+        };
+        let focus = input.read(cx).value().to_string();
+        self.pane.update(cx, |pane, cx| {
+            pane.start_review(focus, cx);
+            pane.focus(window, cx);
+        });
+        cx.notify();
+    }
+
+    fn stop_review(&mut self, _: &StopReview, _: &mut Window, cx: &mut Context<Self>) {
+        self.open_menu = None;
+        self.pane.update(cx, |pane, cx| pane.stop_review(cx));
+        cx.notify();
+    }
+
+    fn render_review_popover(&self, input: &Entity<gpui_kit::component::input::InputState>, roles: Roles, cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .id("review-popover")
+            .key_context("ReviewPopover")
+            .occlude()
+            .absolute()
+            .top(px(38.))
+            .left(px(52.))
+            .w(px(360.))
+            .p(px(12.))
+            .bg(roles.raised)
+            .border_1()
+            .border_color(roles.hairline)
+            .flex()
+            .flex_col()
+            .gap(px(10.))
+            .child(ui::heading("Review the Document", roles).text_size(px(14.)))
+            .child(
+                div()
+                    .text_size(px(13.))
+                    .child("The AI reads the whole Document and suggests up to 6 changes, one per Block."),
+            )
+            .child(gpui_kit::component::input::Input::new(input))
+            .child(
+                ui::row()
+                    .justify_end()
+                    .gap(px(8.))
+                    .child(ui::button("review-cancel", "Cancel", ButtonKind::Default, roles).on_click(cx.listener(|this, _, window, cx| {
+                        this.review_focus = None;
+                        this.pane.update(cx, |pane, cx| pane.focus(window, cx));
+                        cx.notify();
+                    })))
+                    .child(ui::button("review-start", "Review", ButtonKind::Primary, roles).on_click(cx.listener(|this, _, window, cx| {
+                        this.confirm_review(&ConfirmReview, window, cx)
+                    }))),
+            )
+    }
+
     fn render_leave(&self, roles: Roles, cx: &mut Context<Self>) -> impl IntoElement {
         let answer = |choice: LeaveChoice| {
             cx.listener(move |this: &mut Self, _: &ClickEvent, window: &mut Window, cx: &mut Context<Self>| {
@@ -430,6 +510,8 @@ impl Render for Workspace {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let roles = theme::roles(cx);
         let dirty = self.dirty(cx);
+        let review = self.pane.read(cx).review.as_ref().map(|run| run.added);
+        let open = self.pane.read(cx).open_count();
         let title_bar = TitleBar::new().child(
             h_flex_row()
                 .gap(px(2.))
@@ -458,7 +540,35 @@ impl Render for Workspace {
             )
             .children(self.notice.clone().map(|notice| {
                 div().text_size(px(13.)).text_color(roles.danger).child(notice)
-            }));
+            }))
+            .child(div().flex_1())
+            .when_some(review, |this, added| {
+                this.child(
+                    ui::row()
+                        .gap(px(8.))
+                        .text_size(px(13.))
+                        .child(ui::ai_flag(roles))
+                        .child(div().text_color(roles.ai).child(format!(
+                            "Reviewing · {added} {}",
+                            if added == 1 { "suggestion" } else { "suggestions" }
+                        )))
+                        .child(ui::sized_button("header-stop", "Stop", ButtonKind::Default, ui::ButtonSize::Small, false, roles).on_click(
+                            cx.listener(|this, _, window, cx| this.stop_review(&StopReview, window, cx)),
+                        )),
+                )
+            })
+            .when(open > 0, |this| {
+                this.child(
+                    ui::row()
+                        .gap(px(8.))
+                        .child(ui::sized_button("header-accept-all", "Accept all", ButtonKind::Primary, ui::ButtonSize::Small, false, roles).on_click(
+                            cx.listener(|this, _, window, cx| this.pane.update(cx, |pane, cx| pane.accept_all(window, cx))),
+                        ))
+                        .child(ui::sized_button("header-reject-all", "Reject all", ButtonKind::Default, ui::ButtonSize::Small, false, roles).on_click(
+                            cx.listener(|this, _, _, cx| this.pane.update(cx, |pane, cx| pane.reject_all(cx))),
+                        )),
+                )
+            });
         let editor = div().flex_1().min_h_0().child(self.pane.clone());
         div()
             .id("workspace")
@@ -468,6 +578,9 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::save_document))
             .on_action(cx.listener(Self::save_document_as))
             .on_action(cx.listener(Self::close_menu))
+            .on_action(cx.listener(Self::open_review))
+            .on_action(cx.listener(Self::confirm_review))
+            .on_action(cx.listener(Self::stop_review))
             .on_action(cx.listener(|this, _: &AcceptAll, window, cx| {
                 this.open_menu = None;
                 this.pane.update(cx, |pane, cx| pane.accept_all(window, cx));
@@ -487,6 +600,9 @@ impl Render for Workspace {
             .child(editor)
             .when_some(self.leave.as_ref().map(|_| ()), |this, _| {
                 this.child(self.render_leave(roles, cx))
+            })
+            .when_some(self.review_focus.clone(), |this, input| {
+                this.child(self.render_review_popover(&input, roles, cx))
             })
             .when_some(self.open_menu, |this, kind| {
                 this.child(
