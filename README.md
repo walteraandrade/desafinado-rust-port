@@ -1,4 +1,4 @@
-# Desafinado Native
+# Desafinado Rust port
 
 A native Linux build of [Desafinado](https://github.com/walteraandrade/desafinado), the Markdown editor with an AI co-author, written in Rust on GPUI. It runs alongside the Electron and Web builds and does not replace them.
 

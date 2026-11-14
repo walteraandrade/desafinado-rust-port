@@ -37,7 +37,7 @@ Run on Linux under Xvfb with X11 and llvmpipe (software Vulkan), release build, 
 
 ## Decision (proposed)
 
-- **Where it lives:** its own repository, `desafinado-native`, a Cargo workspace. It follows Desafinado's GLOSSARY, PRODUCT and DESIGN, and copies the prompts and test fixtures it needs. The Electron and Web builds in `desafinado` are not touched.
+- **Where it lives:** its own repository, `desafinado-rust-port`, a Cargo workspace. It follows Desafinado's GLOSSARY, PRODUCT and DESIGN, and copies the prompts and test fixtures it needs. The Electron and Web builds in `desafinado` are not touched.
 - **Editor:** gpui-kit's code editor, pinned to an exact version (`=0.9.1`), with GPUI only through gpui-kit, so a GPUI bump is one line and a re-run of the checks above.
 - **Suggestions:** decorations for the Original. For the Replacement, a card under the range until gpui-kit has view zones, Monaco's API for blocks of space between lines, which gpui-kit already models its decorations on. We propose view zones upstream. If upstream declines, the fallback is a fork of the input module, not a new editor. The card is a change to [desafinado 0001](https://github.com/walteraandrade/desafinado/blob/main/docs/adr/0001-inline-overlay-suggestions.md)'s "the Replacement shows next to it", accepted only for the first milestone.
 - **Headings:** bold and colored, same size, until the editor supports per-range font size. A change to DESIGN.md's Headline for this build only.
