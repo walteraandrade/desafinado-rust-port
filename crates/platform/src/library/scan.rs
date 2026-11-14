@@ -1,311 +1,61 @@
-use std::collections::HashSet;
 use std::fs;
 use std::io;
 use std::path::Path;
 
-use serde::Serialize;
-
-use super::frontmatter::{FrontmatterProblem, FrontmatterReading, read_frontmatter};
-
-pub const SKILL_FILE_NAME: &str = "SKILL.md";
-pub const DEFAULT_MAX_DEPTH: usize = 3;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum EntryKind {
-    File,
-    Directory,
-    Symlink,
-    Other,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DirectoryEntry {
-    pub name: String,
-    pub kind: EntryKind,
-}
-
-pub trait SkillFileSystem {
-    fn list_directory(&self, path: &str) -> io::Result<Vec<DirectoryEntry>>;
-    fn real_path(&self, path: &str) -> io::Result<String>;
-    fn read_text(&self, path: &str) -> io::Result<String>;
-}
+pub use desafinado_features::skills::scan_skills::{
+    DEFAULT_MAX_DEPTH, DirectoryEntry, EntryKind, FsError, RootScan, SKILL_FILE_NAME, ScanOptions,
+    Skill, SkillFile, SkillFileSystem, scan_skill_roots,
+};
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct RealFileSystem;
 
-impl SkillFileSystem for RealFileSystem {
-    fn list_directory(&self, path: &str) -> io::Result<Vec<DirectoryEntry>> {
-        fs::read_dir(path)?
-            .map(|entry| {
-                let entry = entry?;
-                let kind = entry.file_type()?;
-                Ok(DirectoryEntry {
-                    name: entry.file_name().to_string_lossy().into_owned(),
-                    kind: if kind.is_symlink() {
-                        EntryKind::Symlink
-                    } else if kind.is_dir() {
-                        EntryKind::Directory
-                    } else if kind.is_file() {
-                        EntryKind::File
-                    } else {
-                        EntryKind::Other
-                    },
-                })
-            })
-            .collect()
-    }
-
-    fn real_path(&self, path: &str) -> io::Result<String> {
-        Ok(fs::canonicalize(Path::new(path))?
-            .to_string_lossy()
-            .into_owned())
-    }
-
-    fn read_text(&self, path: &str) -> io::Result<String> {
-        fs::read_to_string(path)
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SkillFile {
-    pub path: String,
-    pub name: String,
-    pub is_markdown: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Skill {
-    pub real_path: String,
-    pub folder_name: String,
-    pub root: String,
-    pub name: String,
-    pub description: Option<String>,
-    pub problem: Option<FrontmatterProblem>,
-    pub files: Vec<SkillFile>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct RootScan {
-    pub root: String,
-    pub readable: bool,
-    pub skills: Vec<Skill>,
-}
-
-fn join_path(directory: &str, name: &str) -> String {
-    format!("{}/{name}", directory.trim_end_matches(['/', '\\']))
-}
-
-fn compare_ignoring_case(a: &str, b: &str) -> std::cmp::Ordering {
-    a.to_lowercase()
-        .cmp(&b.to_lowercase())
-        .then_with(|| a.cmp(b))
-}
-
-fn is_hidden(entry: &DirectoryEntry) -> bool {
-    entry.name.starts_with('.') || entry.name == "node_modules"
-}
-
-fn is_markdown(name: &str) -> bool {
-    name.to_lowercase().ends_with(".md")
-}
-
-fn text_or_none(value: Option<&serde_norway::Value>) -> Option<String> {
-    let text = value?.as_str()?.trim();
-    (!text.is_empty()).then(|| text.to_owned())
-}
-
-struct Described {
-    name: String,
-    description: Option<String>,
-    problem: Option<FrontmatterProblem>,
-}
-
-fn describe_skill_file(text: &str, folder_name: &str) -> Described {
-    let stripped = text.strip_prefix('\u{feff}').unwrap_or(text);
-    let normalized = stripped.replace("\r\n", "\n").replace('\r', "\n");
-    match read_frontmatter(&normalized) {
-        FrontmatterReading::Present(fields) => Described {
-            name: text_or_none(fields.get("name")).unwrap_or_else(|| folder_name.to_owned()),
-            description: text_or_none(fields.get("description")),
-            problem: None,
-        },
-        FrontmatterReading::Absent => Described {
-            name: folder_name.to_owned(),
-            description: None,
-            problem: None,
-        },
-        FrontmatterReading::Invalid(problem) => Described {
-            name: folder_name.to_owned(),
-            description: None,
-            problem: Some(problem),
-        },
-    }
-}
-
-struct Visit<'a> {
-    directory: &'a str,
-    children: &'a [DirectoryEntry],
-    prefix: &'a str,
-    depth: usize,
-    ancestors: &'a HashSet<String>,
-}
-
-fn visit_files(fs: &dyn SkillFileSystem, max_depth: usize, visit: &Visit) -> Vec<SkillFile> {
-    let mut entries: Vec<&DirectoryEntry> = visit
-        .children
-        .iter()
-        .filter(|entry| !is_hidden(entry) && entry.kind != EntryKind::Other)
-        .collect();
-    entries.sort_by(|a, b| compare_ignoring_case(&a.name, &b.name));
-    let mut found = Vec::new();
-    for entry in entries {
-        let name = format!("{}{}", visit.prefix, entry.name);
-        let Ok(real) = fs.real_path(&join_path(visit.directory, &entry.name)) else {
-            continue;
-        };
-        let file = SkillFile {
-            path: real.clone(),
-            is_markdown: is_markdown(&name),
-            name: name.clone(),
-        };
-        if entry.kind == EntryKind::File {
-            found.push(file);
-            continue;
-        }
-        if entry.kind == EntryKind::Directory && visit.depth >= max_depth {
-            continue;
-        }
-        let Ok(nested) = fs.list_directory(&real) else {
-            if entry.kind == EntryKind::Symlink {
-                found.push(file);
-            }
-            continue;
-        };
-        if visit.depth >= max_depth || visit.ancestors.contains(&real) {
-            continue;
-        }
-        let mut ancestors = visit.ancestors.clone();
-        ancestors.insert(real.clone());
-        found.extend(visit_files(
-            fs,
-            max_depth,
-            &Visit {
-                directory: &real,
-                children: &nested,
-                prefix: &format!("{name}/"),
-                depth: visit.depth + 1,
-                ancestors: &ancestors,
-            },
-        ));
-    }
-    found
-}
-
-fn order_files(mut files: Vec<SkillFile>) -> Vec<SkillFile> {
-    files.sort_by(|a, b| {
-        (b.name == SKILL_FILE_NAME)
-            .cmp(&(a.name == SKILL_FILE_NAME))
-            .then_with(|| compare_ignoring_case(&a.name, &b.name))
-    });
-    let mut seen = HashSet::new();
-    files.retain(|file| seen.insert(file.path.clone()));
-    files
-}
-
-fn load_skill(
-    fs: &dyn SkillFileSystem,
-    max_depth: usize,
-    root: &str,
-    folder_name: &str,
-    real_path: &str,
-) -> Option<Skill> {
-    let children = fs.list_directory(real_path).ok()?;
-    let has_skill_file = children.iter().any(|entry| {
-        entry.name == SKILL_FILE_NAME && matches!(entry.kind, EntryKind::File | EntryKind::Symlink)
-    });
-    if !has_skill_file {
-        return None;
-    }
-    let skill_file = fs.real_path(&join_path(real_path, SKILL_FILE_NAME)).ok()?;
-    let text = fs.read_text(&skill_file).ok()?;
-    let ancestors = HashSet::from([real_path.to_owned()]);
-    let files = visit_files(
-        fs,
-        max_depth,
-        &Visit {
-            directory: real_path,
-            children: &children,
-            prefix: "",
-            depth: 0,
-            ancestors: &ancestors,
-        },
-    );
-    let described = describe_skill_file(&text, folder_name);
-    Some(Skill {
-        real_path: real_path.to_owned(),
-        folder_name: folder_name.to_owned(),
-        root: root.to_owned(),
-        name: described.name,
-        description: described.description,
-        problem: described.problem,
-        files: order_files(files),
-    })
-}
-
-fn scan_root(
-    fs: &dyn SkillFileSystem,
-    max_depth: usize,
-    root: &str,
-    claimed: &mut HashSet<String>,
-) -> RootScan {
-    let Ok(entries) = fs.list_directory(root) else {
-        return RootScan {
-            root: root.to_owned(),
-            readable: false,
-            skills: Vec::new(),
-        };
+fn fs_error(error: &io::Error, path: &str) -> FsError {
+    let code = match error.raw_os_error() {
+        Some(libc::ENOENT) => "ENOENT",
+        Some(libc::EACCES) => "EACCES",
+        Some(libc::ENOTDIR) => "ENOTDIR",
+        Some(libc::ELOOP) => "ELOOP",
+        Some(libc::EPERM) => "EPERM",
+        _ => "EIO",
     };
-    let mut folders: Vec<&DirectoryEntry> = entries
-        .iter()
-        .filter(|e| matches!(e.kind, EntryKind::Directory | EntryKind::Symlink))
-        .collect();
-    folders.sort_by(|a, b| compare_ignoring_case(&a.name, &b.name));
-    let mut candidates = Vec::new();
-    for entry in folders {
-        let Ok(real) = fs.real_path(&join_path(root, &entry.name)) else {
-            continue;
-        };
-        if claimed.insert(real.clone()) {
-            candidates.push((entry.name.clone(), real));
-        }
-    }
-    let mut skills: Vec<Skill> = candidates
-        .iter()
-        .filter_map(|(folder, real)| load_skill(fs, max_depth, root, folder, real))
-        .collect();
-    skills.sort_by(|a, b| {
-        compare_ignoring_case(&a.name, &b.name)
-            .then_with(|| compare_ignoring_case(&a.folder_name, &b.folder_name))
-    });
-    RootScan {
-        root: root.to_owned(),
-        readable: true,
-        skills,
-    }
+    FsError::new(code, path)
 }
 
-pub fn scan_skill_roots(
-    fs: &dyn SkillFileSystem,
-    roots: &[String],
-    max_depth: usize,
-) -> Vec<RootScan> {
-    let mut claimed = HashSet::new();
-    roots
-        .iter()
-        .map(|root| scan_root(fs, max_depth, root, &mut claimed))
-        .collect()
+impl SkillFileSystem for RealFileSystem {
+    fn list_directory(&self, path: &str) -> Result<Vec<DirectoryEntry>, FsError> {
+        let read = || -> io::Result<Vec<DirectoryEntry>> {
+            fs::read_dir(path)?
+                .map(|entry| {
+                    let entry = entry?;
+                    let kind = entry.file_type()?;
+                    Ok(DirectoryEntry {
+                        name: entry.file_name().to_string_lossy().into_owned(),
+                        kind: if kind.is_symlink() {
+                            EntryKind::Symlink
+                        } else if kind.is_dir() {
+                            EntryKind::Directory
+                        } else if kind.is_file() {
+                            EntryKind::File
+                        } else {
+                            EntryKind::Other
+                        },
+                    })
+                })
+                .collect()
+        };
+        read().map_err(|error| fs_error(&error, path))
+    }
+
+    fn real_path(&self, path: &str) -> Result<String, FsError> {
+        fs::canonicalize(Path::new(path))
+            .map(|real| real.to_string_lossy().into_owned())
+            .map_err(|error| fs_error(&error, path))
+    }
+
+    fn read_text(&self, path: &str) -> Result<String, FsError> {
+        fs::read_to_string(path).map_err(|error| fs_error(&error, path))
+    }
 }
 
 #[cfg(test)]
@@ -350,7 +100,7 @@ mod tests {
     }
 
     fn scan(roots: &[String]) -> Vec<RootScan> {
-        scan_skill_roots(&RealFileSystem, roots, DEFAULT_MAX_DEPTH)
+        scan_skill_roots(&RealFileSystem, roots, ScanOptions::default())
     }
 
     fn folders(scan: &RootScan) -> Vec<&str> {
@@ -407,7 +157,7 @@ mod tests {
         t.write("r/a/SKILL.md", "---\nname: a\ndescription: [oops\n---\n");
         let skill = &scan(&[t.root("r")])[0].skills[0];
         assert_eq!(skill.name, "a");
-        assert_eq!(skill.problem.as_ref().unwrap().rule, "yaml-syntax-error");
+        assert_eq!(skill.problem.as_ref().unwrap().rule.as_str(), "yaml-syntax-error");
     }
 
     #[test]

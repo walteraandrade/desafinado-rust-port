@@ -2,79 +2,21 @@ use std::fs;
 use std::io;
 use std::path::Path;
 
-use serde::Serialize;
+pub use desafinado_features::skills::library::CreateSkillResult;
+use desafinado_features::skills::skill_frontmatter::check_skill_name;
+pub use desafinado_features::skills::skill_template::{TEMPLATE_DESCRIPTION, skill_template};
 
 use super::handlers::{LibraryDeps, is_listed_root};
 use super::scan::SKILL_FILE_NAME;
-use super::skill_name::check_skill_name;
 use crate::files::{parse_path_request, write_atomic_unconditionally};
 use crate::fs_failure::describe_failure;
 
-pub const TEMPLATE_DESCRIPTION: &str =
-    "Describe what this skill does and when an agent should use it.";
 const MAX_NAME_CHARS: usize = 200;
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[serde(tag = "kind", rename_all = "camelCase")]
-pub enum CreateSkillResult {
-    Created { path: String, name: String },
-    Failed { reason: String },
-}
 
 fn failed(reason: impl Into<String>) -> CreateSkillResult {
     CreateSkillResult::Failed {
         reason: reason.into(),
     }
-}
-
-fn title_of(name: &str) -> String {
-    let words = name.replace('-', " ");
-    let mut chars = words.chars();
-    match chars.next() {
-        Some(first) => first.to_uppercase().chain(chars).collect(),
-        None => String::new(),
-    }
-}
-
-fn yaml_scalar(value: &str) -> String {
-    let plain_is_text = serde_norway::from_str::<serde_norway::Value>(value)
-        .ok()
-        .and_then(|parsed| parsed.as_str().map(|text| text == value))
-        .unwrap_or(false);
-    if plain_is_text {
-        value.to_owned()
-    } else {
-        serde_json::to_string(value).unwrap_or_else(|_| format!("\"{value}\""))
-    }
-}
-
-pub fn skill_template(name: &str) -> String {
-    let name = name.trim();
-    let body = [
-        &format!("# {}", title_of(name)),
-        "",
-        "Say in a sentence or two what this skill is for.",
-        "",
-        "## Instructions",
-        "",
-        "1. Describe the first step.",
-        "2. Describe the next step.",
-        "",
-        "## Examples",
-        "",
-        "Show an input and the output the agent should produce.",
-        "",
-        "## Edge cases",
-        "",
-        "List the cases that need care, and what to do in each.",
-        "",
-    ]
-    .join("\n");
-    format!(
-        "---\nname: {}\ndescription: {}\n---\n\n{body}",
-        yaml_scalar(name),
-        yaml_scalar(TEMPLATE_DESCRIPTION)
-    )
 }
 
 fn make_folder(folder: &Path, name: &str) -> Option<CreateSkillResult> {
@@ -98,7 +40,7 @@ pub fn create_skill(deps: &LibraryDeps, root: &str, name: &str) -> CreateSkillRe
         return failed("Invalid request");
     }
     let name = name.trim();
-    if let Some(problem) = check_skill_name(name).first() {
+    if let Some(problem) = check_skill_name(name, None).first() {
         return failed(problem.message.clone());
     }
     match is_listed_root(deps, &root) {
@@ -111,7 +53,14 @@ pub fn create_skill(deps: &LibraryDeps, root: &str, name: &str) -> CreateSkillRe
         return refused;
     }
     let file = folder.join(SKILL_FILE_NAME);
-    if let Err(error) = write_atomic_unconditionally(&file, &skill_template(name)) {
+    let text = match skill_template(name) {
+        Ok(text) => text,
+        Err(problem) => {
+            let _ = fs::remove_dir(&folder);
+            return failed(problem.message);
+        }
+    };
+    if let Err(error) = write_atomic_unconditionally(&file, &text) {
         let _ = fs::remove_dir(&folder);
         return failed(describe_failure(&error));
     }
@@ -127,9 +76,8 @@ pub fn create_skill(deps: &LibraryDeps, root: &str, name: &str) -> CreateSkillRe
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::library::{
-        FrontmatterReading, RealFileSystem, RootsStore, check_skill_name, read_frontmatter,
-    };
+    use crate::library::{RealFileSystem, RootsStore};
+    use desafinado_features::skills::frontmatter_fields::{FrontmatterReading, read_frontmatter};
     use std::os::unix::fs::symlink;
 
     struct Env {
@@ -198,7 +146,7 @@ mod tests {
             panic!("no frontmatter")
         };
         assert_eq!(fields.get("name").and_then(|v| v.as_str()), Some("123"));
-        assert!(check_skill_name("123").is_empty());
+        assert!(check_skill_name("123", None).is_empty());
     }
 
     #[test]

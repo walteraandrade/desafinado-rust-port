@@ -1,45 +1,17 @@
-use serde::Serialize;
+pub use desafinado_features::skills::library::{
+    AddRootResult, LibraryRoot, LibrarySnapshot, RemoveRootResult,
+};
 
 use super::roots::{
     ROOTS_FILE_NAME, RootsLoad, RootsStore, default_roots, display_path, with_root, without_root,
 };
-use super::scan::{DEFAULT_MAX_DEPTH, RootScan, SkillFileSystem, scan_skill_roots};
+use super::scan::{ScanOptions, SkillFileSystem, scan_skill_roots};
 use crate::files::parse_path_request;
 
 pub struct LibraryDeps<'a> {
     pub home: &'a str,
     pub store: &'a RootsStore,
     pub file_system: &'a dyn SkillFileSystem,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct LibraryRoot {
-    #[serde(flatten)]
-    pub scan: RootScan,
-    pub label: String,
-    pub removable: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct LibrarySnapshot {
-    pub roots: Vec<LibraryRoot>,
-    pub problem: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[serde(tag = "kind", rename_all = "camelCase")]
-pub enum AddRootResult {
-    Added { label: String },
-    Duplicate { label: String },
-    Cancelled,
-    Failed { reason: String },
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[serde(tag = "kind", rename_all = "camelCase")]
-pub enum RemoveRootResult {
-    Removed,
-    Failed { reason: String },
 }
 
 fn roots_problem() -> String {
@@ -58,14 +30,14 @@ pub fn list_library(deps: &LibraryDeps) -> LibrarySnapshot {
         .chain(project_roots.iter())
         .cloned()
         .collect();
-    let scans = scan_skill_roots(deps.file_system, &all, DEFAULT_MAX_DEPTH);
+    let scans = scan_skill_roots(deps.file_system, &all, ScanOptions::default());
     LibrarySnapshot {
         roots: scans
             .into_iter()
-            .map(|scan| LibraryRoot {
-                label: display_path(&scan.root, deps.home),
-                removable: !defaults.contains(&scan.root),
-                scan,
+            .map(|scan| {
+                let label = display_path(&scan.root, deps.home);
+                let removable = !defaults.contains(&scan.root);
+                LibraryRoot::from_scan(scan, label, removable)
             })
             .collect(),
         problem,
@@ -157,8 +129,7 @@ pub fn skill_real_paths(snapshot: &LibrarySnapshot) -> Vec<&str> {
         .roots
         .iter()
         .flat_map(|root| {
-            root.scan
-                .skills
+            root.skills
                 .iter()
                 .map(|skill| skill.real_path.as_str())
         })
@@ -223,7 +194,7 @@ mod tests {
         let snapshot = list_library(&e.deps());
         let labels: Vec<&str> = snapshot.roots.iter().map(|r| r.label.as_str()).collect();
         assert_eq!(labels[..2], ["~/.claude/skills", "~/.agents/skills"]);
-        assert_eq!(snapshot.roots[2].scan.root, project);
+        assert_eq!(snapshot.roots[2].root, project);
         let removable: Vec<bool> = snapshot.roots.iter().map(|r| r.removable).collect();
         assert_eq!(removable, [false, false, true]);
         assert_eq!(snapshot.problem, None);
@@ -239,8 +210,8 @@ mod tests {
         )
         .unwrap();
         let snapshot = list_library(&e.deps());
-        assert_eq!(snapshot.roots[0].scan.skills.len(), 1);
-        assert!(snapshot.roots[1].scan.skills.is_empty());
+        assert_eq!(snapshot.roots[0].skills.len(), 1);
+        assert!(snapshot.roots[1].skills.is_empty());
     }
 
     #[test]
@@ -248,7 +219,7 @@ mod tests {
         let e = env();
         e.store.save(&["/definitely/missing".to_owned()]).unwrap();
         let snapshot = list_library(&e.deps());
-        assert!(!snapshot.roots[2].scan.readable);
+        assert!(!snapshot.roots[2].readable);
     }
 
     #[test]

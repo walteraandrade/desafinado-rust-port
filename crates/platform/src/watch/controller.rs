@@ -124,10 +124,10 @@ impl Worker {
 
     fn plan(&self) -> (HashMap<String, String>, LibrarySnapshot, AwaitedNames) {
         let snapshot = (self.config.list)();
-        let readable: Vec<_> = snapshot.roots.iter().filter(|r| r.scan.readable).collect();
+        let readable: Vec<_> = snapshot.roots.iter().filter(|r| r.readable).collect();
         let real: Vec<String> = readable
             .iter()
-            .map(|r| (self.config.real_path)(&r.scan.root).unwrap_or_else(|| r.scan.root.clone()))
+            .map(|r| (self.config.real_path)(&r.root).unwrap_or_else(|| r.root.clone()))
             .collect();
         let entries: Vec<RootEntries> = real
             .iter()
@@ -136,15 +136,15 @@ impl Worker {
         let missing: Vec<String> = snapshot
             .roots
             .iter()
-            .filter(|r| !r.scan.readable)
-            .map(|r| r.scan.root.clone())
+            .filter(|r| !r.readable)
+            .map(|r| r.root.clone())
             .collect();
         let anchors: Vec<Anchor> = missing
             .iter()
             .chain(entries.iter().flat_map(|e| e.dangling.iter()))
             .map(|path| self.anchor_for(path))
             .collect();
-        let skills: Vec<_> = readable.iter().flat_map(|r| r.scan.skills.iter()).collect();
+        let skills: Vec<_> = readable.iter().flat_map(|r| r.skills.iter()).collect();
         let folders: Vec<String> = entries.iter().flat_map(|e| e.folders.clone()).collect();
         let anchor_dirs: Vec<String> = anchors.iter().map(|a| a.dir.clone()).collect();
         let dirs = watch_directories(

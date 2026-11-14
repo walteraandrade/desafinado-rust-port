@@ -11,6 +11,7 @@ similar.workspace = true
 thiserror.workspace = true
 desafinado-core = { path = "../core" }
 desafinado-ai = { path = "../ai" }
+desafinado-features = { path = "../features" }
 rusqlite = { version = "0.42.0", features = ["bundled"] }
 flate2 = "1.1.11"
 sha2 = "0.11.1"
@@ -21,7 +22,6 @@ keyring = { version = "3.6.3", default-features = false, features = ["async-secr
 ureq = { version = "3.5.2", default-features = false, features = ["rustls", "gzip", "json"] }
 webpki-root-certs = "1.0.12"
 libc = "0.2.191"
-serde_norway = "0.9.42"
 
 [dev-dependencies]
 tempfile = "3.27.0"
