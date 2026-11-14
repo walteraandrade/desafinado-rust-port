@@ -4,10 +4,10 @@ Every feature of `desafinado`'s Electron build (as of `b269c9c`, 2026-11-14) and
 
 ## Document and files
 - [ ] New (`Ctrl+N`), Open… (`Ctrl+O`), Save (`Ctrl+S`), Save as… (`Ctrl+Shift+S`), asking Save / Discard / Cancel over unsaved text
-- [ ] Atomic save keeping mode and symlinks; conflict when the disk changed since the last read (External change notice: Reload from disk / Keep mine)
-- [ ] Unsaved text kept per file across restarts and a killed process; the last file reopens at start
-- [ ] First Markdown argument on the command line opens; one instance per user data dir hands later files to the running app
-- [ ] Watcher: an external edit of the clean open file reloads and records an External Version; a dirty one shows the notice
+- [x] Atomic save keeping mode and symlinks; conflict when the disk changed since the last read (External change notice: Reload from disk / Keep mine)
+- [x] Unsaved text kept per file across restarts and a killed process; the last file reopens at start (the last file is kept in `last-file.txt` in the user data dir instead of `localStorage`)
+- [x] First Markdown argument on the command line opens; one instance per user data dir hands later files to the running app (an `flock` on `instance.lock` and a Unix socket `instance.sock` in the user data dir stand in for `requestSingleInstanceLock`)
+- [x] Watcher: an external edit of the clean open file reloads and records an External Version; a dirty one shows the notice
 - [ ] Frontmatter: not a Block; frontmatter problems in the File menu; frontmatter panel to edit `name` and `description`
 
 ## Editor and Suggestions
@@ -22,10 +22,10 @@ Every feature of `desafinado`'s Electron build (as of `b269c9c`, 2026-11-14) and
 - [ ] Errors and retries shown as in the Electron build
 
 ## History
-- [ ] Versions with Cause (Started, Edited, Accepted, Opened, Restored, External, Saved mark) in `history.sqlite`, one History per file
-- [ ] Timeline under the header, a dot per Version, compare with the current text, Restore
-- [ ] Full history page "How this Document changed"
-- [ ] Undo/redo keys (`Ctrl+Z`, `Ctrl+Shift+Z`, `Ctrl+Y`)
+- [x] Versions with Cause (Started, Edited, Accepted, Opened, Restored, External, Saved mark) in `history.sqlite`, one History per file
+- [x] Timeline under the header, a dot per Version, compare with the current text, Restore (`←` `→` `Home` `End` step between dots while a Version or the full history is shown, not from a focused dot in the editing view; Now has no hover title)
+- [x] Full history page "How this Document changed" (entry diffs are computed for every entry, not only near the viewport; the flash on a dot click ends without a fade)
+- [x] Undo/redo keys (`Ctrl+Z`, `Ctrl+Shift+Z`, `Ctrl+Y`) (opening a file or Reload from disk starts a fresh undo stack, where CodeMirror kept it as one undoable change; Restore and a watcher reload are undoable as in Electron)
 
 ## Library and skills
 - [ ] Library rail (`Ctrl+B`), Library tree of roots, Skills, folders and files; keyboard tree navigation; descriptions; problems in the danger color
