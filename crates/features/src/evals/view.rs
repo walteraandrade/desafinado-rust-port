@@ -94,9 +94,81 @@ pub fn unpaired_text(count: usize) -> String {
     )
 }
 
+fn share(tally: &Tally) -> f64 {
+    if tally.total == 0 {
+        0.0
+    } else {
+        tally.passed as f64 / tally.total as f64
+    }
+}
+
+pub fn meter_share(tally: &Tally) -> f64 {
+    share(tally)
+}
+
+fn capitalized(text: &str) -> String {
+    let mut chars = text.chars();
+    chars.next().map_or_else(String::new, |first| {
+        first.to_uppercase().chain(chars).collect()
+    })
+}
+
+pub fn verdict(first: &Tally, second: &Tally, labels: &ArmLabels, versus: bool) -> String {
+    let gap = ((share(first) - share(second)) * 100.0 + 0.5).floor() as i64;
+    let size = format!(
+        "{} {}",
+        gap.abs(),
+        if gap.abs() == 1 { "point" } else { "points" }
+    );
+    let more = if gap > 0 { "more" } else { "less" };
+    match (gap, versus) {
+        (0, true) => format!("Same pass rate for {} and {}", labels.first, labels.second),
+        (0, false) => "Same pass rate with and without the Skill".to_string(),
+        (_, true) => format!(
+            "{} passes {size} {more} often than {}",
+            capitalized(&labels.first),
+            labels.second
+        ),
+        (_, false) => format!("Passes {size} {more} often {}", labels.first),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn t(passed: usize, total: usize) -> Tally {
+        Tally { passed, total }
+    }
+
+    #[test]
+    fn says_how_much_more_often_the_first_arm_passes() {
+        let skill = skill_arms();
+        assert_eq!(
+            verdict(&t(3, 4), &t(1, 4), &skill, false),
+            "Passes 50 points more often with the Skill"
+        );
+        assert_eq!(
+            verdict(&t(1, 100), &t(2, 100), &skill, false),
+            "Passes 1 point less often with the Skill"
+        );
+        assert_eq!(
+            verdict(&t(1, 2), &t(2, 4), &skill, false),
+            "Same pass rate with and without the Skill"
+        );
+        let versus = ArmLabels {
+            first: "today's SKILL.md".into(),
+            second: "the Version from 10:00".into(),
+        };
+        assert_eq!(
+            verdict(&t(2, 2), &t(1, 2), &versus, true),
+            "Today's SKILL.md passes 50 points more often than the Version from 10:00"
+        );
+        assert_eq!(
+            verdict(&t(0, 0), &t(0, 3), &versus, true),
+            "Same pass rate for today's SKILL.md and the Version from 10:00"
+        );
+    }
 
     #[test]
     fn count_label_shows_passes_over_entries() {
