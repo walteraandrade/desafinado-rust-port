@@ -87,6 +87,10 @@ impl AiBackend for FakeAi {
     }
 }
 
-pub fn backend() -> Arc<dyn AiBackend> {
-    Arc::new(FakeAi)
+pub fn backend(services: Arc<crate::services::Services>) -> Arc<dyn AiBackend> {
+    if std::env::var_os("DESAFINADO_FAKE_AI").is_some() {
+        Arc::new(FakeAi)
+    } else {
+        Arc::new(crate::openrouter_ai::OpenRouterAi::new(services))
+    }
 }

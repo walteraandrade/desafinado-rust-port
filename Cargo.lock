@@ -1251,8 +1251,10 @@ dependencies = [
 name = "desafinado"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "desafinado-ai",
  "desafinado-core",
+ "desafinado-platform",
  "futures",
  "gpui-kit",
  "serde_json",

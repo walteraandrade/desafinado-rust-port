@@ -82,7 +82,7 @@ pub struct Workspace {
 
 impl Workspace {
     pub fn new(launch: Option<PathBuf>, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let pane = cx.new(|cx| EditorPane::new(ai_backend::backend(), window, cx));
+        let pane = cx.new(|cx| EditorPane::new(ai_backend::backend(crate::services::Services::load()), window, cx));
         let subscription = cx.subscribe(&pane, |_, _, _: &PaneEvent, cx| cx.notify());
         let mut workspace = Self {
             pane,
