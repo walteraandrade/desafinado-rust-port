@@ -45,7 +45,7 @@ fn window_options(cx: &mut App) -> WindowOptions {
         size(px(1280.), px(860.)),
         cx,
     )));
-    options.app_id = Some("desafinado".into());
+    options.app_id = Some("desafinado-native".into());
     options
 }
 
