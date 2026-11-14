@@ -38,16 +38,16 @@ Every feature of `desafinado`'s Electron build (as of `b269c9c`, 2026-11-14) and
 - [x] Eval run through the Claude CLI with Arms, runs 1–5, Cancel, toast at the end, first-eval guide (Compare against is a list that unfolds under the field instead of a native select; Runs and Cost limit are text fields with the same checks, no spinner; `DESAFINADO_CLAUDE_CLI=<path>` names the CLI before PATH and `~/.local/bin`, a port addition for checks, with `scripts/fake-claude` as a stand-in that never calls the model; quitting during a run waits up to 6 s for it to stop, as in Electron)
 
 ## Preferences and themes
-- [ ] Preferences (`Ctrl+,`): themes (24 Palettes + Desafinado; Omarchy theme when present), Model, OpenRouter key, Quick actions (toggle, order, add, edit, delete)
-- [ ] Version and commit at the bottom
+- [x] Preferences (`Ctrl+,`): themes (24 Palettes + Desafinado; Omarchy theme when present), Model, OpenRouter key, Quick actions (toggle, order, add, edit, delete) (the panel does not make the page behind it inert, as the modal `<dialog>` does; a theme applies at once without the view-transition crossfade; the choice is kept in `theme.txt` and the model in `model.txt` in the user data dir instead of `localStorage`; the Omarchy theme is read from `~/.local/state/omarchy/current` at start in every build, not only in dev, and is not followed live; a deleted Quick action leaves without the list motion, and focus returns to the panel rather than to the neighboring control; the AI section has one more row, AI spend)
+- [x] Version and commit at the bottom (the native crate version; `build.rs` reads the commit from `.git` like `config/build-info.ts`, `unknown` outside a checkout, `DESAFINADO_COMMIT` overrides it for packaging)
 
 ## AI and spend
 - [ ] OpenRouter called directly, through `HTTPS_PROXY` and `SSL_CERT_FILE` (oneCLI)
-- [ ] Key screen and libsecret key store
+- [x] Key screen and libsecret key store (the OpenRouter key dialog opens from the missing key banner and from Preferences, with the same states, plain-text offer and Remove key; a saved key reaches the next AI call without a restart; checked in Xvfb through the session and plain-text paths, since Xvfb has no Secret Service)
 - [ ] AI call records (task, models, provider, tokens, cost, latencies, finish reason, generation id) in `ai-calls.jsonl`
-- [ ] Spend view: calls and total cost
+- [x] Spend view: calls and total cost (the Electron build has no in-app view, only `ai-calls.jsonl` and `window.__aiCalls`; the native page, File → AI spend… or Preferences → AI spend, shows total US$, calls and priced calls, average per call, tokens, failed and retried calls, a 14-day chart, cost by model and by task, and the newest 50 calls, filtered by Today, 7 days, 30 days or All time)
 
 ## Shell
-- [ ] Custom title bar with File and Edit menus and keyboard menu navigation
-- [ ] Toasts, missing key banner, start error screen
+- [x] Custom title bar with File and Edit menus and keyboard menu navigation (`↑` `↓` skip disabled items and wrap, `←` `→` switch menus, `Enter` or `Space` choose, `Esc` closes, `Tab` leaves; the menu buttons are not Tab stops in GPUI, so `Alt+F`, `Alt+E` and `F10` open a menu with its first item active, a port addition; `Esc` returns focus to where it was instead of to the menu button)
+- [x] Toasts, missing key banner, start error screen (toasts take any number of actions, each a button that dismisses the toast; the start error screen shows when the user data folder cannot be created or written, the native counterpart of a failed platform kit)
 - [ ] Installs and runs locally (`cargo install --path crates/app` plus a desktop entry)
