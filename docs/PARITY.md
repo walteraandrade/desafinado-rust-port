@@ -8,7 +8,7 @@ Every feature of `desafinado`'s Electron build (as of `b269c9c`, 2026-11-14) and
 - [x] Unsaved text kept per file across restarts and a killed process; the last file reopens at start (the last file is kept in `last-file.txt` in the user data dir instead of `localStorage`)
 - [x] First Markdown argument on the command line opens; one instance per user data dir hands later files to the running app (an `flock` on `instance.lock` and a Unix socket `instance.sock` in the user data dir stand in for `requestSingleInstanceLock`)
 - [x] Watcher: an external edit of the clean open file reloads and records an External Version; a dirty one shows the notice
-- [ ] Frontmatter: not a Block; frontmatter problems in the File menu; frontmatter panel to edit `name` and `description`
+- [x] Frontmatter: not a Block; frontmatter problems in the File menu; frontmatter panel to edit `name` and `description` (the panel sits above the editor instead of scrolling with the text; `Ctrl+Z` in a field undoes the field and writes that back as a new edit instead of undoing the Document; no screen-reader live region)
 
 ## Editor and Suggestions
 - [ ] Raw Markdown with light styling, Inter, 48rem column, headings bold (bigger headings: see ADR 0001)
@@ -28,10 +28,10 @@ Every feature of `desafinado`'s Electron build (as of `b269c9c`, 2026-11-14) and
 - [x] Undo/redo keys (`Ctrl+Z`, `Ctrl+Shift+Z`, `Ctrl+Y`) (opening a file or Reload from disk starts a fresh undo stack, where CodeMirror kept it as one undoable change; Restore and a watcher reload are undoable as in Electron)
 
 ## Library and skills
-- [ ] Library rail (`Ctrl+B`), Library tree of roots, Skills, folders and files; keyboard tree navigation; descriptions; problems in the danger color
-- [ ] Library search (`Ctrl+P`)
-- [ ] Add a root, Refresh, New skill from template
-- [ ] Improve description (AI)
+- [x] Library rail (`Ctrl+B`), Library tree of roots, Skills, folders and files; keyboard tree navigation; descriptions; problems in the danger color (the rail buttons are icons with the label and shortcut in their tooltip, since GPUI has no vertical text; the Library and descriptions appear without the slide and unfold motion; rows are one flat list, Tab does not step through the panel)
+- [x] Library search (`Ctrl+P`) (no visually hidden result count, GPUI has no screen-reader layer)
+- [x] Add a root, Refresh, New skill from template (Add uses the GPUI folder picker, or `DESAFINADO_DEV_PICK_FILE` like the Electron dev switch; New skill picks the folder from a list of rows instead of a dropdown)
+- [x] Improve description (AI) (the proposal appears and leaves without the unfold motion)
 
 ## Evals
 - [ ] Evals page "How this Skill performs": last run, Did the Skill fire? / Did it help?, Each Eval table, suspicious cases
