@@ -30,17 +30,18 @@ use desafinado_core::{
     diff::DiffHunk,
     suggestions::{
         ClientError, Direction, Instruction, NoticeKind, RefineState, Suggestion, SuggestionDraft,
-        SuggestionResult, SuggestionsState, accept_suggestion, active_suggestion, begin_refine,
-        begin_suggestion, change_ranges, describe_error, discard_suggestion, empty_suggestions,
-        fail_refine, fail_suggestion, instruction_history, map_suggestions, refine_task_label,
-        reject_suggestion, resolve_refine, resolve_suggestion, retry_suggestion, show_version,
-        step_suggestion, task_label,
+        SuggestionOrigin, SuggestionResult, SuggestionsState, accept_suggestion, active_suggestion,
+        begin_refine, begin_suggestion, change_ranges, describe_error, discard_suggestion,
+        empty_suggestions, fail_refine, fail_suggestion, instruction_history, map_suggestions,
+        refine_task_label, reject_suggestion, resolve_refine, resolve_suggestion, retry_suggestion,
+        show_version, step_suggestion, task_label,
     },
 };
 use gpui_kit::{
     component::input::{
         Editor, EditorState, Input, InputEditsEvent, InputEvent, InputState, RangeDecoration,
-        RangeDecorationCollection, RangeDecorationStyle, TextDecoration, TextDecorationCollection,
+        RangeDecorationCollection, RangeDecorationStyle, Redo, TextDecoration,
+        TextDecorationCollection, Undo,
     },
     prelude::FluentBuilder as _,
     *,
@@ -73,6 +74,9 @@ actions!(
 pub fn init(cx: &mut App) {
     cx.bind_keys([
         KeyBinding::new("ctrl-k", AskAi, Some("EditorPane > Input")),
+        KeyBinding::new("ctrl-shift-z", Redo, Some("EditorPane > Input")),
+        KeyBinding::new("ctrl-y", Redo, Some("EditorPane > Input")),
+        KeyBinding::new("ctrl-z", Undo, Some("EditorPane > Input")),
         KeyBinding::new("ctrl-enter", AcceptActive, Some("EditorPane > Input")),
         KeyBinding::new("escape", RejectActive, Some("EditorPane > Input")),
         KeyBinding::new("ctrl-h", PreviousVersion, Some("EditorPane > Input")),
@@ -86,11 +90,18 @@ pub fn init(cx: &mut App) {
     ]);
 }
 
+pub struct AcceptedChange {
+    pub origin: SuggestionOrigin,
+    pub instruction: String,
+    pub rationale: String,
+}
+
 pub enum PaneEvent {
     Changed,
     Accepted {
-        instruction: String,
-        rationale: String,
+        before: String,
+        text: String,
+        changes: Vec<AcceptedChange>,
     },
 }
 
@@ -220,6 +231,51 @@ impl EditorPane {
         self.bubble = None;
         self.editor.update(cx, |state, cx| {
             state.set_value(text.to_string(), window, cx)
+        });
+        self.refresh_decorations(cx);
+        cx.notify();
+    }
+
+    fn clear_suggestions(&mut self, cx: &mut Context<Self>) {
+        self.stop_review(cx);
+        self.tasks.clear();
+        self.suggestions = empty_suggestions();
+        self.bubble = None;
+    }
+
+    pub fn replace_text(&mut self, text: &str, window: &mut Window, cx: &mut Context<Self>) {
+        self.clear_suggestions(cx);
+        self.set_text(text, window, cx);
+    }
+
+    pub fn refresh_text(
+        &mut self,
+        change: &crate::document::MinimalChange,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.clear_suggestions(cx);
+        let cursor = self.cursor(cx);
+        let insert = change.insert.clone();
+        let range = change.from..change.to;
+        self.editor.update(cx, |state, cx| {
+            state.set_selected_range(range, cx);
+            state.replace(insert, window, cx);
+            let text = state.value();
+            let mut at = cursor.min(text.len());
+            while !text.is_char_boundary(at) {
+                at -= 1;
+            }
+            state.set_selected_range(at..at, cx);
+        });
+        self.refresh_decorations(cx);
+        cx.notify();
+    }
+
+    pub fn restore_text(&mut self, text: &str, window: &mut Window, cx: &mut Context<Self>) {
+        self.clear_suggestions(cx);
+        self.editor.update(cx, |state, cx| {
+            state.replace_all(text.to_string(), window, cx)
         });
         self.refresh_decorations(cx);
         cx.notify();
@@ -566,16 +622,42 @@ impl EditorPane {
     }
 
     pub fn accept(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(ready) = self
+        let before = self.text(cx);
+        let changes: Vec<AcceptedChange> = self.accept_one(id, window, cx).into_iter().collect();
+        self.emit_accepted(before, changes, cx);
+    }
+
+    fn emit_accepted(
+        &mut self,
+        before: String,
+        changes: Vec<AcceptedChange>,
+        cx: &mut Context<Self>,
+    ) {
+        if !changes.is_empty() {
+            let text = self.text(cx);
+            cx.emit(PaneEvent::Accepted {
+                before,
+                text,
+                changes,
+            });
+        }
+        self.refresh_decorations(cx);
+        cx.notify();
+    }
+
+    fn accept_one(
+        &mut self,
+        id: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<AcceptedChange> {
+        let ready = self
             .suggestions
             .items
             .iter()
             .filter_map(Suggestion::as_ready)
             .find(|item| item.id == id)
-            .cloned()
-        else {
-            return;
-        };
+            .cloned()?;
         self.applying = Some(ready.id.clone());
         let replacement = ready.replacement.clone();
         self.editor.update(cx, |state, cx| {
@@ -586,12 +668,11 @@ impl EditorPane {
             self.applying = None;
             self.suggestions = reject_suggestion(&self.suggestions, &ready.id);
         }
-        cx.emit(PaneEvent::Accepted {
-            instruction: ready.instruction.text().to_string(),
+        Some(AcceptedChange {
+            origin: ready.origin,
+            instruction: instruction_label(&ready.instruction),
             rationale: ready.rationale.clone(),
-        });
-        self.refresh_decorations(cx);
-        cx.notify();
+        })
     }
 
     pub fn reject(&mut self, id: &str, cx: &mut Context<Self>) {
@@ -610,9 +691,13 @@ impl EditorPane {
             .map(|item| (item.from, item.id.clone()))
             .collect();
         ids.sort_by(|a, b| b.0.cmp(&a.0));
-        for (_, id) in ids {
-            self.accept(&id, window, cx);
-        }
+        let before = self.text(cx);
+        let mut changes: Vec<AcceptedChange> = ids
+            .into_iter()
+            .filter_map(|(_, id)| self.accept_one(&id, window, cx))
+            .collect();
+        changes.reverse();
+        self.emit_accepted(before, changes, cx);
     }
 
     pub fn reject_all(&mut self, cx: &mut Context<Self>) {
@@ -1387,5 +1472,12 @@ impl Render for EditorPane {
             .children(carets)
             .children(cards)
             .children(bubble)
+    }
+}
+
+fn instruction_label(instruction: &Instruction) -> String {
+    match instruction {
+        Instruction::QuickAction { label, .. } => label.clone(),
+        Instruction::FreeText { text } => text.clone(),
     }
 }

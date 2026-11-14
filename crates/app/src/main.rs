@@ -1,12 +1,17 @@
-
-
-
+mod document;
 mod editor_pane;
+mod history_store;
+mod history_view;
+mod last_file;
+mod single_instance;
 mod theme;
 mod ui;
 mod workspace;
 
 use std::{borrow::Cow, path::PathBuf};
+
+use desafinado_platform::{launch::launch_file_of, user_data::user_data_dir};
+use single_instance::{Claim, LaunchMessage};
 
 use gpui_kit::*;
 
@@ -19,10 +24,27 @@ const FONTS: [&[u8]; 5] = [
 ];
 
 fn main() {
-    let launch: Option<PathBuf> = std::env::args()
-        .skip(1)
-        .find(|arg| !arg.starts_with('-'))
-        .map(PathBuf::from);
+    let argv: Vec<String> = std::env::args().collect();
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/"));
+    let (sender, launches) = futures::channel::mpsc::unbounded::<LaunchMessage>();
+    let message = LaunchMessage {
+        argv: argv.clone(),
+        cwd: cwd.clone(),
+    };
+    let instance = match single_instance::claim(&user_data_dir(), &message, move |message| {
+        let _ = sender.unbounded_send(message);
+    }) {
+        Ok(Claim::HandedOver) => return,
+        Ok(Claim::Primary(primary)) => Some(primary),
+        Err(error) => {
+            eprintln!("Could not claim the single instance: {error}");
+            None
+        }
+    };
+    let launch =
+        launch_file_of(&argv, &cwd).map(|path| std::fs::canonicalize(&path).unwrap_or(path));
+    let services = desafinado_runtime::services::Services::load();
+    let _held = instance;
     gpui_kit::application().run(move |cx| {
         gpui_kit::init(cx);
         let _ = cx
@@ -39,9 +61,25 @@ fn main() {
         )));
         options.app_id = Some("desafinado".into());
         gpui_kit::open_window(options, cx, |window, cx| {
-            cx.new(|cx| workspace::Workspace::new(launch, window, cx))
+            cx.new(|cx| {
+                workspace::Workspace::new(
+                    workspace::Startup {
+                        launch,
+                        services,
+                        launches,
+                    },
+                    window,
+                    cx,
+                )
+            })
         })
         .expect("failed to open the window");
+        cx.on_window_closed(|cx, _| {
+            if cx.windows().is_empty() {
+                cx.quit();
+            }
+        })
+        .detach();
         cx.activate(true);
     });
 }
