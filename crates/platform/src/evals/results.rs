@@ -4,7 +4,8 @@ use std::path::{Path, PathBuf};
 
 use sha2::{Digest, Sha256};
 
-use super::request::{SummaryBaseline, parse_summary_baseline};
+use desafinado_features::evals::baseline::{SummaryBaseline, parse_summary_baseline};
+use desafinado_features::evals::types::ReportPart;
 
 const RESULT_FILE: &str = "result.json";
 const REPORT_DIR: &str = "report";
@@ -17,18 +18,10 @@ pub struct NextRun {
     pub output_dir: PathBuf,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RunPart {
-    Today,
-    Version,
-}
-
-impl RunPart {
-    fn dir(self) -> &'static str {
-        match self {
-            Self::Today => "today",
-            Self::Version => "version",
-        }
+fn part_dir(part: ReportPart) -> &'static str {
+    match part {
+        ReportPart::Today => "today",
+        ReportPart::Version => "version",
     }
 }
 
@@ -98,16 +91,16 @@ impl ResultsStore {
         Ok(files_in(&dir))
     }
 
-    pub fn begin_part(&self, key: &str, part: RunPart) -> io::Result<NextRun> {
-        let dir = self.next_dir(key).join(part.dir());
+    pub fn begin_part(&self, key: &str, part: ReportPart) -> io::Result<NextRun> {
+        let dir = self.next_dir(key).join(part_dir(part));
         fs::create_dir_all(&dir)?;
         Ok(files_in(&dir))
     }
 
-    pub fn read_next(&self, key: &str, part: Option<RunPart>) -> Option<String> {
+    pub fn read_next(&self, key: &str, part: Option<ReportPart>) -> Option<String> {
         let dir = match part {
             None => self.next_dir(key),
-            Some(part) => self.next_dir(key).join(part.dir()),
+            Some(part) => self.next_dir(key).join(part_dir(part)),
         };
         read_or_none(&dir.join(RESULT_FILE))
     }
@@ -163,13 +156,13 @@ impl ResultsStore {
         })
     }
 
-    pub fn last_report(&self, key: &str, part: RunPart) -> Option<PathBuf> {
+    pub fn last_report(&self, key: &str, part: ReportPart) -> Option<PathBuf> {
         let (_, pair) = self.last_layout(key);
-        if !pair && part == RunPart::Version {
+        if !pair && part == ReportPart::Version {
             return None;
         }
         let dir = self.last_dir(key);
-        let base = if pair { dir.join(part.dir()) } else { dir };
+        let base = if pair { dir.join(part_dir(part)) } else { dir };
         let file = base.join(REPORT_DIR).join(REPORT_FILE);
         fs::metadata(&file).ok()?.is_file().then_some(file)
     }
@@ -231,12 +224,12 @@ mod tests {
     #[test]
     fn finds_the_report_of_the_last_run() {
         let (_d, store) = store();
-        assert_eq!(store.last_report("k", RunPart::Today), None);
+        assert_eq!(store.last_report("k", ReportPart::Today), None);
         finish(&store.begin("k").unwrap(), "one");
         store.promote("k").unwrap();
-        let report = store.last_report("k", RunPart::Today).unwrap();
+        let report = store.last_report("k", ReportPart::Today).unwrap();
         assert!(report.ends_with("last/report/report.html"));
-        assert_eq!(store.last_report("k", RunPart::Version), None);
+        assert_eq!(store.last_report("k", ReportPart::Version), None);
     }
 
     #[test]
@@ -274,13 +267,16 @@ mod tests {
     fn keeps_the_two_reports_of_a_version_run_in_separate_folders_with_the_baseline() {
         let (_d, store) = store();
         store.begin("k").unwrap();
-        finish(&store.begin_part("k", RunPart::Today).unwrap(), "today");
-        finish(&store.begin_part("k", RunPart::Version).unwrap(), "version");
+        finish(&store.begin_part("k", ReportPart::Today).unwrap(), "today");
+        finish(
+            &store.begin_part("k", ReportPart::Version).unwrap(),
+            "version",
+        );
         store
             .write_baseline("k", r#"{"kind":"version","versionId":2,"at":10}"#)
             .unwrap();
         assert_eq!(
-            store.read_next("k", Some(RunPart::Version)).as_deref(),
+            store.read_next("k", Some(ReportPart::Version)).as_deref(),
             Some("version")
         );
         store.promote("k").unwrap();
@@ -292,13 +288,13 @@ mod tests {
         assert!(last.baseline_text.is_some());
         assert!(
             store
-                .last_report("k", RunPart::Version)
+                .last_report("k", ReportPart::Version)
                 .unwrap()
                 .ends_with("last/version/report/report.html")
         );
         assert!(
             store
-                .last_report("k", RunPart::Today)
+                .last_report("k", ReportPart::Today)
                 .unwrap()
                 .ends_with("last/today/report/report.html")
         );

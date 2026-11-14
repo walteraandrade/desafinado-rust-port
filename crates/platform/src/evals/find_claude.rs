@@ -17,6 +17,8 @@ pub fn candidate_paths(path: Option<&str>, home: &Path) -> Vec<PathBuf> {
         .collect()
 }
 
+pub const CLAUDE_CLI_VARIABLE: &str = "DESAFINADO_CLAUDE_CLI";
+
 pub fn find_claude(
     path: Option<&str>,
     home: &Path,
@@ -25,6 +27,18 @@ pub fn find_claude(
     candidate_paths(path, home)
         .into_iter()
         .find(|candidate| is_executable(candidate))
+}
+
+pub fn find_claude_with_override(
+    chosen: Option<&str>,
+    path: Option<&str>,
+    home: &Path,
+    is_executable: &dyn Fn(&Path) -> bool,
+) -> Option<PathBuf> {
+    match chosen.filter(|chosen| !chosen.is_empty()) {
+        Some(chosen) => Some(PathBuf::from(chosen)).filter(|chosen| is_executable(chosen)),
+        None => find_claude(path, home, is_executable),
+    }
 }
 
 #[cfg(test)]
@@ -68,6 +82,23 @@ mod tests {
         assert_eq!(
             find_claude(Some("::/a"), Path::new("/home/u"), &only(&[])),
             None
+        );
+    }
+
+    #[test]
+    fn a_chosen_cli_wins_over_path_and_is_never_replaced_when_missing() {
+        let check = only(&["/a/claude", "/dev/fake"]);
+        assert_eq!(
+            find_claude_with_override(Some("/dev/fake"), Some("/a"), Path::new("/h"), &check),
+            Some(PathBuf::from("/dev/fake"))
+        );
+        assert_eq!(
+            find_claude_with_override(Some("/gone"), Some("/a"), Path::new("/h"), &check),
+            None
+        );
+        assert_eq!(
+            find_claude_with_override(Some(""), Some("/a"), Path::new("/h"), &check),
+            Some(PathBuf::from("/a/claude"))
         );
     }
 
