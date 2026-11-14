@@ -1,5 +1,5 @@
 use std::{
-    cell::Cell,
+    cell::{Cell, RefCell},
     collections::HashMap,
     rc::Rc,
     sync::{
@@ -122,6 +122,7 @@ pub struct EditorPane {
     pub is_skill: bool,
     ai: Arc<dyn AiBackend>,
     bounds: Rc<Cell<Bounds<Pixels>>>,
+    heights: Rc<RefCell<HashMap<String, Pixels>>>,
     notice: Option<SharedString>,
     pub review: Option<ReviewRun>,
     _subscriptions: Vec<Subscription>,
@@ -191,6 +192,7 @@ impl EditorPane {
             is_skill: false,
             ai,
             bounds: Rc::new(Cell::new(Bounds::default())),
+            heights: Rc::new(RefCell::new(HashMap::new())),
             notice: None,
             review: None,
             _subscriptions: vec![edits, changes],
@@ -802,7 +804,7 @@ impl EditorPane {
         self.bounds.get().origin
     }
 
-    fn render_card(&self, item: &Suggestion, active: bool, roles: Roles, cx: &mut Context<Self>) -> Option<AnyElement> {
+    fn render_card(&self, item: &Suggestion, active: bool, floor: Pixels, roles: Roles, cx: &mut Context<Self>) -> Option<(AnyElement, Pixels)> {
         let state = self.editor.read(cx);
         let line = state.range_to_bounds(&(item.from..item.from))?;
         let pane = self.bounds.get();
@@ -815,11 +817,33 @@ impl EditorPane {
             let range = state.range_to_bounds(&(item.to..item.to)).unwrap_or(line);
             ((column_right - width - px(24.) - pane.origin.x).max(px(8.)), range.bottom() + px(8.) - pane.origin.y)
         };
+        let top = top.max(floor);
         let id = item.id.clone();
+        let height = self.heights.borrow().get(&id).copied().unwrap_or(px(96.));
+        let heights = self.heights.clone();
+        let measured_id = id.clone();
+        let entity = cx.entity().downgrade();
         let card = ui::dialog_frame(SharedString::from(format!("card-{id}")), width, roles)
             .absolute()
             .left(left)
             .top(top)
+            .child(
+                canvas(
+                    move |bounds, _, cx| {
+                        let previous = heights.borrow_mut().insert(measured_id.clone(), bounds.size.height);
+                        if previous != Some(bounds.size.height)
+                            && let Some(entity) = entity.upgrade()
+                        {
+                            entity.update(cx, |_, cx| cx.notify());
+                        }
+                    },
+                    |_, _, _, _| {},
+                )
+                .absolute()
+                .top_0()
+                .left_0()
+                .size_full(),
+            )
             .p(px(10.))
             .gap(px(8.))
             .text_size(px(13.));
@@ -927,7 +951,7 @@ impl EditorPane {
                     })
             }
         };
-        Some(element.into_any_element())
+        Some((element.into_any_element(), top + height + px(8.)))
     }
 
     fn render_caret(&self, item: &Suggestion, roles: Roles, cx: &App) -> Option<AnyElement> {
@@ -1087,13 +1111,16 @@ impl Render for EditorPane {
         let roles = theme::roles(cx);
         let cursor = self.cursor(cx);
         let active_id = active_suggestion(&self.suggestions, Some(cursor)).map(|item| item.id.clone());
-        let items = self.suggestions.items.clone();
+        let mut items = self.suggestions.items.clone();
+        items.sort_by_key(|item| item.from);
         let mut cards: Vec<AnyElement> = Vec::new();
         let mut carets: Vec<AnyElement> = Vec::new();
+        let mut floor = px(0.);
         for item in &items {
             let active = Some(&item.id) == active_id.as_ref();
-            if let Some(card) = self.render_card(item, active, roles, cx) {
+            if let Some((card, next)) = self.render_card(item, active, floor, roles, cx) {
                 cards.push(card);
+                floor = next;
             }
             if let Some(caret) = self.render_caret(item, roles, cx) {
                 carets.push(caret);
