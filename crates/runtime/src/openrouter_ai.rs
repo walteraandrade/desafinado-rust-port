@@ -19,7 +19,7 @@ use desafinado_core::suggestions::{ClientError, SuggestionResult};
 use desafinado_platform::openrouter::{GenerationSchedule, OpenRouterClient, fetch_generation};
 
 use crate::{
-    ai_backend::{AiBackend, ReviewCall, ReviewEvent, TargetCall},
+    ai_backend::{AiBackend, DescriptionCall, ReviewCall, ReviewEvent, TargetCall},
     services::Services,
 };
 
@@ -141,6 +141,10 @@ impl AiBackend for OpenRouterAi {
             }
         }
         Err(last_error)
+    }
+
+    fn description(&self, call: DescriptionCall) -> Result<SuggestionResult, ClientError> {
+        self.target(call.target_call())
     }
 
     fn review(&self, call: ReviewCall, emit: &mut dyn FnMut(ReviewEvent) -> bool) {

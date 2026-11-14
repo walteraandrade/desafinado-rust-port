@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use desafinado_ai::prompts::PromptParts;
+use desafinado_ai::prompts::{DescriptionPromptInput, PromptParts, build_description_prompt};
 use desafinado_core::suggestions::{ClientError, SuggestionResult};
 
 #[derive(Clone, Debug)]
@@ -16,6 +16,31 @@ pub struct ReviewCall {
     pub parts: PromptParts,
 }
 
+pub const DESCRIPTION_TASK: &str = "Improve skill description";
+
+#[derive(Clone, Debug)]
+pub struct DescriptionCall {
+    pub task: String,
+    pub input: DescriptionPromptInput,
+}
+
+impl DescriptionCall {
+    pub fn new(input: DescriptionPromptInput) -> Self {
+        Self {
+            task: DESCRIPTION_TASK.into(),
+            input,
+        }
+    }
+
+    pub fn target_call(&self) -> TargetCall {
+        TargetCall {
+            task: self.task.clone(),
+            parts: build_description_prompt(&self.input),
+            original: self.input.description.clone(),
+        }
+    }
+}
+
 pub enum ReviewEvent {
     Chunk(String),
     Done,
@@ -25,6 +50,7 @@ pub enum ReviewEvent {
 pub trait AiBackend: Send + Sync {
     fn target(&self, call: TargetCall) -> Result<SuggestionResult, ClientError>;
     fn review(&self, call: ReviewCall, emit: &mut dyn FnMut(ReviewEvent) -> bool);
+    fn description(&self, call: DescriptionCall) -> Result<SuggestionResult, ClientError>;
 }
 
 pub struct FakeAi;
@@ -39,6 +65,12 @@ fn fake_rewrite(original: &str) -> String {
     text
 }
 
+fn fake_description(name: &str, description: &str) -> String {
+    let topic = name.replace('-', " ");
+    let current = description.trim().trim_end_matches('.');
+    format!("Use when the writer asks for {topic}, or when a task matches: {current}.")
+}
+
 impl AiBackend for FakeAi {
     fn target(&self, call: TargetCall) -> Result<SuggestionResult, ClientError> {
         std::thread::sleep(std::time::Duration::from_millis(600));
@@ -47,6 +79,15 @@ impl AiBackend for FakeAi {
             unchanged: replacement == call.original,
             replacement,
             rationale: "Cuts the last third to keep the point short.".into(),
+        })
+    }
+
+    fn description(&self, call: DescriptionCall) -> Result<SuggestionResult, ClientError> {
+        std::thread::sleep(std::time::Duration::from_millis(600));
+        Ok(SuggestionResult {
+            replacement: fake_description(&call.input.name, &call.input.description),
+            rationale: "Names when to invoke the skill instead of what it does.".into(),
+            unchanged: false,
         })
     }
 
@@ -92,5 +133,33 @@ pub fn backend(services: Arc<crate::services::Services>) -> Arc<dyn AiBackend> {
         Arc::new(FakeAi)
     } else {
         Arc::new(crate::openrouter_ai::OpenRouterAi::new(services))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn input() -> DescriptionPromptInput {
+        DescriptionPromptInput {
+            name: "pdf-tools".into(),
+            description: "Helps with PDFs.".into(),
+            body: "# PDF tools".into(),
+        }
+    }
+
+    #[test]
+    fn a_description_call_is_a_target_call_on_the_current_description() {
+        let call = DescriptionCall::new(input()).target_call();
+        assert_eq!(call.task, "Improve skill description");
+        assert_eq!(call.original, "Helps with PDFs.");
+        assert_eq!(call.parts, build_description_prompt(&input()));
+    }
+
+    #[test]
+    fn the_fake_description_differs_from_the_current_one() {
+        let result = FakeAi.description(DescriptionCall::new(input())).unwrap();
+        assert_ne!(result.replacement, "Helps with PDFs.");
+        assert!(result.replacement.starts_with("Use when"));
     }
 }
