@@ -1,4 +1,7 @@
-use gpui_kit::{App, Global, Hsla, Rgba, component::{Theme, highlighter::HighlightTheme}};
+use gpui_kit::{
+    App, Global, Hsla, Rgba,
+    component::{Theme, highlighter::HighlightTheme},
+};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Roles {
@@ -128,22 +131,58 @@ fn highlight_theme(roles: &Roles) -> HighlightTheme {
     let accent = css(roles.accent);
     let canvas = css(roles.canvas);
     let plain = |color: &str| serde_json::json!({ "color": color });
-    let weighted = |color: &str, weight: u16| serde_json::json!({ "color": color, "font_weight": weight });
+    let weighted =
+        |color: &str, weight: u16| serde_json::json!({ "color": color, "font_weight": weight });
     let mut syntax = serde_json::Map::new();
     for key in [
-        "attribute", "boolean", "comment", "comment_doc", "constant", "constructor", "embedded",
-        "enum", "function", "hint", "keyword", "label", "number", "operator", "predictive",
-        "preproc", "primary", "property", "string", "string.escape", "string.regex",
-        "string.special", "string.special.symbol", "tag", "tag.doctype", "text.code.span",
-        "text.literal", "type", "variable", "variable.special", "variant",
+        "attribute",
+        "boolean",
+        "comment",
+        "comment_doc",
+        "constant",
+        "constructor",
+        "embedded",
+        "enum",
+        "function",
+        "hint",
+        "keyword",
+        "label",
+        "number",
+        "operator",
+        "predictive",
+        "preproc",
+        "primary",
+        "property",
+        "string",
+        "string.escape",
+        "string.regex",
+        "string.special",
+        "string.special.symbol",
+        "tag",
+        "tag.doctype",
+        "text.code.span",
+        "text.literal",
+        "type",
+        "variable",
+        "variable.special",
+        "variant",
     ] {
         syntax.insert(key.into(), plain(&ink));
     }
-    for key in ["punctuation", "punctuation.bracket", "punctuation.delimiter", "punctuation.special", "punctuation.list_marker"] {
+    for key in [
+        "punctuation",
+        "punctuation.bracket",
+        "punctuation.delimiter",
+        "punctuation.special",
+        "punctuation.list_marker",
+    ] {
         syntax.insert(key.into(), plain(&faint));
     }
     syntax.insert("title".into(), weighted(&ink, 700));
-    syntax.insert("emphasis".into(), serde_json::json!({ "color": ink, "font_style": "italic" }));
+    syntax.insert(
+        "emphasis".into(),
+        serde_json::json!({ "color": ink, "font_style": "italic" }),
+    );
     syntax.insert("emphasis.strong".into(), weighted(&ink, 700));
     syntax.insert("link_text".into(), plain(&accent));
     syntax.insert("link_uri".into(), plain(&accent));

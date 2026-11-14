@@ -9,6 +9,8 @@ serde.workspace = true
 serde_json.workspace = true
 similar.workspace = true
 thiserror.workspace = true
+desafinado-core = { path = "../core" }
+desafinado-ai = { path = "../ai" }
 rusqlite = { version = "0.42.0", features = ["bundled"] }
 flate2 = "1.1.11"
 sha2 = "0.11.1"

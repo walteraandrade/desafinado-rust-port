@@ -1,9 +1,8 @@
 use std::time::Duration;
 
-use serde::Deserialize;
-
 use super::client::OpenRouterClient;
-use crate::records::OpenRouterGeneration;
+use desafinado_ai::generation::{generation_url, parse_generation};
+use desafinado_ai::records::OpenRouterGeneration;
 
 #[derive(Debug, Clone)]
 pub struct GenerationSchedule {
@@ -22,29 +21,13 @@ impl Default for GenerationSchedule {
     }
 }
 
-#[derive(Deserialize)]
-struct Envelope {
-    data: OpenRouterGeneration,
-}
-
-fn encode(id: &str) -> String {
-    id.bytes()
-        .map(|byte| match byte {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                (byte as char).to_string()
-            }
-            other => format!("%{other:02X}"),
-        })
-        .collect()
-}
-
 pub fn fetch_generation(
     client: &OpenRouterClient,
     id: Option<&str>,
     schedule: &GenerationSchedule,
 ) -> Option<OpenRouterGeneration> {
     let id = id?;
-    let url = format!("{}/generation?id={}", client.base_url(), encode(id));
+    let url = generation_url(client.base_url(), id);
     if !schedule.initial_delay.is_zero() {
         std::thread::sleep(schedule.initial_delay);
     }
@@ -53,9 +36,11 @@ pub fn fetch_generation(
             .get_text(&url)
             .filter(|(status, _)| *status == 200)
             .map(|(_, text)| text)
-            && let Ok(envelope) = serde_json::from_str::<Envelope>(&text)
+            && let Some(generation) = serde_json::from_str(&text)
+                .ok()
+                .and_then(|body| parse_generation(&body))
         {
-            return Some(envelope.data);
+            return Some(generation);
         }
         if let Some(delay) = schedule.delays.get(attempt) {
             std::thread::sleep(*delay);
@@ -99,7 +84,7 @@ mod tests {
         assert_eq!(request.headers["authorization"], "Bearer sk-1");
         assert_eq!(generation.model.as_deref(), Some("vendor/exact"));
         assert_eq!(generation.total_cost, Some(0.0007));
-        assert_eq!(generation.native_tokens_reasoning, Some(2));
+        assert_eq!(generation.native_tokens_reasoning, Some(2.0));
     }
 
     #[test]

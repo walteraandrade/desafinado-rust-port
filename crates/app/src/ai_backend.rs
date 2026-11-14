@@ -77,7 +77,9 @@ impl AiBackend for FakeAi {
         let text = format!("{{\"elements\":[{body}]}}");
         for chunk in text.as_bytes().chunks(16) {
             std::thread::sleep(std::time::Duration::from_millis(40));
-            if !emit(ReviewEvent::Chunk(String::from_utf8_lossy(chunk).to_string())) {
+            if !emit(ReviewEvent::Chunk(
+                String::from_utf8_lossy(chunk).to_string(),
+            )) {
                 return;
             }
         }

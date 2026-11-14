@@ -39,9 +39,8 @@ use desafinado_core::{
 };
 use gpui_kit::{
     component::input::{
-        Editor, EditorState, InputEditsEvent, InputEvent, InputState, RangeDecoration,
+        Editor, EditorState, Input, InputEditsEvent, InputEvent, InputState, RangeDecoration,
         RangeDecorationCollection, RangeDecorationStyle, TextDecoration, TextDecorationCollection,
-        Input,
     },
     prelude::FluentBuilder as _,
     *,
@@ -136,9 +135,15 @@ pub struct ReviewRun {
 }
 
 fn edit_change(edit_start: usize, old_end: usize, new_end: usize, after: &str) -> ChangeSet {
-    let inserted = after.get(edit_start..new_end).unwrap_or_default().to_string();
+    let inserted = after
+        .get(edit_start..new_end)
+        .unwrap_or_default()
+        .to_string();
     let before_len = after.len() + (old_end - edit_start) - (new_end - edit_start);
-    ChangeSet::of(&[TextChange::new(edit_start, old_end, inserted)], before_len)
+    ChangeSet::of(
+        &[TextChange::new(edit_start, old_end, inserted)],
+        before_len,
+    )
 }
 
 impl EditorPane {
@@ -159,7 +164,12 @@ impl EditorPane {
             let frontmatter = find_frontmatter(&editor.read(cx).value());
             for (edit, rope) in event.edits() {
                 let after = rope.to_string();
-                let changes = edit_change(edit.start_byte, edit.old_end_byte, edit.new_end_byte, &after);
+                let changes = edit_change(
+                    edit.start_byte,
+                    edit.old_end_byte,
+                    edit.new_end_byte,
+                    &after,
+                );
                 if let Some(review) = this.review.as_mut() {
                     review.changes = review.changes.compose(&changes);
                 }
@@ -207,14 +217,19 @@ impl EditorPane {
         self.tasks.clear();
         self.suggestions = empty_suggestions();
         self.bubble = None;
-        self.editor
-            .update(cx, |state, cx| state.set_value(text.to_string(), window, cx));
+        self.editor.update(cx, |state, cx| {
+            state.set_value(text.to_string(), window, cx)
+        });
         self.refresh_decorations(cx);
         cx.notify();
     }
 
     pub fn open_count(&self) -> usize {
-        self.suggestions.items.iter().filter(|item| item.is_ready()).count()
+        self.suggestions
+            .items
+            .iter()
+            .filter(|item| item.is_ready())
+            .count()
     }
 
     pub fn focus(&self, window: &mut Window, cx: &mut Context<Self>) {
@@ -222,7 +237,12 @@ impl EditorPane {
     }
 
     fn drop_dead_tasks(&mut self) {
-        let live: Vec<String> = self.suggestions.items.iter().map(|item| item.id.clone()).collect();
+        let live: Vec<String> = self
+            .suggestions
+            .items
+            .iter()
+            .map(|item| item.id.clone())
+            .collect();
         self.tasks.retain(|id, _| live.contains(id));
     }
 
@@ -241,7 +261,8 @@ impl EditorPane {
     pub fn refresh_decorations(&mut self, cx: &mut Context<Self>) {
         let roles = theme::roles(cx);
         let cursor = self.cursor(cx);
-        let active_id = active_suggestion(&self.suggestions, Some(cursor)).map(|item| item.id.clone());
+        let active_id =
+            active_suggestion(&self.suggestions, Some(cursor)).map(|item| item.id.clone());
         let strikes: Vec<TextDecoration> = self
             .suggestions
             .items
@@ -250,7 +271,11 @@ impl EditorPane {
             .flat_map(|ready| {
                 let from = ready.from;
                 ready.diff.hunks.iter().filter_map(move |hunk| match hunk {
-                    DiffHunk::Deleted { from: start, to: end, .. } => Some(TextDecoration::new(
+                    DiffHunk::Deleted {
+                        from: start,
+                        to: end,
+                        ..
+                    } => Some(TextDecoration::new(
                         from + start..from + end,
                         HighlightStyle {
                             strikethrough: Some(StrikethroughStyle {
@@ -307,20 +332,22 @@ impl EditorPane {
 
     fn open_bubble(&mut self, mode: BubbleMode, window: &mut Window, cx: &mut Context<Self>) {
         let placeholder = match mode {
-            BubbleMode::Ask => ask_menu::ask_hint(&self.visible_actions())
-                .unwrap_or_else(|| "Ask AI…".into()),
+            BubbleMode::Ask => {
+                ask_menu::ask_hint(&self.visible_actions()).unwrap_or_else(|| "Ask AI…".into())
+            }
             BubbleMode::Refine(_) => "Refine: tell the AI what to change".into(),
         };
         let input = cx.new(|cx| InputState::new(window, cx).placeholder(placeholder));
-        let subscription = cx.subscribe_in(&input, window, |this, input, event: &InputEvent, _, cx| {
-            if matches!(event, InputEvent::Change) {
-                let query = input.read(cx).value().to_string();
-                if let Some(bubble) = this.bubble.as_mut() {
-                    bubble.menu = ask_menu::type_ask_menu(&query);
+        let subscription =
+            cx.subscribe_in(&input, window, |this, input, event: &InputEvent, _, cx| {
+                if matches!(event, InputEvent::Change) {
+                    let query = input.read(cx).value().to_string();
+                    if let Some(bubble) = this.bubble.as_mut() {
+                        bubble.menu = ask_menu::type_ask_menu(&query);
+                    }
+                    cx.notify();
                 }
-                cx.notify();
-            }
-        });
+            });
         input.update(cx, |state, cx| state.focus(window, cx));
         self.bubble = Some(Bubble {
             input,
@@ -412,7 +439,11 @@ impl EditorPane {
         }
         self.notice = None;
         let neighbors = get_neighbors(&blocks, &target);
-        let ids: Vec<&str> = target.blocks.iter().map(|block| block.id.as_str()).collect();
+        let ids: Vec<&str> = target
+            .blocks
+            .iter()
+            .map(|block| block.id.as_str())
+            .collect();
         let task = task_label(target.source, &ids, &instruction);
         let parts = build_target_prompt(&TargetPromptInput {
             target: target.clone(),
@@ -456,7 +487,13 @@ impl EditorPane {
         cx.notify();
     }
 
-    fn finish(&mut self, id: &str, result: Result<SuggestionResult, ClientError>, refine: bool, cx: &mut Context<Self>) {
+    fn finish(
+        &mut self,
+        id: &str,
+        result: Result<SuggestionResult, ClientError>,
+        refine: bool,
+        cx: &mut Context<Self>,
+    ) {
         self.tasks.remove(id);
         self.suggestions = match (result, refine) {
             (Ok(result), false) => resolve_suggestion(&self.suggestions, id, &result),
@@ -498,7 +535,11 @@ impl EditorPane {
             blocks: vec![],
         });
         let neighbors = get_neighbors(&blocks, &target);
-        let ids: Vec<&str> = target.blocks.iter().map(|block| block.id.as_str()).collect();
+        let ids: Vec<&str> = target
+            .blocks
+            .iter()
+            .map(|block| block.id.as_str())
+            .collect();
         let task = refine_task_label(&ids, &instruction);
         let parts = build_refine_prompt(&RefinePromptInput {
             target: Target {
@@ -574,13 +615,23 @@ impl EditorPane {
     }
 
     pub fn reject_all(&mut self, cx: &mut Context<Self>) {
-        let ids: Vec<String> = self.suggestions.items.iter().map(|item| item.id.clone()).collect();
+        let ids: Vec<String> = self
+            .suggestions
+            .items
+            .iter()
+            .map(|item| item.id.clone())
+            .collect();
         for id in ids {
             self.reject(&id, cx);
         }
     }
 
-    pub fn add_review_suggestion(&mut self, draft: SuggestionDraft, result: &SuggestionResult, cx: &mut Context<Self>) {
+    pub fn add_review_suggestion(
+        &mut self,
+        draft: SuggestionDraft,
+        result: &SuggestionResult,
+        cx: &mut Context<Self>,
+    ) {
         let id = draft.id.clone();
         self.suggestions = begin_suggestion(&self.suggestions, draft);
         self.suggestions = resolve_suggestion(&self.suggestions, &id, result);
@@ -633,7 +684,9 @@ impl EditorPane {
                                         this.place_review(edit, &focus, cx);
                                     }
                                 }
-                                this.review.as_ref().is_some_and(|run| !run.stop.load(Ordering::SeqCst))
+                                this.review
+                                    .as_ref()
+                                    .is_some_and(|run| !run.stop.load(Ordering::SeqCst))
                             })
                             .unwrap_or(false);
                         if !alive {
@@ -663,7 +716,12 @@ impl EditorPane {
         cx.notify();
     }
 
-    fn place_review(&mut self, edit: desafinado_core::suggestions::ValidatedEdit, focus: &str, cx: &mut Context<Self>) {
+    fn place_review(
+        &mut self,
+        edit: desafinado_core::suggestions::ValidatedEdit,
+        focus: &str,
+        cx: &mut Context<Self>,
+    ) {
         let Some(changes) = self.review.as_ref().map(|run| run.changes.clone()) else {
             return;
         };
@@ -691,12 +749,14 @@ impl EditorPane {
             return;
         };
         let stopped = run.stop.load(Ordering::SeqCst);
-        self.notice = Some(if stopped {
-            desafinado_core::suggestions::review_summary(run.added, true)
-        } else {
-            review_notice_text(run.added, failure.as_ref())
-        }
-        .into());
+        self.notice = Some(
+            if stopped {
+                desafinado_core::suggestions::review_summary(run.added, true)
+            } else {
+                review_notice_text(run.added, failure.as_ref())
+            }
+            .into(),
+        );
         cx.emit(PaneEvent::Changed);
         cx.notify();
     }
@@ -780,12 +840,23 @@ impl EditorPane {
         self.step(Direction::Forward, window, cx);
     }
 
-    fn previous_suggestion(&mut self, _: &PreviousSuggestion, window: &mut Window, cx: &mut Context<Self>) {
+    fn previous_suggestion(
+        &mut self,
+        _: &PreviousSuggestion,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.step(Direction::Backward, window, cx);
     }
 
     fn retry(&mut self, id: &str, cx: &mut Context<Self>) {
-        let Some(item) = self.suggestions.items.iter().find(|item| item.id == id).cloned() else {
+        let Some(item) = self
+            .suggestions
+            .items
+            .iter()
+            .find(|item| item.id == id)
+            .cloned()
+        else {
             return;
         };
         self.suggestions = retry_suggestion(&self.suggestions, id);
@@ -804,7 +875,14 @@ impl EditorPane {
         self.bounds.get().origin
     }
 
-    fn render_card(&self, item: &Suggestion, active: bool, floor: Pixels, roles: Roles, cx: &mut Context<Self>) -> Option<(AnyElement, Pixels)> {
+    fn render_card(
+        &self,
+        item: &Suggestion,
+        active: bool,
+        floor: Pixels,
+        roles: Roles,
+        cx: &mut Context<Self>,
+    ) -> Option<(AnyElement, Pixels)> {
         let state = self.editor.read(cx);
         let line = state.range_to_bounds(&(item.from..item.from))?;
         let pane = self.bounds.get();
@@ -812,10 +890,16 @@ impl EditorPane {
         let margin = pane.origin.x + pane.size.width - column_right;
         let width = px(232.);
         let (left, top) = if margin >= width + px(16.) {
-            (column_right + px(8.) - pane.origin.x, line.top() - pane.origin.y)
+            (
+                column_right + px(8.) - pane.origin.x,
+                line.top() - pane.origin.y,
+            )
         } else {
             let range = state.range_to_bounds(&(item.to..item.to)).unwrap_or(line);
-            ((column_right - width - px(24.) - pane.origin.x).max(px(8.)), range.bottom() + px(8.) - pane.origin.y)
+            (
+                (column_right - width - px(24.) - pane.origin.x).max(px(8.)),
+                range.bottom() + px(8.) - pane.origin.y,
+            )
         };
         let top = top.max(floor);
         let id = item.id.clone();
@@ -830,7 +914,9 @@ impl EditorPane {
             .child(
                 canvas(
                     move |bounds, _, cx| {
-                        let previous = heights.borrow_mut().insert(measured_id.clone(), bounds.size.height);
+                        let previous = heights
+                            .borrow_mut()
+                            .insert(measured_id.clone(), bounds.size.height);
                         if previous != Some(bounds.size.height)
                             && let Some(entity) = entity.upgrade()
                         {
@@ -848,27 +934,51 @@ impl EditorPane {
             .gap(px(8.))
             .text_size(px(13.));
         let element = match item {
-            Suggestion::Pending(base) => card.child(
-                ui::row()
-                    .gap(px(6.))
-                    .child(ui::ai_flag(roles))
-                    .child(div().text_color(roles.ai).child(format!("{} ···", base.instruction.text().chars().take(40).collect::<String>()))),
-            ),
+            Suggestion::Pending(base) => {
+                card.child(ui::row().gap(px(6.)).child(ui::ai_flag(roles)).child(
+                    div().text_color(roles.ai).child(format!(
+                        "{} ···",
+                        base.instruction.text().chars().take(40).collect::<String>()
+                    )),
+                ))
+            }
             Suggestion::Failed(failed) => {
                 let retry_id = id.clone();
                 let dismiss_id = id.clone();
                 card.border_color(roles.danger)
-                    .child(div().text_color(roles.danger).child(describe_error(&failed.error)))
+                    .child(
+                        div()
+                            .text_color(roles.danger)
+                            .child(describe_error(&failed.error)),
+                    )
                     .child(
                         ui::row()
                             .gap(px(6.))
                             .child(
-                                ui::sized_button(SharedString::from(format!("retry-{id}")), "Try again", ButtonKind::Default, ButtonSize::Small, false, roles)
-                                    .on_click(cx.listener(move |this, _, _, cx| this.retry(&retry_id, cx))),
+                                ui::sized_button(
+                                    SharedString::from(format!("retry-{id}")),
+                                    "Try again",
+                                    ButtonKind::Default,
+                                    ButtonSize::Small,
+                                    false,
+                                    roles,
+                                )
+                                .on_click(
+                                    cx.listener(move |this, _, _, cx| this.retry(&retry_id, cx)),
+                                ),
                             )
                             .child(
-                                ui::sized_button(SharedString::from(format!("dismiss-{id}")), "Dismiss", ButtonKind::Quiet, ButtonSize::Small, false, roles)
-                                    .on_click(cx.listener(move |this, _, _, cx| this.reject(&dismiss_id, cx))),
+                                ui::sized_button(
+                                    SharedString::from(format!("dismiss-{id}")),
+                                    "Dismiss",
+                                    ButtonKind::Quiet,
+                                    ButtonSize::Small,
+                                    false,
+                                    roles,
+                                )
+                                .on_click(
+                                    cx.listener(move |this, _, _, cx| this.reject(&dismiss_id, cx)),
+                                ),
                             ),
                     )
             }
@@ -890,11 +1000,21 @@ impl EditorPane {
                             .gap(px(6.))
                             .items_start()
                             .child(ui::ai_flag(roles))
-                            .child(div().flex_1().min_w_0().text_color(roles.ink).child(ready.rationale.clone())),
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .text_color(roles.ink)
+                                    .child(ready.rationale.clone()),
+                            ),
                     )
                     .child(div().text_size(px(14.)).child(replacement))
                     .when(changes > 1, |this| {
-                        this.child(div().text_color(roles.faint).child(format!("{changes} changes")))
+                        this.child(
+                            div()
+                                .text_color(roles.faint)
+                                .child(format!("{changes} changes")),
+                        )
                     })
                     .when(working, |this| {
                         this.child(div().text_color(roles.ai).child("Refining ···"))
@@ -908,18 +1028,51 @@ impl EditorPane {
                                 .gap(px(6.))
                                 .flex_wrap()
                                 .child(
-                                    ui::sized_button(SharedString::from(format!("accept-{id}")), "Accept", ButtonKind::Primary, ButtonSize::Small, false, roles)
-                                        .on_click(cx.listener(move |this, _, window, cx| this.accept(&accept_id, window, cx))),
+                                    ui::sized_button(
+                                        SharedString::from(format!("accept-{id}")),
+                                        "Accept",
+                                        ButtonKind::Primary,
+                                        ButtonSize::Small,
+                                        false,
+                                        roles,
+                                    )
+                                    .on_click(cx.listener(
+                                        move |this, _, window, cx| {
+                                            this.accept(&accept_id, window, cx)
+                                        },
+                                    )),
                                 )
                                 .child(
-                                    ui::sized_button(SharedString::from(format!("reject-{id}")), "Reject", ButtonKind::Default, ButtonSize::Small, false, roles)
-                                        .on_click(cx.listener(move |this, _, _, cx| this.reject(&reject_id, cx))),
+                                    ui::sized_button(
+                                        SharedString::from(format!("reject-{id}")),
+                                        "Reject",
+                                        ButtonKind::Default,
+                                        ButtonSize::Small,
+                                        false,
+                                        roles,
+                                    )
+                                    .on_click(cx.listener(
+                                        move |this, _, _, cx| this.reject(&reject_id, cx),
+                                    )),
                                 )
                                 .child(
-                                    ui::sized_button(SharedString::from(format!("refine-{id}")), "Refine", ButtonKind::Default, ButtonSize::Small, false, roles)
-                                        .on_click(cx.listener(move |this, _, window, cx| {
-                                            this.open_bubble(BubbleMode::Refine(refine_id.clone()), window, cx)
-                                        })),
+                                    ui::sized_button(
+                                        SharedString::from(format!("refine-{id}")),
+                                        "Refine",
+                                        ButtonKind::Default,
+                                        ButtonSize::Small,
+                                        false,
+                                        roles,
+                                    )
+                                    .on_click(cx.listener(
+                                        move |this, _, window, cx| {
+                                            this.open_bubble(
+                                                BubbleMode::Refine(refine_id.clone()),
+                                                window,
+                                                cx,
+                                            )
+                                        },
+                                    )),
                                 )
                                 .when(steps > 1, |this| {
                                     let back = id.clone();
@@ -929,21 +1082,43 @@ impl EditorPane {
                                         ui::row()
                                             .gap(px(2.))
                                             .child(
-                                                ui::sized_button(SharedString::from(format!("prev-{id}")), "‹", ButtonKind::Quiet, ButtonSize::Small, false, roles)
-                                                    .on_click(cx.listener(move |this, _, _, cx| {
-                                                        this.suggestions = show_version(&this.suggestions, &back, shown - 1);
-                                                        this.refresh_decorations(cx);
-                                                        cx.notify();
-                                                    })),
+                                                ui::sized_button(
+                                                    SharedString::from(format!("prev-{id}")),
+                                                    "‹",
+                                                    ButtonKind::Quiet,
+                                                    ButtonSize::Small,
+                                                    false,
+                                                    roles,
+                                                )
+                                                .on_click(cx.listener(move |this, _, _, cx| {
+                                                    this.suggestions = show_version(
+                                                        &this.suggestions,
+                                                        &back,
+                                                        shown - 1,
+                                                    );
+                                                    this.refresh_decorations(cx);
+                                                    cx.notify();
+                                                })),
                                             )
                                             .child(format!("{} / {}", ready.shown + 1, steps))
                                             .child(
-                                                ui::sized_button(SharedString::from(format!("next-{id}")), "›", ButtonKind::Quiet, ButtonSize::Small, false, roles)
-                                                    .on_click(cx.listener(move |this, _, _, cx| {
-                                                        this.suggestions = show_version(&this.suggestions, &forward, shown + 1);
-                                                        this.refresh_decorations(cx);
-                                                        cx.notify();
-                                                    })),
+                                                ui::sized_button(
+                                                    SharedString::from(format!("next-{id}")),
+                                                    "›",
+                                                    ButtonKind::Quiet,
+                                                    ButtonSize::Small,
+                                                    false,
+                                                    roles,
+                                                )
+                                                .on_click(cx.listener(move |this, _, _, cx| {
+                                                    this.suggestions = show_version(
+                                                        &this.suggestions,
+                                                        &forward,
+                                                        shown + 1,
+                                                    );
+                                                    this.refresh_decorations(cx);
+                                                    cx.notify();
+                                                })),
                                             ),
                                     )
                                 }),
@@ -986,7 +1161,12 @@ impl EditorPane {
         )
     }
 
-    fn render_bubble(&self, bubble: &Bubble, roles: Roles, cx: &mut Context<Self>) -> Option<AnyElement> {
+    fn render_bubble(
+        &self,
+        bubble: &Bubble,
+        roles: Roles,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
         let state = self.editor.read(cx);
         let anchor = state
             .range_to_bounds(&(bubble.selection.to..bubble.selection.to))
@@ -1020,23 +1200,33 @@ impl EditorPane {
                 .flex_col()
                 .gap(px(6.))
                 .child(
-                    ui::row()
-                        .gap(px(6.))
-                        .child(ui::ai_flag(roles))
-                        .child(div().flex_1().child(Input::new(&bubble.input).appearance(false))),
+                    ui::row().gap(px(6.)).child(ui::ai_flag(roles)).child(
+                        div()
+                            .flex_1()
+                            .child(Input::new(&bubble.input).appearance(false)),
+                    ),
                 )
                 .children(rows.into_iter().enumerate().map(|(index, row)| {
                     let (label, skill, span) = match &row {
-                        AskRow::Action { action, match_span } => (action.label.clone(), action.skill_only, *match_span),
+                        AskRow::Action { action, match_span } => {
+                            (action.label.clone(), action.skill_only, *match_span)
+                        }
                         AskRow::Free { text } => (format!("Ask AI: “{text}”"), false, None),
                     };
                     let highlighted = index == active;
                     let text = match span {
                         Some((from, to)) if to <= label.len() => StyledText::new(label.clone())
-                            .with_highlights(vec![(from..to, HighlightStyle {
-                                underline: Some(UnderlineStyle { thickness: px(1.), color: None, wavy: false }),
-                                ..Default::default()
-                            })])
+                            .with_highlights(vec![(
+                                from..to,
+                                HighlightStyle {
+                                    underline: Some(UnderlineStyle {
+                                        thickness: px(1.),
+                                        color: None,
+                                        wavy: false,
+                                    }),
+                                    ..Default::default()
+                                },
+                            )])
                             .into_any_element(),
                         _ => StyledText::new(label.clone()).into_any_element(),
                     };
@@ -1050,11 +1240,22 @@ impl EditorPane {
                         .justify_between()
                         .border_1()
                         .border_color(if highlighted { roles.ai } else { roles.raised })
-                        .bg(if highlighted { roles.raised } else { roles.fill })
+                        .bg(if highlighted {
+                            roles.raised
+                        } else {
+                            roles.fill
+                        })
                         .text_color(if highlighted { roles.ai } else { roles.ink })
                         .text_size(px(13.))
                         .child(text)
-                        .when(skill, |this| this.child(div().text_color(roles.faint).text_size(px(11.)).child("Skill")))
+                        .when(skill, |this| {
+                            this.child(
+                                div()
+                                    .text_color(roles.faint)
+                                    .text_size(px(11.))
+                                    .child("Skill"),
+                            )
+                        })
                         .on_click(cx.listener(move |this, _, window, cx| {
                             if let Some(bubble) = this.bubble.as_mut() {
                                 bubble.menu = ask_menu::hover_ask_menu(&bubble.menu, index);
@@ -1110,7 +1311,8 @@ impl Render for EditorPane {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let roles = theme::roles(cx);
         let cursor = self.cursor(cx);
-        let active_id = active_suggestion(&self.suggestions, Some(cursor)).map(|item| item.id.clone());
+        let active_id =
+            active_suggestion(&self.suggestions, Some(cursor)).map(|item| item.id.clone());
         let mut items = self.suggestions.items.clone();
         items.sort_by_key(|item| item.from);
         let mut cards: Vec<AnyElement> = Vec::new();

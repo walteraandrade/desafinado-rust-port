@@ -12,7 +12,7 @@ const MAX_WORD_EDITS: usize = 400;
 const DIFF_BUDGET: Duration = Duration::from_millis(250);
 
 pub fn count_words(text: &str) -> i64 {
-    text.split_whitespace().count() as i64
+    desafinado_core::diff::count_words(text) as i64
 }
 
 fn without_trailing_newlines(text: &str) -> &str {

@@ -2,18 +2,14 @@ mod agent;
 mod client;
 mod error;
 mod generation;
-mod sse;
-mod types;
 
 #[cfg(test)]
 mod test_server;
 
 pub use agent::{AgentOptions, build_agent, extra_root_certs_from_env};
-pub use client::{ChatStream, OpenRouterClient, RetryPolicy};
-pub use error::{ClientError, classify_status};
+pub use client::{ChatOutput, ChatStream, OpenRouterClient, RetryPolicy};
+pub use error::{ClientError, classify_status, is_retryable_transport_error};
 pub use generation::{GenerationSchedule, fetch_generation};
-pub use sse::{SseLine, parse_sse_line};
-pub use types::{ChatCompletion, ChatMessage, ChatRequest, JsonSchemaFormat, StreamChunk, Usage};
 
 pub const DEFAULT_BASE_URL: &str = "https://openrouter.ai/api/v1";
 pub const BASE_URL_ENV: &str = "DESAFINADO_OPENROUTER_BASE_URL";

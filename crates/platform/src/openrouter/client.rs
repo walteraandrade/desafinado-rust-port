@@ -1,3 +1,4 @@
+use std::collections::VecDeque;
 use std::io::{BufRead, BufReader};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -8,12 +9,13 @@ use ureq::Agent;
 use ureq::BodyReader;
 
 use super::agent::{AgentOptions, build_agent};
-use super::error::{ClientError, classify_io, classify_status, classify_transport};
+use super::error::{
+    ClientError, classify_io, classify_status, classify_transport, is_retryable_transport_error,
+};
 use super::generation::{GenerationSchedule, fetch_generation};
-use super::sse::{SseLine, parse_sse_line};
-use super::types::{ChatCompletion, ChatRequest, StreamChunk, Usage};
 use super::{PLACEHOLDER_KEY, base_url_from_env};
-use crate::records::OpenRouterGeneration;
+use desafinado_ai::chat_stream::{ChatStreamEvent, ChatStreamParser, observation_from_response};
+use desafinado_ai::records::{CallObservation, OpenRouterGeneration};
 
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(600);
 const MAX_RETRY_DELAY: Duration = Duration::from_secs(10);
@@ -175,32 +177,29 @@ impl OpenRouterClient {
         classify_status(status, &text)
     }
 
-    pub fn chat_completion(&self, request: &ChatRequest) -> Result<ChatCompletion, ClientError> {
-        let body = request.body(false);
+    pub fn chat_completion(&self, body: &Value) -> Result<ChatOutput, ClientError> {
+        let body = with_stream(body, false);
+        let model = requested_model(&body);
         let mut attempt = 0;
         loop {
-            let outcome = self.complete_once(&body);
-            match outcome {
+            match self.complete_once(&model, &body) {
                 Err((error, retry_after))
-                    if error.is_retryable_transport_error() && attempt < self.retry.max_retries =>
+                    if is_retryable_transport_error(&error) && attempt < self.retry.max_retries =>
                 {
                     attempt += 1;
-                    let delay = retry_after
-                        .unwrap_or_default()
-                        .max(self.retry.min_delay)
-                        .min(MAX_RETRY_DELAY);
-                    std::thread::sleep(delay);
+                    std::thread::sleep(retry_delay(self.retry, retry_after));
                 }
                 Err((error, _)) => return Err(error),
-                Ok(completion) => return Ok(completion),
+                Ok(output) => return Ok(output),
             }
         }
     }
 
     fn complete_once(
         &self,
+        model: &str,
         body: &Value,
-    ) -> Result<ChatCompletion, (ClientError, Option<Duration>)> {
+    ) -> Result<ChatOutput, (ClientError, Option<Duration>)> {
         let sent = self.post(body, false).map_err(|e| (e, None))?;
         let (status, retry_after) = (sent.status, sent.retry_after);
         if !(200..300).contains(&status) {
@@ -213,37 +212,31 @@ impl OpenRouterClient {
             .limit(64 * 1024 * 1024)
             .read_to_string()
             .map_err(|e| (classify_transport(&e), None))?;
-        parse_completion(&text).map_err(|e| (e, retry_after))
+        parse_completion(model, &text).map_err(|e| (e, retry_after))
     }
 
     pub fn chat_stream(
         &self,
-        request: &ChatRequest,
+        body: &Value,
         abort: Option<Arc<AtomicBool>>,
     ) -> Result<ChatStream, ClientError> {
-        let body = request.body(true);
+        let body = with_stream(body, true);
         let mut attempt = 0;
         loop {
-            let sent = self.post(&body, true);
-            let sent = match sent {
+            let sent = match self.post(&body, true) {
                 Ok(sent) if (200..300).contains(&sent.status) => sent,
                 Ok(sent) => {
                     let retry_after = sent.retry_after;
                     let error = self.failure_from(sent);
-                    if error.is_retryable_transport_error() && attempt < self.retry.max_retries {
+                    if is_retryable_transport_error(&error) && attempt < self.retry.max_retries {
                         attempt += 1;
-                        std::thread::sleep(
-                            retry_after
-                                .unwrap_or_default()
-                                .max(self.retry.min_delay)
-                                .min(MAX_RETRY_DELAY),
-                        );
+                        std::thread::sleep(retry_delay(self.retry, retry_after));
                         continue;
                     }
                     return Err(error);
                 }
                 Err(error) => {
-                    if error.is_retryable_transport_error() && attempt < self.retry.max_retries {
+                    if is_retryable_transport_error(&error) && attempt < self.retry.max_retries {
                         attempt += 1;
                         std::thread::sleep(self.retry.min_delay);
                         continue;
@@ -253,35 +246,32 @@ impl OpenRouterClient {
             };
             return Ok(ChatStream {
                 reader: BufReader::new(sent.body.into_reader()),
+                parser: ChatStreamParser::new(&requested_model(&body)),
+                pending: VecDeque::new(),
                 abort,
                 finished: false,
-                saw_finish: false,
+                at_end: false,
             });
         }
     }
 
     pub fn chat_stream_collect(
         &self,
-        request: &ChatRequest,
+        body: &Value,
         abort: Option<Arc<AtomicBool>>,
         on_delta: &mut dyn FnMut(&str),
-    ) -> Result<ChatCompletion, ClientError> {
-        let mut completion = ChatCompletion::default();
-        for chunk in self.chat_stream(request, abort)? {
-            let chunk = chunk?;
-            completion.id = chunk.id.or(completion.id);
-            completion.model = chunk.model.or(completion.model);
-            completion.provider = chunk.provider.or(completion.provider);
-            completion.finish_reason = chunk.finish_reason.or(completion.finish_reason);
-            if let Some(usage) = chunk.usage {
-                completion.usage = usage;
-            }
-            if let Some(delta) = chunk.delta {
-                on_delta(&delta);
-                completion.content.push_str(&delta);
-            }
+    ) -> Result<ChatOutput, ClientError> {
+        let mut stream = self.chat_stream(body, abort)?;
+        let mut content = String::new();
+        for delta in stream.by_ref() {
+            let delta = delta?;
+            on_delta(&delta);
+            content.push_str(&delta);
         }
-        Ok(completion)
+        Ok(ChatOutput {
+            content,
+            observation: stream.observation(),
+        })
     }
 
     pub fn fetch_generation(
@@ -293,86 +283,102 @@ impl OpenRouterClient {
     }
 }
 
-fn parse_completion(text: &str) -> Result<ChatCompletion, ClientError> {
+#[derive(Debug, Clone, PartialEq)]
+pub struct ChatOutput {
+    pub content: String,
+    pub observation: CallObservation,
+}
+
+fn with_stream(body: &Value, stream: bool) -> Value {
+    let mut body = body.clone();
+    if let Some(object) = body.as_object_mut() {
+        object.insert("stream".into(), Value::Bool(stream));
+    }
+    body
+}
+
+fn requested_model(body: &Value) -> String {
+    body.get("model")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_owned()
+}
+
+fn retry_delay(retry: RetryPolicy, retry_after: Option<Duration>) -> Duration {
+    retry_after
+        .unwrap_or_default()
+        .max(retry.min_delay)
+        .min(MAX_RETRY_DELAY)
+}
+
+fn parse_completion(model: &str, text: &str) -> Result<ChatOutput, ClientError> {
     let value: Value = serde_json::from_str(text).map_err(|_| classify_status(200, text))?;
     if value.get("error").is_some() {
         return Err(classify_status(200, text));
     }
-    let choice = value.pointer("/choices/0");
-    let content = choice
-        .and_then(|c| c.pointer("/message/content"))
+    if value
+        .pointer("/choices/0/message/content")
         .and_then(Value::as_str)
-        .map(str::to_owned)
-        .ok_or_else(|| ClientError::InvalidOutput {
+        .is_none()
+    {
+        return Err(ClientError::InvalidOutput {
             message: "The model answered without text".into(),
-        })?;
-    Ok(ChatCompletion {
-        id: value.get("id").and_then(Value::as_str).map(str::to_owned),
-        model: value
-            .get("model")
-            .and_then(Value::as_str)
-            .map(str::to_owned),
-        provider: value
-            .get("provider")
-            .and_then(Value::as_str)
-            .map(str::to_owned),
+        });
+    }
+    let (content, observation) = observation_from_response(model, &value);
+    Ok(ChatOutput {
         content,
-        finish_reason: choice
-            .and_then(|c| c.get("finish_reason"))
-            .and_then(Value::as_str)
-            .map(str::to_owned),
-        usage: value.get("usage").map(Usage::from_json).unwrap_or_default(),
+        observation,
     })
 }
 
 pub struct ChatStream {
     reader: BufReader<BodyReader<'static>>,
+    parser: ChatStreamParser,
+    pending: VecDeque<ChatStreamEvent>,
     abort: Option<Arc<AtomicBool>>,
     finished: bool,
-    saw_finish: bool,
+    at_end: bool,
 }
 
-fn parse_chunk(data: &str) -> Result<Option<StreamChunk>, ClientError> {
-    let value: Value = serde_json::from_str(data).map_err(|_| ClientError::Unknown {
-        message: "the answer stream broke off. Retry.".into(),
-    })?;
-    if value.get("error").is_some() {
-        return Err(classify_status(200, data));
+impl ChatStream {
+    pub fn observation(&self) -> CallObservation {
+        self.parser.observation()
     }
-    let choice = value.pointer("/choices/0");
-    let text = |pointer: &str| {
-        choice
-            .and_then(|c| c.pointer(pointer))
-            .and_then(Value::as_str)
-            .filter(|s| !s.is_empty())
-            .map(str::to_owned)
-    };
-    let string = |key: &str| value.get(key).and_then(Value::as_str).map(str::to_owned);
-    Ok(Some(StreamChunk {
-        id: string("id"),
-        model: string("model"),
-        provider: string("provider"),
-        delta: text("/delta/content"),
-        reasoning_delta: text("/delta/reasoning"),
-        finish_reason: choice
-            .and_then(|c| c.get("finish_reason"))
-            .and_then(Value::as_str)
-            .map(str::to_owned),
-        usage: value
-            .get("usage")
-            .filter(|u| !u.is_null())
-            .map(Usage::from_json),
-    }))
+
+    fn broke_off(&self) -> Option<ClientError> {
+        (!self.parser.is_done() && self.parser.observation().finish_reason.is_none()).then(|| {
+            ClientError::Unknown {
+                message: "the answer stream broke off. Retry.".into(),
+            }
+        })
+    }
 }
 
 impl Iterator for ChatStream {
-    type Item = Result<StreamChunk, ClientError>;
+    type Item = Result<String, ClientError>;
 
     fn next(&mut self) -> Option<Self::Item> {
         if self.finished {
             return None;
         }
         loop {
+            match self.pending.pop_front() {
+                Some(ChatStreamEvent::Delta(text)) => return Some(Ok(text)),
+                Some(ChatStreamEvent::Failed(error)) => {
+                    self.finished = true;
+                    return Some(Err(error));
+                }
+                Some(ChatStreamEvent::Done) => {
+                    self.finished = true;
+                    return None;
+                }
+                None => {}
+            }
+            if self.at_end {
+                self.finished = true;
+                return self.broke_off().map(Err);
+            }
             if self
                 .abort
                 .as_ref()
@@ -390,33 +396,10 @@ impl Iterator for ChatStream {
                     return Some(Err(classify_io(&error)));
                 }
                 Ok(0) => {
-                    self.finished = true;
-                    return if self.saw_finish {
-                        None
-                    } else {
-                        Some(Err(ClientError::Unknown {
-                            message: "the answer stream broke off. Retry.".into(),
-                        }))
-                    };
+                    self.at_end = true;
+                    self.pending.extend(self.parser.finish());
                 }
-                Ok(_) => match parse_sse_line(&line) {
-                    SseLine::Ignored => {}
-                    SseLine::Done => {
-                        self.finished = true;
-                        return None;
-                    }
-                    SseLine::Data(data) => match parse_chunk(data) {
-                        Err(error) => {
-                            self.finished = true;
-                            return Some(Err(error));
-                        }
-                        Ok(None) => {}
-                        Ok(Some(chunk)) => {
-                            self.saw_finish |= chunk.finish_reason.is_some();
-                            return Some(Ok(chunk));
-                        }
-                    },
-                },
+                Ok(_) => self.pending.extend(self.parser.feed(&line)),
             }
         }
     }
@@ -426,7 +409,6 @@ impl Iterator for ChatStream {
 mod tests {
     use super::*;
     use crate::openrouter::test_server::{Reply, TestServer};
-    use crate::openrouter::{ChatMessage, JsonSchemaFormat};
     use serde_json::json;
 
     const COMPLETION: &str = r#"{"id":"gen-abc","model":"vendor/model-served","provider":"Acme","choices":[{"finish_reason":"stop","message":{"role":"assistant","content":"{\"ok\":true}"}}],"usage":{"prompt_tokens":12,"completion_tokens":4,"cost":0.00031,"completion_tokens_details":{"reasoning_tokens":1},"prompt_tokens_details":{"cached_tokens":2}}}"#;
@@ -444,13 +426,14 @@ mod tests {
         })
     }
 
-    fn request() -> ChatRequest {
-        let mut request = ChatRequest::new("vendor/model", vec![ChatMessage::user("hi")]);
-        request.response_format = Some(JsonSchemaFormat {
-            name: "answer".into(),
-            schema: json!({"type":"object","properties":{"ok":{"type":"boolean"}},"required":["ok"]}),
-        });
-        request
+    fn request() -> Value {
+        json!({
+            "model": "vendor/model",
+            "messages": [{"role": "user", "content": "hi"}],
+            "response_format": {"type": "json_schema", "json_schema": {"name": "answer"}},
+            "stream": true,
+            "usage": {"include": true}
+        })
     }
 
     #[test]
@@ -459,15 +442,20 @@ mod tests {
         let completion = client(&server, Some("sk-key"))
             .chat_completion(&request())
             .unwrap();
+        let observation = &completion.observation;
         assert_eq!(completion.content, r#"{"ok":true}"#);
-        assert_eq!(completion.id.as_deref(), Some("gen-abc"));
-        assert_eq!(completion.model.as_deref(), Some("vendor/model-served"));
-        assert_eq!(completion.provider.as_deref(), Some("Acme"));
-        assert_eq!(completion.finish_reason.as_deref(), Some("stop"));
-        assert_eq!(completion.usage.prompt_tokens, Some(12));
-        assert_eq!(completion.usage.cost, Some(0.00031));
-        assert_eq!(completion.usage.reasoning_tokens, Some(1));
-        assert_eq!(completion.usage.cached_tokens, Some(2));
+        assert_eq!(observation.requested_model, "vendor/model");
+        assert_eq!(observation.response_id.as_deref(), Some("gen-abc"));
+        assert_eq!(
+            observation.served_model.as_deref(),
+            Some("vendor/model-served")
+        );
+        assert_eq!(observation.provider.as_deref(), Some("Acme"));
+        assert_eq!(observation.finish_reason.as_deref(), Some("stop"));
+        assert_eq!(observation.input_tokens, Some(12.0));
+        assert_eq!(observation.cost_usd, Some(0.00031));
+        assert_eq!(observation.reasoning_tokens, Some(1.0));
+        assert_eq!(observation.cached_tokens, Some(2.0));
         let sent = &server.requests()[0];
         assert_eq!(sent.method, "POST");
         assert_eq!(sent.path, "/api/v1/chat/completions");
@@ -475,6 +463,7 @@ mod tests {
         assert_eq!(sent.headers["content-type"], "application/json");
         let body: Value = serde_json::from_str(&sent.body).unwrap();
         assert_eq!(body["response_format"]["json_schema"]["name"], "answer");
+        assert_eq!(body["usage"]["include"], true);
         assert_eq!(body["stream"], false);
     }
 
@@ -556,7 +545,7 @@ mod tests {
         let error = client(&server, None)
             .chat_completion(&request())
             .unwrap_err();
-        assert!(error.is_retryable_output_error());
+        assert!(matches!(error, ClientError::InvalidOutput { .. }));
     }
 
     #[test]
@@ -617,27 +606,24 @@ mod tests {
             &usage,
             "data: [DONE]\n\n",
         ])]);
-        let chunks: Vec<StreamChunk> = client(&server, Some("k"))
+        let mut stream = client(&server, Some("k"))
             .chat_stream(&request(), None)
-            .unwrap()
-            .map(Result::unwrap)
-            .collect();
-        let deltas: Vec<&str> = chunks.iter().filter_map(|c| c.delta.as_deref()).collect();
+            .unwrap();
+        let deltas: Vec<String> = stream.by_ref().map(Result::unwrap).collect();
         assert_eq!(deltas, ["Hel", "lo"]);
-        assert_eq!(chunks[0].id.as_deref(), Some("gen-s"));
-        assert_eq!(chunks[0].provider.as_deref(), Some("Acme"));
+        let observation = stream.observation();
+        assert_eq!(observation.response_id.as_deref(), Some("gen-s"));
+        assert_eq!(observation.served_model.as_deref(), Some("m-served"));
+        assert_eq!(observation.provider.as_deref(), Some("Acme"));
+        assert_eq!(observation.finish_reason.as_deref(), Some("stop"));
+        assert_eq!(observation.requested_model, "vendor/model");
         assert_eq!(
-            chunks
-                .iter()
-                .find_map(|c| c.finish_reason.clone())
-                .as_deref(),
-            Some("stop")
+            (observation.input_tokens, observation.cost_usd),
+            (Some(8.0), Some(0.0002))
         );
-        let usage = chunks.iter().find_map(|c| c.usage.clone()).unwrap();
-        assert_eq!((usage.prompt_tokens, usage.cost), (Some(8), Some(0.0002)));
         let body: Value = serde_json::from_str(&server.requests()[0].body).unwrap();
         assert_eq!(body["stream"], true);
-        assert_eq!(body["stream_options"]["include_usage"], true);
+        assert_eq!(body["usage"]["include"], true);
     }
 
     #[test]
@@ -648,14 +634,14 @@ mod tests {
         let u = data(json!({"choices":[],"usage":{"prompt_tokens":1,"completion_tokens":2}}));
         let server = TestServer::start(vec![Reply::sse(&[&a, &b, &u, "data: [DONE]\n\n"])]);
         let mut seen = Vec::new();
-        let completion = client(&server, None)
+        let output = client(&server, None)
             .chat_stream_collect(&request(), None, &mut |d| seen.push(d.to_owned()))
             .unwrap();
         assert_eq!(seen, ["a", "b"]);
-        assert_eq!(completion.content, "ab");
-        assert_eq!(completion.id.as_deref(), Some("g"));
-        assert_eq!(completion.finish_reason.as_deref(), Some("length"));
-        assert_eq!(completion.usage.completion_tokens, Some(2));
+        assert_eq!(output.content, "ab");
+        assert_eq!(output.observation.response_id.as_deref(), Some("g"));
+        assert_eq!(output.observation.finish_reason.as_deref(), Some("length"));
+        assert_eq!(output.observation.output_tokens, Some(2.0));
     }
 
     #[test]
@@ -670,7 +656,7 @@ mod tests {
             .unwrap()
             .collect();
         assert_eq!(chunks.len(), 1);
-        assert_eq!(chunks[0].as_ref().unwrap().delta.as_deref(), Some("split"));
+        assert_eq!(chunks[0].as_deref().unwrap(), "split");
     }
 
     #[test]

@@ -1,10 +1,6 @@
 use std::path::PathBuf;
 
-use gpui_kit::{
-    component::TitleBar,
-    prelude::FluentBuilder as _,
-    *,
-};
+use gpui_kit::{component::TitleBar, prelude::FluentBuilder as _, *};
 
 use crate::{
     ai_backend,
@@ -117,7 +113,8 @@ impl Workspace {
     fn load(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
         match std::fs::read_to_string(&path) {
             Ok(text) => {
-                self.pane.update(cx, |pane, cx| pane.set_text(&text, window, cx));
+                self.pane
+                    .update(cx, |pane, cx| pane.set_text(&text, window, cx));
                 self.saved_text = text;
                 self.path = Some(path);
                 self.notice = None;
@@ -188,7 +185,8 @@ impl Workspace {
     }
 
     fn clear_document(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.pane.update(cx, |pane, cx| pane.set_text("", window, cx));
+        self.pane
+            .update(cx, |pane, cx| pane.set_text("", window, cx));
         self.saved_text = String::new();
         self.path = None;
         cx.notify();
@@ -223,7 +221,12 @@ impl Workspace {
         }
     }
 
-    fn save_document_as(&mut self, _: &SaveDocumentAs, window: &mut Window, cx: &mut Context<Self>) {
+    fn save_document_as(
+        &mut self,
+        _: &SaveDocumentAs,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.open_menu = None;
         let directory = self
             .path
@@ -238,14 +241,12 @@ impl Workspace {
             .map(|name| name.to_string_lossy().to_string())
             .unwrap_or_else(|| "Untitled.md".into());
         let target = cx.prompt_for_new_path(&directory, Some(&name));
-        cx.spawn_in(window, async move |this, cx| {
-            match target.await {
-                Ok(Ok(Some(path))) => {
-                    let _ = this.update_in(cx, |this, window, cx| this.write(path, window, cx));
-                }
-                _ => {
-                    let _ = this.update(cx, |this, _| this.after_save = None);
-                }
+        cx.spawn_in(window, async move |this, cx| match target.await {
+            Ok(Ok(Some(path))) => {
+                let _ = this.update_in(cx, |this, window, cx| this.write(path, window, cx));
+            }
+            _ => {
+                let _ = this.update(cx, |this, _| this.after_save = None);
             }
         })
         .detach();
@@ -266,10 +267,20 @@ impl Workspace {
                 row("New", Some("Ctrl+N"), Box::new(NewDocument), false),
                 row("Open…", Some("Ctrl+O"), Box::new(OpenDocument), false),
                 row("Save", Some("Ctrl+S"), Box::new(SaveDocument), false),
-                row("Save as…", Some("Ctrl+Shift+S"), Box::new(SaveDocumentAs), false),
+                row(
+                    "Save as…",
+                    Some("Ctrl+Shift+S"),
+                    Box::new(SaveDocumentAs),
+                    false,
+                ),
                 MenuRow {
                     separated: true,
-                    ..row("Preferences…", Some("Ctrl+,"), Box::new(OpenPreferences), false)
+                    ..row(
+                        "Preferences…",
+                        Some("Ctrl+,"),
+                        Box::new(OpenPreferences),
+                        false,
+                    )
                 },
             ],
             MenuKind::Edit => vec![
@@ -280,9 +291,19 @@ impl Workspace {
                 },
                 MenuRow {
                     separated: true,
-                    ..row("Accept all suggestions", None, Box::new(AcceptAll), open == 0)
+                    ..row(
+                        "Accept all suggestions",
+                        None,
+                        Box::new(AcceptAll),
+                        open == 0,
+                    )
                 },
-                row("Reject all suggestions", None, Box::new(RejectAll), open == 0),
+                row(
+                    "Reject all suggestions",
+                    None,
+                    Box::new(RejectAll),
+                    open == 0,
+                ),
             ],
         }
     }
@@ -304,7 +325,11 @@ impl Workspace {
             .text_size(px(13.))
             .text_color(roles.ink)
             .border_1()
-            .border_color(if open { roles.hairline } else { transparent_black() })
+            .border_color(if open {
+                roles.hairline
+            } else {
+                transparent_black()
+            })
             .when(open, |this| this.bg(roles.fill))
             .hover(|this| this.bg(roles.fill))
             .child(label)
@@ -313,7 +338,11 @@ impl Workspace {
                 cx.listener(move |this, _, window, cx| {
                     window.prevent_default();
                     cx.stop_propagation();
-                    this.open_menu = if this.open_menu == Some(kind) { None } else { Some(kind) };
+                    this.open_menu = if this.open_menu == Some(kind) {
+                        None
+                    } else {
+                        Some(kind)
+                    };
                     cx.notify();
                 }),
             )
@@ -325,7 +354,12 @@ impl Workspace {
             }))
     }
 
-    fn render_menu(&self, kind: MenuKind, roles: Roles, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_menu(
+        &self,
+        kind: MenuKind,
+        roles: Roles,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         let left = match kind {
             MenuKind::File => px(8.),
             MenuKind::Edit => px(52.),
@@ -341,37 +375,49 @@ impl Workspace {
             .border_1()
             .border_color(roles.hairline)
             .py(px(4.))
-            .children(self.menu_rows(kind, cx).into_iter().enumerate().map(|(index, item)| {
-                let action = item.action.boxed_clone();
-                div()
-                    .when(item.separated, |this| {
-                        this.border_t_1().border_color(roles.hairline).mt(px(4.)).pt(px(4.))
-                    })
-                    .child(
+            .children(
+                self.menu_rows(kind, cx)
+                    .into_iter()
+                    .enumerate()
+                    .map(|(index, item)| {
+                        let action = item.action.boxed_clone();
                         div()
-                            .id(("menu-row", index))
-                            .h(px(28.))
-                            .px(px(12.))
-                            .flex()
-                            .items_center()
-                            .justify_between()
-                            .gap(px(24.))
-                            .text_size(px(13.))
-                            .text_color(if item.disabled { roles.faint } else { roles.ink })
-                            .when(!item.disabled, |this| {
-                                this.hover(|this| this.bg(roles.fill).outline_accent(roles))
-                                    .on_click(cx.listener(move |this, _, window, cx| {
-                                        this.open_menu = None;
-                                        window.dispatch_action(action.boxed_clone(), cx);
-                                        cx.notify();
-                                    }))
+                            .when(item.separated, |this| {
+                                this.border_t_1()
+                                    .border_color(roles.hairline)
+                                    .mt(px(4.))
+                                    .pt(px(4.))
                             })
-                            .child(item.label)
-                            .children(item.shortcut.map(|shortcut| {
-                                div().text_color(roles.faint).child(shortcut)
-                            })),
-                    )
-            }))
+                            .child(
+                                div()
+                                    .id(("menu-row", index))
+                                    .h(px(28.))
+                                    .px(px(12.))
+                                    .flex()
+                                    .items_center()
+                                    .justify_between()
+                                    .gap(px(24.))
+                                    .text_size(px(13.))
+                                    .text_color(if item.disabled {
+                                        roles.faint
+                                    } else {
+                                        roles.ink
+                                    })
+                                    .when(!item.disabled, |this| {
+                                        this.hover(|this| this.bg(roles.fill).outline_accent(roles))
+                                            .on_click(cx.listener(move |this, _, window, cx| {
+                                                this.open_menu = None;
+                                                window.dispatch_action(action.boxed_clone(), cx);
+                                                cx.notify();
+                                            }))
+                                    })
+                                    .child(item.label)
+                                    .children(item.shortcut.map(|shortcut| {
+                                        div().text_color(roles.faint).child(shortcut)
+                                    })),
+                            )
+                    }),
+            )
     }
 
     fn open_review(&mut self, _: &StartReview, window: &mut Window, cx: &mut Context<Self>) {
@@ -403,7 +449,12 @@ impl Workspace {
         cx.notify();
     }
 
-    fn render_review_popover(&self, input: &Entity<gpui_kit::component::input::InputState>, roles: Roles, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_review_popover(
+        &self,
+        input: &Entity<gpui_kit::component::input::InputState>,
+        roles: Roles,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         div()
             .id("review-popover")
             .key_context("ReviewPopover")
@@ -420,48 +471,71 @@ impl Workspace {
             .flex_col()
             .gap(px(10.))
             .child(ui::heading("Review the Document", roles).text_size(px(14.)))
-            .child(
-                div()
-                    .text_size(px(13.))
-                    .child("The AI reads the whole Document and suggests up to 6 changes, one per Block."),
-            )
+            .child(div().text_size(px(13.)).child(
+                "The AI reads the whole Document and suggests up to 6 changes, one per Block.",
+            ))
             .child(gpui_kit::component::input::Input::new(input))
             .child(
                 ui::row()
                     .justify_end()
                     .gap(px(8.))
-                    .child(ui::button("review-cancel", "Cancel", ButtonKind::Default, roles).on_click(cx.listener(|this, _, window, cx| {
-                        this.review_focus = None;
-                        this.pane.update(cx, |pane, cx| pane.focus(window, cx));
-                        cx.notify();
-                    })))
-                    .child(ui::button("review-start", "Review", ButtonKind::Primary, roles).on_click(cx.listener(|this, _, window, cx| {
-                        this.confirm_review(&ConfirmReview, window, cx)
-                    }))),
+                    .child(
+                        ui::button("review-cancel", "Cancel", ButtonKind::Default, roles).on_click(
+                            cx.listener(|this, _, window, cx| {
+                                this.review_focus = None;
+                                this.pane.update(cx, |pane, cx| pane.focus(window, cx));
+                                cx.notify();
+                            }),
+                        ),
+                    )
+                    .child(
+                        ui::button("review-start", "Review", ButtonKind::Primary, roles).on_click(
+                            cx.listener(|this, _, window, cx| {
+                                this.confirm_review(&ConfirmReview, window, cx)
+                            }),
+                        ),
+                    ),
             )
     }
 
     fn render_leave(&self, roles: Roles, cx: &mut Context<Self>) -> impl IntoElement {
         let answer = |choice: LeaveChoice| {
-            cx.listener(move |this: &mut Self, _: &ClickEvent, window: &mut Window, cx: &mut Context<Self>| {
-                this.answer_leave(choice, window, cx)
-            })
+            cx.listener(
+                move |this: &mut Self,
+                      _: &ClickEvent,
+                      window: &mut Window,
+                      cx: &mut Context<Self>| {
+                    this.answer_leave(choice, window, cx)
+                },
+            )
         };
         ui::modal_backdrop(
             "leave-backdrop",
             roles,
             ui::dialog_frame("leave", px(416.), roles)
                 .key_context("LeaveDialog")
-                .child(ui::heading(format!("Save changes to {}?", self.file_name()), roles))
+                .child(ui::heading(
+                    format!("Save changes to {}?", self.file_name()),
+                    roles,
+                ))
                 .child(ui::detail(
                     "Discard removes your unsaved changes. Cancel keeps you here.",
                     roles,
                 ))
                 .child(
                     ui::actions_row()
-                        .child(ui::button("leave-cancel", "Cancel", ButtonKind::Default, roles).on_click(answer(LeaveChoice::Cancel)))
-                        .child(ui::button("leave-discard", "Discard", ButtonKind::Default, roles).on_click(answer(LeaveChoice::Discard)))
-                        .child(ui::button("leave-save", "Save", ButtonKind::Strong, roles).on_click(answer(LeaveChoice::Save))),
+                        .child(
+                            ui::button("leave-cancel", "Cancel", ButtonKind::Default, roles)
+                                .on_click(answer(LeaveChoice::Cancel)),
+                        )
+                        .child(
+                            ui::button("leave-discard", "Discard", ButtonKind::Default, roles)
+                                .on_click(answer(LeaveChoice::Discard)),
+                        )
+                        .child(
+                            ui::button("leave-save", "Save", ButtonKind::Strong, roles)
+                                .on_click(answer(LeaveChoice::Save)),
+                        ),
                 ),
         )
     }
@@ -486,7 +560,12 @@ impl OutlineAccent for StyleRefinement {
     }
 }
 
-fn row(label: &'static str, shortcut: Option<&'static str>, action: Box<dyn Action>, disabled: bool) -> MenuRow {
+fn row(
+    label: &'static str,
+    shortcut: Option<&'static str>,
+    action: Box<dyn Action>,
+    disabled: bool,
+) -> MenuRow {
     MenuRow {
         label,
         shortcut,
@@ -536,10 +615,17 @@ impl Render for Workspace {
                 div()
                     .text_size(px(13.))
                     .text_color(roles.ink)
-                    .child(format!("{}{}", self.file_name(), if dirty { " •" } else { "" })),
+                    .child(format!(
+                        "{}{}",
+                        self.file_name(),
+                        if dirty { " •" } else { "" }
+                    )),
             )
             .children(self.notice.clone().map(|notice| {
-                div().text_size(px(13.)).text_color(roles.danger).child(notice)
+                div()
+                    .text_size(px(13.))
+                    .text_color(roles.danger)
+                    .child(notice)
             }))
             .child(div().flex_1())
             .when_some(review, |this, added| {
@@ -550,23 +636,59 @@ impl Render for Workspace {
                         .child(ui::ai_flag(roles))
                         .child(div().text_color(roles.ai).child(format!(
                             "Reviewing · {added} {}",
-                            if added == 1 { "suggestion" } else { "suggestions" }
+                            if added == 1 {
+                                "suggestion"
+                            } else {
+                                "suggestions"
+                            }
                         )))
-                        .child(ui::sized_button("header-stop", "Stop", ButtonKind::Default, ui::ButtonSize::Small, false, roles).on_click(
-                            cx.listener(|this, _, window, cx| this.stop_review(&StopReview, window, cx)),
-                        )),
+                        .child(
+                            ui::sized_button(
+                                "header-stop",
+                                "Stop",
+                                ButtonKind::Default,
+                                ui::ButtonSize::Small,
+                                false,
+                                roles,
+                            )
+                            .on_click(cx.listener(
+                                |this, _, window, cx| this.stop_review(&StopReview, window, cx),
+                            )),
+                        ),
                 )
             })
             .when(open > 0, |this| {
                 this.child(
                     ui::row()
                         .gap(px(8.))
-                        .child(ui::sized_button("header-accept-all", "Accept all", ButtonKind::Primary, ui::ButtonSize::Small, false, roles).on_click(
-                            cx.listener(|this, _, window, cx| this.pane.update(cx, |pane, cx| pane.accept_all(window, cx))),
-                        ))
-                        .child(ui::sized_button("header-reject-all", "Reject all", ButtonKind::Default, ui::ButtonSize::Small, false, roles).on_click(
-                            cx.listener(|this, _, _, cx| this.pane.update(cx, |pane, cx| pane.reject_all(cx))),
-                        )),
+                        .child(
+                            ui::sized_button(
+                                "header-accept-all",
+                                "Accept all",
+                                ButtonKind::Primary,
+                                ui::ButtonSize::Small,
+                                false,
+                                roles,
+                            )
+                            .on_click(cx.listener(
+                                |this, _, window, cx| {
+                                    this.pane.update(cx, |pane, cx| pane.accept_all(window, cx))
+                                },
+                            )),
+                        )
+                        .child(
+                            ui::sized_button(
+                                "header-reject-all",
+                                "Reject all",
+                                ButtonKind::Default,
+                                ui::ButtonSize::Small,
+                                false,
+                                roles,
+                            )
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.pane.update(cx, |pane, cx| pane.reject_all(cx))
+                            })),
+                        ),
                 )
             });
         let editor = div().flex_1().min_h_0().child(self.pane.clone());

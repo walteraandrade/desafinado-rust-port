@@ -17,7 +17,10 @@ const FONTS: [&[u8]; 5] = [
 ];
 
 fn main() {
-    let launch: Option<PathBuf> = std::env::args().skip(1).find(|arg| !arg.starts_with('-')).map(PathBuf::from);
+    let launch: Option<PathBuf> = std::env::args()
+        .skip(1)
+        .find(|arg| !arg.starts_with('-'))
+        .map(PathBuf::from);
     gpui_kit::application().run(move |cx| {
         gpui_kit::init(cx);
         let _ = cx

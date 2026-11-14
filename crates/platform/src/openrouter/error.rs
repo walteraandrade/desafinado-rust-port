@@ -1,69 +1,16 @@
-use serde::Serialize;
+pub use desafinado_core::suggestions::ClientError;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[serde(tag = "type", rename_all = "kebab-case")]
-pub enum ClientError {
-    OutOfCredit { message: String },
-    RateLimited { message: String },
-    Timeout { message: String },
-    Aborted { message: String },
-    Network { message: String },
-    InvalidOutput { message: String },
-    Api { status: u16, message: String },
-    Unknown { message: String },
+pub fn is_retryable_transport_error(error: &ClientError) -> bool {
+    matches!(
+        error,
+        ClientError::Network { .. }
+            | ClientError::RateLimited { .. }
+            | ClientError::Api {
+                status: 500..=599,
+                ..
+            }
+    )
 }
-
-impl ClientError {
-    pub fn message(&self) -> &str {
-        match self {
-            Self::OutOfCredit { message }
-            | Self::RateLimited { message }
-            | Self::Timeout { message }
-            | Self::Aborted { message }
-            | Self::Network { message }
-            | Self::InvalidOutput { message }
-            | Self::Api { message, .. }
-            | Self::Unknown { message } => message,
-        }
-    }
-
-    pub fn kind(&self) -> &'static str {
-        match self {
-            Self::OutOfCredit { .. } => "out-of-credit",
-            Self::RateLimited { .. } => "rate-limited",
-            Self::Timeout { .. } => "timeout",
-            Self::Aborted { .. } => "aborted",
-            Self::Network { .. } => "network",
-            Self::InvalidOutput { .. } => "invalid-output",
-            Self::Api { .. } => "api",
-            Self::Unknown { .. } => "unknown",
-        }
-    }
-
-    pub fn is_retryable_output_error(&self) -> bool {
-        matches!(self, Self::InvalidOutput { .. })
-    }
-
-    pub fn is_retryable_transport_error(&self) -> bool {
-        matches!(
-            self,
-            Self::Network { .. }
-                | Self::RateLimited { .. }
-                | Self::Api {
-                    status: 500..=599,
-                    ..
-                }
-        )
-    }
-}
-
-impl std::fmt::Display for ClientError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}: {}", self.kind(), self.message())
-    }
-}
-
-impl std::error::Error for ClientError {}
 
 pub fn message_from_body(body: &str, fallback: &str) -> String {
     serde_json::from_str::<serde_json::Value>(body)
@@ -197,35 +144,10 @@ mod tests {
     }
 
     #[test]
-    fn retries_only_invalid_output_at_the_output_level() {
-        assert!(
-            ClientError::InvalidOutput {
-                message: "x".into()
-            }
-            .is_retryable_output_error()
-        );
-        assert!(
-            !ClientError::Network {
-                message: "x".into()
-            }
-            .is_retryable_output_error()
-        );
-    }
-
-    #[test]
     fn transport_retry_covers_network_rate_limit_and_5xx() {
-        assert!(classify_status(503, "").is_retryable_transport_error());
-        assert!(classify_status(429, "").is_retryable_transport_error());
-        assert!(!classify_status(402, "").is_retryable_transport_error());
-        assert!(!classify_status(400, "").is_retryable_transport_error());
-    }
-
-    #[test]
-    fn serializes_with_a_kebab_case_type() {
-        let json = serde_json::to_value(ClientError::OutOfCredit {
-            message: "m".into(),
-        })
-        .unwrap();
-        assert_eq!(json["type"], "out-of-credit");
+        assert!(is_retryable_transport_error(&classify_status(503, "")));
+        assert!(is_retryable_transport_error(&classify_status(429, "")));
+        assert!(!is_retryable_transport_error(&classify_status(402, "")));
+        assert!(!is_retryable_transport_error(&classify_status(400, "")));
     }
 }

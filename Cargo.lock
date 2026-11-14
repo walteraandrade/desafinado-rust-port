@@ -1297,6 +1297,8 @@ dependencies = [
 name = "desafinado-platform"
 version = "0.1.0"
 dependencies = [
+ "desafinado-ai",
+ "desafinado-core",
  "dirs 6.0.0",
  "flate2",
  "keyring",

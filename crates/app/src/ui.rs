@@ -16,7 +16,12 @@ pub enum ButtonSize {
     Small,
 }
 
-pub fn button(id: impl Into<ElementId>, label: impl Into<SharedString>, kind: ButtonKind, roles: Roles) -> Stateful<Div> {
+pub fn button(
+    id: impl Into<ElementId>,
+    label: impl Into<SharedString>,
+    kind: ButtonKind,
+    roles: Roles,
+) -> Stateful<Div> {
     sized_button(id, label, kind, ButtonSize::Regular, false, roles)
 }
 
@@ -92,7 +97,11 @@ pub fn dialog_frame(id: impl Into<ElementId>, width: Pixels, roles: Roles) -> St
         .flex_col()
 }
 
-pub fn modal_backdrop(id: impl Into<ElementId>, roles: Roles, content: impl IntoElement) -> Stateful<Div> {
+pub fn modal_backdrop(
+    id: impl Into<ElementId>,
+    roles: Roles,
+    content: impl IntoElement,
+) -> Stateful<Div> {
     div()
         .id(id)
         .occlude()
@@ -114,7 +123,11 @@ pub fn heading(text: impl Into<SharedString>, roles: Roles) -> Div {
 }
 
 pub fn detail(text: impl Into<SharedString>, roles: Roles) -> Div {
-    div().mt(px(8.)).text_size(px(14.)).text_color(roles.ink).child(text.into())
+    div()
+        .mt(px(8.))
+        .text_size(px(14.))
+        .text_color(roles.ink)
+        .child(text.into())
 }
 
 pub fn row() -> Div {
