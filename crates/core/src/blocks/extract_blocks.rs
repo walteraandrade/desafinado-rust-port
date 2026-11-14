@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 
 use super::frontmatter::blank_frontmatter;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum BlockKind {
     Heading,
@@ -17,6 +17,22 @@ pub enum BlockKind {
     Other,
 }
 
+impl BlockKind {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Heading => "heading",
+            Self::Paragraph => "paragraph",
+            Self::List => "list",
+            Self::Blockquote => "blockquote",
+            Self::Code => "code",
+            Self::Table => "table",
+            Self::Html => "html",
+            Self::Rule => "rule",
+            Self::Other => "other",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Block {
     pub id: String,
@@ -24,6 +40,7 @@ pub struct Block {
     pub to: usize,
     pub text: String,
     pub kind: BlockKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub level: Option<u8>,
 }
 
@@ -256,7 +273,7 @@ pub fn extract_blocks(text: &str) -> Vec<Block> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::SAMPLE_DOCUMENT;
+    use crate::sample::SAMPLE_DOCUMENT;
 
     fn kinds(blocks: &[Block]) -> Vec<BlockKind> {
         blocks.iter().map(|block| block.kind).collect()

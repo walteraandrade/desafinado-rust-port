@@ -9,4 +9,5 @@ serde.workspace = true
 serde_json.workspace = true
 regex = "1"
 thiserror.workspace = true
+desafinado-core = { path = "../core" }
 pulldown-cmark.workspace = true

@@ -1,49 +1,9 @@
 use std::sync::LazyLock;
 
 use regex::Regex;
-use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "kebab-case")]
-pub enum ClientError {
-    OutOfCredit { message: String },
-    RateLimited { message: String },
-    Timeout { message: String },
-    Aborted { message: String },
-    Network { message: String },
-    InvalidOutput { message: String },
-    Api { status: u16, message: String },
-    Unknown { message: String },
-}
-
-impl ClientError {
-    pub const fn kind(&self) -> &'static str {
-        match self {
-            Self::OutOfCredit { .. } => "out-of-credit",
-            Self::RateLimited { .. } => "rate-limited",
-            Self::Timeout { .. } => "timeout",
-            Self::Aborted { .. } => "aborted",
-            Self::Network { .. } => "network",
-            Self::InvalidOutput { .. } => "invalid-output",
-            Self::Api { .. } => "api",
-            Self::Unknown { .. } => "unknown",
-        }
-    }
-
-    pub fn message(&self) -> &str {
-        match self {
-            Self::OutOfCredit { message }
-            | Self::RateLimited { message }
-            | Self::Timeout { message }
-            | Self::Aborted { message }
-            | Self::Network { message }
-            | Self::InvalidOutput { message }
-            | Self::Api { message, .. }
-            | Self::Unknown { message } => message,
-        }
-    }
-}
+pub use desafinado_core::suggestions::ClientError;
 
 pub type CallResult<T> = Result<T, ClientError>;
 

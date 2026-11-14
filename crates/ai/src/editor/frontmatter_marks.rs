@@ -2,7 +2,7 @@ use std::sync::LazyLock;
 
 use regex::Regex;
 
-use crate::text::js_trim;
+use desafinado_core::blocks::find_frontmatter;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LineRole {
@@ -20,37 +20,8 @@ static TOP_LEVEL_KEY: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r#"^((?:[\p{L}\p{N}_.-]+|"[^"]*"|'[^']*'))[ \t]*:(?:[ \t]|$)"#).expect("valid regex")
 });
 
-fn looks_like_yaml(yaml: &str) -> bool {
-    if js_trim(yaml).is_empty() {
-        return true;
-    }
-    yaml.split('\n')
-        .find(|line| !js_trim(line).is_empty() && !line.trim_start().starts_with('#'))
-        .is_some_and(|first| TOP_LEVEL_KEY.is_match(first))
-}
-
-fn is_delimiter(line: &str) -> bool {
-    line.strip_prefix("---")
-        .is_some_and(|rest| rest.chars().all(|c| c == ' ' || c == '\t'))
-}
-
 pub fn frontmatter_end(text: &str) -> Option<usize> {
-    if !text.starts_with("---") {
-        return None;
-    }
-    let lines = lf_line_ranges(text);
-    let (first_from, first_to) = lines[0];
-    if !is_delimiter(&text[first_from..first_to]) || lines.len() < 2 {
-        return None;
-    }
-    let close =
-        (1..lines.len()).find(|index| is_delimiter(&text[lines[*index].0..lines[*index].1]))?;
-    let yaml = if close == 1 {
-        ""
-    } else {
-        &text[lines[1].0..lines[close - 1].1]
-    };
-    looks_like_yaml(yaml).then_some(lines[close].1)
+    find_frontmatter(text).map(|found| found.to)
 }
 
 fn marks_of_line(line: &str, from: usize, role: LineRole) -> Vec<FrontmatterMark> {

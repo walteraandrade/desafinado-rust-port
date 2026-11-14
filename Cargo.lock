@@ -1259,6 +1259,7 @@ dependencies = [
 name = "desafinado-ai"
 version = "0.1.0"
 dependencies = [
+ "desafinado-core",
  "pulldown-cmark",
  "regex",
  "serde",

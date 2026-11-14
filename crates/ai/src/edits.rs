@@ -82,13 +82,7 @@ impl DropReason {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ValidatedEdit {
-    pub block_id: String,
-    pub replacement: String,
-    pub rationale: String,
-    pub block: Block,
-}
+pub use desafinado_core::suggestions::ValidatedEdit;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DroppedEdit {
@@ -216,12 +210,7 @@ pub fn validate_review_edits(
     run
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SuggestionResult {
-    pub replacement: String,
-    pub rationale: String,
-    pub unchanged: bool,
-}
+pub use desafinado_core::suggestions::SuggestionResult;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InvalidSuggestion {

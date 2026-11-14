@@ -33,6 +33,34 @@ pub enum ClientError {
     Unknown { message: String },
 }
 
+impl ClientError {
+    pub const fn kind(&self) -> &'static str {
+        match self {
+            Self::OutOfCredit { .. } => "out-of-credit",
+            Self::RateLimited { .. } => "rate-limited",
+            Self::Timeout { .. } => "timeout",
+            Self::Aborted { .. } => "aborted",
+            Self::Network { .. } => "network",
+            Self::InvalidOutput { .. } => "invalid-output",
+            Self::Api { .. } => "api",
+            Self::Unknown { .. } => "unknown",
+        }
+    }
+
+    pub fn message(&self) -> &str {
+        match self {
+            Self::OutOfCredit { message }
+            | Self::RateLimited { message }
+            | Self::Timeout { message }
+            | Self::Aborted { message }
+            | Self::Network { message }
+            | Self::InvalidOutput { message }
+            | Self::Api { message, .. }
+            | Self::Unknown { message } => message,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SuggestionResult {
     pub replacement: String,

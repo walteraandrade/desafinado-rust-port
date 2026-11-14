@@ -1,14 +1,4 @@
-use serde::{Deserialize, Serialize};
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct QuickAction {
-    pub id: String,
-    pub label: String,
-    pub instruction: String,
-    #[serde(default)]
-    pub skill_only: bool,
-}
+pub use desafinado_core::suggestions::QuickAction;
 
 struct BuiltIn {
     id: &'static str,

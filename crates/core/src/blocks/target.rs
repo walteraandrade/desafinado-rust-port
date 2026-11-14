@@ -26,9 +26,11 @@ pub struct Target {
     pub blocks: Vec<Block>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct Neighbors {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub section: Option<String>,
     pub before: Vec<Block>,
     pub after: Vec<Block>,
@@ -240,7 +242,7 @@ pub fn get_neighbors(blocks: &[Block], target: &Target) -> Neighbors {
 mod tests {
     use super::*;
     use crate::blocks::extract_blocks;
-    use crate::test_support::SAMPLE_DOCUMENT;
+    use crate::sample::SAMPLE_DOCUMENT;
 
     fn doc() -> String {
         [

@@ -1,11 +1,16 @@
+use serde::{Deserialize, Serialize};
+
 use super::types::{Instruction, TargetSource};
 use crate::text::js_trim;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct QuickAction {
     pub id: String,
     pub label: String,
     pub instruction: String,
+    #[serde(default)]
+    pub skill_only: bool,
 }
 
 pub fn quick_action_instruction(action: &QuickAction) -> Instruction {
@@ -68,6 +73,7 @@ mod tests {
             instruction:
                 "Make the text shorter. Remove redundancy and filler, and keep every key point."
                     .into(),
+            skill_only: false,
         }
     }
 
@@ -78,6 +84,7 @@ mod tests {
             instruction:
                 "Fix grammar, spelling and punctuation errors only. Do not rephrase anything else."
                     .into(),
+            skill_only: false,
         }
     }
 
@@ -86,6 +93,7 @@ mod tests {
             id: "clearer".into(),
             label: "Clearer".into(),
             instruction: "Make the text clearer and easier to follow. Keep the meaning and the level of detail.".into(),
+            skill_only: false,
         }
     }
 

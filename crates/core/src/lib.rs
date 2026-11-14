@@ -4,7 +4,6 @@ pub mod blocks;
 pub mod change_set;
 pub mod diff;
 
+pub mod sample;
 pub mod suggestions;
-#[cfg(test)]
-mod test_support;
 pub mod text;
