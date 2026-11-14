@@ -56,26 +56,30 @@ impl OpenRouterAi {
     ) {
         let services = self.services.clone();
         let task = task.to_string();
+        let response_id = observation.response_id.clone();
+        let shape = move |generation| {
+            shape_ai_call_record(&ShapeRecordInput {
+                task: task.clone(),
+                attempt,
+                outcome: outcome.clone(),
+                started_at: started_at.clone(),
+                observation: observation.clone(),
+                generation,
+                timing: timing.clone(),
+            })
+        };
+        let held = services.hold_record(shape(None));
         std::thread::spawn(move || {
             let generation = OpenRouterClient::from_env(services.keys.current())
                 .ok()
                 .and_then(|client| {
                     fetch_generation(
                         &client,
-                        observation.response_id.as_deref(),
+                        response_id.as_deref(),
                         &GenerationSchedule::default(),
                     )
                 });
-            let record = shape_ai_call_record(&ShapeRecordInput {
-                task,
-                attempt,
-                outcome,
-                started_at,
-                observation,
-                generation,
-                timing,
-            });
-            let _ = services.log.append(&record);
+            services.complete_record(held, shape(generation));
         });
     }
 }

@@ -15,8 +15,10 @@ impl Default for GenerationSchedule {
         Self {
             initial_delay: Duration::ZERO,
             delays: [500, 1000, 1500, 2000, 2000, 3000]
+                .into_iter()
+                .chain(std::iter::repeat_n(10_000, 24))
                 .map(Duration::from_millis)
-                .to_vec(),
+                .collect(),
         }
     }
 }
@@ -140,9 +142,11 @@ mod tests {
     }
 
     #[test]
-    fn the_default_schedule_waits_about_ten_seconds_in_total() {
+    fn the_default_schedule_tries_quickly_then_keeps_trying_for_four_minutes() {
         let schedule = GenerationSchedule::default();
+        let quick: Duration = schedule.delays.iter().take(6).sum();
         let total: Duration = schedule.delays.iter().sum();
-        assert_eq!(total, Duration::from_secs(10));
+        assert_eq!(quick, Duration::from_secs(10));
+        assert_eq!(total, Duration::from_secs(250));
     }
 }

@@ -87,8 +87,15 @@ fn main() {
         None => println!("review ok: {edits} edits"),
         Some(error) => println!("review failed after {edits} edits: {error:?}"),
     }
-    thread::sleep(Duration::from_secs(14));
-    let records = services.log.read_all().unwrap_or_default();
+    let deadline = std::time::Instant::now() + Duration::from_secs(280);
+    let records = loop {
+        let records = services.log.read_all().unwrap_or_default();
+        let done = records.len().saturating_sub(before) >= 2;
+        if done || std::time::Instant::now() >= deadline {
+            break records;
+        }
+        thread::sleep(Duration::from_secs(2));
+    };
     let new = &records[before.min(records.len())..];
     println!("\n{}", format_records_table(new));
     let summary = summarize_costs(new);

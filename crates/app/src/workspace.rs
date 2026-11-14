@@ -508,6 +508,7 @@ impl Workspace {
         let release = cx.on_release(|this, _| this.flush_all());
         let quit = cx.on_app_quit(|this, _| {
             this.flush_all();
+            this.services.flush_records();
             async {}
         });
         let session = start.as_ref().map(|start| FileSession {
