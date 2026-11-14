@@ -1251,13 +1251,17 @@ dependencies = [
 name = "desafinado"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "desafinado-ai",
  "desafinado-core",
+ "desafinado-features",
  "desafinado-platform",
  "desafinado-runtime",
  "futures",
  "gpui-kit",
+ "libc",
  "serde_json",
+ "tempfile",
 ]
 
 [[package]]

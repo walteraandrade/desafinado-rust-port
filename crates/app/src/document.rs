@@ -1,0 +1,291 @@
+use std::path::{Path, PathBuf};
+
+use desafinado_core::blocks::{BlockKind, extract_blocks, heading_text};
+
+pub const UNTITLED_NAME: &str = "Untitled";
+pub const SCRATCH_KEY: &str = "scratch:document";
+pub const DEFAULT_FILE_NAME: &str = "document.md";
+const MAX_SLUG_LENGTH: usize = 60;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FileSession {
+    pub name: String,
+    pub path: Option<PathBuf>,
+    pub saved_text: String,
+    pub dirty: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Conflict {
+    pub name: String,
+    pub path: PathBuf,
+}
+
+pub fn opened_session(name: &str, path: &Path, text: &str, saved_text: &str) -> FileSession {
+    FileSession {
+        name: name.to_string(),
+        path: Some(path.to_path_buf()),
+        saved_text: saved_text.to_string(),
+        dirty: text != saved_text,
+    }
+}
+
+pub fn edited_session(session: Option<&FileSession>, text: &str) -> Option<FileSession> {
+    session.map(|session| FileSession {
+        dirty: text != session.saved_text,
+        ..session.clone()
+    })
+}
+
+pub fn has_unsaved_changes(session: Option<&FileSession>, text: &str, baseline: &str) -> bool {
+    match session {
+        None => !text.trim().is_empty() && text != baseline,
+        Some(session) => session.dirty,
+    }
+}
+
+pub fn history_key(path: Option<&Path>) -> String {
+    path.map(|path| path.to_string_lossy().into_owned())
+        .unwrap_or_else(|| SCRATCH_KEY.to_string())
+}
+
+pub fn name_of(path: &Path) -> String {
+    path.file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| path.to_string_lossy().into_owned())
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ExternalVerdict {
+    Nothing,
+    Settled,
+    Reload,
+    Notice,
+}
+
+pub struct ExternalFacts<'a> {
+    pub disk: Option<&'a str>,
+    pub saved_text: &'a str,
+    pub document: &'a str,
+    pub writing: Option<&'a str>,
+    pub noticed: Option<Option<&'a str>>,
+}
+
+pub fn decide_external_change(facts: &ExternalFacts) -> ExternalVerdict {
+    let ExternalFacts {
+        disk,
+        saved_text,
+        document,
+        writing,
+        noticed,
+    } = *facts;
+    if disk.is_some() && disk == writing {
+        return ExternalVerdict::Nothing;
+    }
+    if disk == Some(saved_text) {
+        return ExternalVerdict::Settled;
+    }
+    if noticed == Some(disk) {
+        return ExternalVerdict::Nothing;
+    }
+    match disk {
+        None => ExternalVerdict::Notice,
+        Some(disk) if document == saved_text || document == disk => ExternalVerdict::Reload,
+        Some(_) => ExternalVerdict::Notice,
+    }
+}
+
+fn slug_of(title: &str) -> String {
+    let mut slug = String::new();
+    for character in title.chars().flat_map(char::to_lowercase) {
+        let plain = fold_accent(character);
+        if plain.is_ascii_alphanumeric() {
+            slug.push(plain);
+        } else if !slug.ends_with('-') {
+            slug.push('-');
+        }
+    }
+    let cut: String = slug.chars().take(MAX_SLUG_LENGTH).collect();
+    cut.trim_matches('-').to_string()
+}
+
+fn fold_accent(character: char) -> char {
+    const FROM: &str = "àáâãäåèéêëìíîïòóôõöùúûüýÿñç";
+    const TO: &str = "aaaaaaeeeeiiiiooooouuuuyync";
+    FROM.chars()
+        .position(|accented| accented == character)
+        .and_then(|index| TO.chars().nth(index))
+        .unwrap_or(character)
+}
+
+pub fn suggested_file_name(text: &str) -> String {
+    let slug = extract_blocks(text)
+        .iter()
+        .find(|block| block.kind == BlockKind::Heading && block.level == Some(1))
+        .map(|block| slug_of(&heading_text(block)))
+        .unwrap_or_default();
+    if slug.is_empty() {
+        DEFAULT_FILE_NAME.to_string()
+    } else {
+        format!("{slug}.md")
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MinimalChange {
+    pub from: usize,
+    pub to: usize,
+    pub insert: String,
+}
+
+pub fn minimal_change(before: &str, after: &str) -> MinimalChange {
+    let prefix = before
+        .char_indices()
+        .zip(after.chars())
+        .find(|((_, a), b)| a != b)
+        .map(|((index, _), _)| index)
+        .unwrap_or_else(|| before.len().min(after.len()));
+    let prefix = floor_boundary(after, floor_boundary(before, prefix));
+    let limit = (before.len() - prefix).min(after.len() - prefix);
+    let suffix = before[prefix..]
+        .chars()
+        .rev()
+        .zip(after[prefix..].chars().rev())
+        .take_while(|(a, b)| a == b)
+        .map(|(a, _)| a.len_utf8())
+        .scan(0, |total, size| {
+            *total += size;
+            Some(*total)
+        })
+        .take_while(|total| *total <= limit)
+        .last()
+        .unwrap_or(0);
+    MinimalChange {
+        from: prefix,
+        to: before.len() - suffix,
+        insert: after[prefix..after.len() - suffix].to_string(),
+    }
+}
+
+fn floor_boundary(text: &str, index: usize) -> usize {
+    (0..=index.min(text.len()))
+        .rev()
+        .find(|at| text.is_char_boundary(*at))
+        .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn facts<'a>(
+        disk: Option<&'a str>,
+        saved: &'a str,
+        document: &'a str,
+        writing: Option<&'a str>,
+        noticed: Option<Option<&'a str>>,
+    ) -> ExternalVerdict {
+        decide_external_change(&ExternalFacts {
+            disk,
+            saved_text: saved,
+            document,
+            writing,
+            noticed,
+        })
+    }
+
+    #[test]
+    fn ignores_the_text_it_is_writing_and_settles_on_the_saved_text() {
+        assert_eq!(
+            facts(Some("w"), "s", "d", Some("w"), None),
+            ExternalVerdict::Nothing
+        );
+        assert_eq!(
+            facts(Some("s"), "s", "d", None, None),
+            ExternalVerdict::Settled
+        );
+    }
+
+    #[test]
+    fn reloads_a_clean_document_and_notices_a_dirty_one() {
+        assert_eq!(
+            facts(Some("new"), "s", "s", None, None),
+            ExternalVerdict::Reload
+        );
+        assert_eq!(
+            facts(Some("new"), "s", "new", None, None),
+            ExternalVerdict::Reload
+        );
+        assert_eq!(
+            facts(Some("new"), "s", "mine", None, None),
+            ExternalVerdict::Notice
+        );
+        assert_eq!(facts(None, "s", "s", None, None), ExternalVerdict::Notice);
+    }
+
+    #[test]
+    fn notices_the_same_disk_text_once() {
+        assert_eq!(
+            facts(Some("new"), "s", "mine", None, Some(Some("new"))),
+            ExternalVerdict::Nothing
+        );
+        assert_eq!(
+            facts(None, "s", "mine", None, Some(None)),
+            ExternalVerdict::Nothing
+        );
+        assert_eq!(
+            facts(Some("newer"), "s", "mine", None, Some(Some("new"))),
+            ExternalVerdict::Notice
+        );
+    }
+
+    #[test]
+    fn an_untitled_document_needs_saving_when_it_has_new_text() {
+        assert!(!has_unsaved_changes(None, "  \n", "sample"));
+        assert!(!has_unsaved_changes(None, "sample", "sample"));
+        assert!(has_unsaved_changes(None, "typed", "sample"));
+        let session = opened_session("a.md", Path::new("/a.md"), "x", "x");
+        assert!(!has_unsaved_changes(Some(&session), "y", ""));
+        let edited = edited_session(Some(&session), "y").unwrap();
+        assert!(has_unsaved_changes(Some(&edited), "y", ""));
+    }
+
+    #[test]
+    fn keys_a_file_by_its_path_and_untitled_by_the_scratch_key() {
+        assert_eq!(history_key(Some(Path::new("/n/a.md"))), "/n/a.md");
+        assert_eq!(history_key(None), SCRATCH_KEY);
+    }
+
+    #[test]
+    fn suggests_a_name_from_the_first_title() {
+        assert_eq!(
+            suggested_file_name("Intro\n\n# Café notes: v2!\n"),
+            "cafe-notes-v2.md"
+        );
+        assert_eq!(suggested_file_name("No title"), DEFAULT_FILE_NAME);
+        assert_eq!(suggested_file_name("## Second\n"), DEFAULT_FILE_NAME);
+    }
+
+    #[test]
+    fn finds_the_smallest_change_between_two_texts() {
+        let change = minimal_change("one two three", "one 2 three");
+        assert_eq!(
+            change,
+            MinimalChange {
+                from: 4,
+                to: 7,
+                insert: "2".into()
+            }
+        );
+        let change = minimal_change("aaa", "aaaa");
+        assert_eq!(&"aaa"[..change.from], "aaa");
+        assert_eq!(change.insert, "a");
+        assert_eq!(change.to, 3);
+        let change = minimal_change("é", "è");
+        assert_eq!(
+            (change.from, change.to, change.insert.as_str()),
+            (0, 2, "è")
+        );
+        assert_eq!(minimal_change("same", "same").insert, "");
+    }
+}

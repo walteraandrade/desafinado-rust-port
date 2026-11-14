@@ -12,3 +12,9 @@ desafinado-ai = { path = "../ai" }
 futures = "0.3"
 desafinado-platform = { path = "../platform" }
 desafinado-runtime = { path = "../runtime" }
+desafinado-features = { path = "../features" }
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+libc = "0.2.191"
+
+[dev-dependencies]
+tempfile = "3.27.0"
