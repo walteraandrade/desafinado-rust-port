@@ -59,13 +59,23 @@ use crate::{
     frontmatter_view::{FrontmatterEvent, FrontmatterView},
     history_store::DbHistoryStore,
     history_view::EvalsButton,
+    key_dialog::{KeyDialog, KeyEvent},
     last_file::{clear_last_file, load_last_file, save_last_file},
     library_panel::{self, LibraryEvent, LibraryPanel, Placement},
+    menu_nav::{next_enabled, shifted},
+    model_dialog::{ModelDialog, ModelEvent},
     new_skill_dialog::{NewSkillDialog, NewSkillEvent},
+    preferences_view::{PREFERENCES_WIDTH, PreferencesEvent, PreferencesPanel},
     single_instance::LaunchMessage,
+    spend_view::{SpendEvent, SpendView},
     theme::{self, Roles},
     ui::{self, ButtonKind},
 };
+use desafinado_ai::quick_action_settings::{
+    QuickActionSettings, default_quick_action_settings, enabled_quick_actions,
+    parse_quick_action_settings, serialize_quick_action_settings,
+};
+use desafinado_platform::quick_actions::{load_quick_actions, save_quick_actions};
 
 const HISTORY_IDLE_MS: i64 = 30_000;
 const UNSAVED_DELAY: Duration = Duration::from_millis(400);
@@ -96,6 +106,15 @@ actions!(
         ToggleLibrary,
         SearchLibrary,
         ShowFrontmatterProblems,
+        ShowSpend,
+        OpenFileMenu,
+        OpenEditMenu,
+        MenuDown,
+        MenuUp,
+        MenuNext,
+        MenuPrevious,
+        MenuSelect,
+        MenuLeave,
     ]
 );
 
@@ -109,6 +128,17 @@ pub fn init(cx: &mut App) {
         KeyBinding::new("ctrl-b", ToggleLibrary, None),
         KeyBinding::new("ctrl-p", SearchLibrary, None),
         KeyBinding::new("escape", CloseMenu, Some("Menu")),
+        KeyBinding::new("down", MenuDown, Some("Menu")),
+        KeyBinding::new("up", MenuUp, Some("Menu")),
+        KeyBinding::new("right", MenuNext, Some("Menu")),
+        KeyBinding::new("left", MenuPrevious, Some("Menu")),
+        KeyBinding::new("enter", MenuSelect, Some("Menu")),
+        KeyBinding::new("space", MenuSelect, Some("Menu")),
+        KeyBinding::new("tab", MenuLeave, Some("Menu")),
+        KeyBinding::new("shift-tab", MenuLeave, Some("Menu")),
+        KeyBinding::new("alt-f", OpenFileMenu, None),
+        KeyBinding::new("alt-e", OpenEditMenu, None),
+        KeyBinding::new("f10", OpenFileMenu, None),
         KeyBinding::new("enter", ConfirmReview, Some("ReviewPopover > Input")),
         KeyBinding::new("escape", CloseMenu, Some("ReviewPopover > Input")),
         KeyBinding::new("escape", CloseHistory, Some("HistoryView")),
@@ -135,6 +165,8 @@ enum MenuKind {
     File,
     Edit,
 }
+
+const MENUS: [MenuKind; 2] = [MenuKind::File, MenuKind::Edit];
 
 #[derive(Clone, Debug, PartialEq)]
 enum LeaveIntent {
@@ -183,13 +215,21 @@ struct Reopened {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-enum ToastAction {
+pub(crate) enum ToastAction {
     ShowEvals { path: String },
+}
+
+impl ToastAction {
+    fn label(&self) -> &'static str {
+        match self {
+            Self::ShowEvals { .. } => "Show",
+        }
+    }
 }
 
 struct Toast {
     text: SharedString,
-    action: Option<ToastAction>,
+    actions: Vec<ToastAction>,
     _timer: Task<()>,
 }
 
@@ -301,6 +341,17 @@ pub struct Workspace {
     evals: Entity<EvalsView>,
     evals_page: bool,
     unsaved_checked: Option<(String, bool)>,
+    menu_active: Option<usize>,
+    menu_focus: FocusHandle,
+    menu_return: Option<FocusHandle>,
+    quick_actions: QuickActionSettings,
+    quick_actions_saving: Option<Task<()>>,
+    key_present: bool,
+    preferences: Option<Entity<PreferencesPanel>>,
+    key_dialog: Option<Entity<KeyDialog>>,
+    model_dialog: Option<Entity<ModelDialog>>,
+    spend: Option<Entity<SpendView>>,
+    _dialog_subscriptions: Vec<Subscription>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -385,7 +436,16 @@ impl Workspace {
                 cx,
             )
         });
-        pane.update(cx, |pane, cx| pane.set_text(&initial, window, cx));
+        let quick_actions = load_quick_actions(&user_data)
+            .ok()
+            .flatten()
+            .and_then(|text| parse_quick_action_settings(&text))
+            .unwrap_or_else(default_quick_action_settings);
+        pane.update(cx, |pane, cx| {
+            pane.quick_actions = enabled_quick_actions(&quick_actions, true);
+            pane.set_text(&initial, window, cx)
+        });
+        let key_present = services.keys.status().present;
         let events = cx.subscribe(&pane, |this, _, event: &PaneEvent, cx| {
             this.on_pane_event(event, cx)
         });
@@ -493,6 +553,17 @@ impl Workspace {
             evals,
             evals_page: false,
             unsaved_checked: None,
+            menu_active: None,
+            menu_focus: cx.focus_handle(),
+            menu_return: None,
+            quick_actions,
+            quick_actions_saving: None,
+            key_present,
+            preferences: None,
+            key_dialog: None,
+            model_dialog: None,
+            spend: None,
+            _dialog_subscriptions: Vec::new(),
             _subscriptions: vec![
                 evals_events,
                 evals_changed,
@@ -598,16 +669,16 @@ impl Workspace {
     }
 
     fn notify(&mut self, text: impl Into<SharedString>, cx: &mut Context<Self>) {
-        self.notify_with(text, None, cx);
+        self.notify_with(text, Vec::new(), cx);
     }
 
-    fn notify_with(
+    pub(crate) fn notify_with(
         &mut self,
         text: impl Into<SharedString>,
-        action: Option<ToastAction>,
+        actions: Vec<ToastAction>,
         cx: &mut Context<Self>,
     ) {
-        let duration = if action.is_some() {
+        let duration = if !actions.is_empty() {
             ACTION_TOAST_DURATION
         } else {
             TOAST_DURATION
@@ -621,7 +692,7 @@ impl Workspace {
         });
         self.toast = Some(Toast {
             text: text.into(),
-            action,
+            actions,
             _timer: timer,
         });
         cx.notify();
@@ -1095,7 +1166,10 @@ impl Workspace {
     }
 
     fn modal_open(&self) -> bool {
-        self.leave.is_some() || self.new_skill.is_some()
+        self.leave.is_some()
+            || self.new_skill.is_some()
+            || self.key_dialog.is_some()
+            || self.model_dialog.is_some()
     }
 
     fn open_skill(&self, cx: &App) -> Option<EvalSkill> {
@@ -1223,7 +1297,9 @@ impl Workspace {
                 }
                 self.notify_with(
                     ended_text(name, result),
-                    here.then(|| ToastAction::ShowEvals { path: path.clone() }),
+                    here.then(|| ToastAction::ShowEvals { path: path.clone() })
+                        .into_iter()
+                        .collect(),
                     cx,
                 );
             }
@@ -1728,10 +1804,224 @@ impl Workspace {
     }
 
     fn close_menu(&mut self, _: &CloseMenu, window: &mut Window, cx: &mut Context<Self>) {
-        self.open_menu = None;
+        if self.open_menu.is_some() {
+            self.leave_menu(window, cx);
+            return;
+        }
         if self.review_focus.take().is_some() {
             self.pane.update(cx, |pane, cx| pane.focus(window, cx));
         }
+        cx.notify();
+    }
+
+    fn enabled_rows(&self, kind: MenuKind, cx: &App) -> Vec<bool> {
+        self.menu_rows(kind, cx)
+            .iter()
+            .map(|row| !row.disabled)
+            .collect()
+    }
+
+    fn open_menu_at(
+        &mut self,
+        kind: MenuKind,
+        focus_first: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.open_menu.is_none() {
+            self.menu_return = window.focused(cx);
+        }
+        self.review_focus = None;
+        self.open_menu = Some(kind);
+        self.menu_active = if focus_first {
+            next_enabled(&self.enabled_rows(kind, cx), None, true)
+        } else {
+            None
+        };
+        window.focus(&self.menu_focus, cx);
+        cx.notify();
+    }
+
+    fn leave_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.open_menu = None;
+        self.menu_active = None;
+        match self.menu_return.take() {
+            Some(handle) => window.focus(&handle, cx),
+            None => self.focus_back(window, cx),
+        }
+        cx.notify();
+    }
+
+    fn toggle_menu(&mut self, kind: MenuKind, window: &mut Window, cx: &mut Context<Self>) {
+        if self.open_menu == Some(kind) {
+            self.leave_menu(window, cx);
+        } else {
+            self.open_menu_at(kind, true, window, cx);
+        }
+    }
+
+    fn move_in_menu(&mut self, forward: bool, cx: &mut Context<Self>) {
+        let Some(kind) = self.open_menu else {
+            return;
+        };
+        self.menu_active = next_enabled(&self.enabled_rows(kind, cx), self.menu_active, forward);
+        cx.notify();
+    }
+
+    fn shift_menu(&mut self, forward: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(kind) = self.open_menu else {
+            return;
+        };
+        let index = MENUS.iter().position(|menu| *menu == kind).unwrap_or(0);
+        self.open_menu_at(
+            MENUS[shifted(index, MENUS.len(), forward)],
+            true,
+            window,
+            cx,
+        );
+    }
+
+    fn select_menu_row(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(kind) = self.open_menu else {
+            return;
+        };
+        let Some(row) = self.menu_rows(kind, cx).into_iter().nth(index) else {
+            return;
+        };
+        if row.disabled {
+            return;
+        }
+        self.leave_menu(window, cx);
+        window.dispatch_action(row.action, cx);
+    }
+
+    fn focus_back(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        match &self.preferences {
+            Some(preferences) => {
+                let handle = preferences.read(cx).focus_handle(cx);
+                window.focus(&handle, cx);
+            }
+            None => self.pane.update(cx, |pane, cx| pane.focus(window, cx)),
+        }
+    }
+
+    fn open_preferences(
+        &mut self,
+        _: &OpenPreferences,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_menu = None;
+        if let Some(preferences) = &self.preferences {
+            let handle = preferences.read(cx).focus_handle(cx);
+            window.focus(&handle, cx);
+            return;
+        }
+        let settings = self.quick_actions.clone();
+        let panel = cx.new(|cx| PreferencesPanel::new(settings, window, cx));
+        let events = cx.subscribe_in(
+            &panel,
+            window,
+            |this, _, event: &PreferencesEvent, window, cx| match event {
+                PreferencesEvent::Close => {
+                    this.preferences = None;
+                    this.pane.update(cx, |pane, cx| pane.focus(window, cx));
+                    cx.notify();
+                }
+                PreferencesEvent::OpenModel => this.open_model(window, cx),
+                PreferencesEvent::OpenKey => this.open_key(window, cx),
+                PreferencesEvent::OpenSpend => this.show_spend(&ShowSpend, window, cx),
+                PreferencesEvent::QuickActions(settings) => {
+                    this.change_quick_actions(settings.clone(), cx)
+                }
+            },
+        );
+        self._dialog_subscriptions.push(events);
+        self.preferences = Some(panel);
+        cx.notify();
+    }
+
+    fn change_quick_actions(&mut self, settings: QuickActionSettings, cx: &mut Context<Self>) {
+        self.quick_actions = settings.clone();
+        self.pane.update(cx, |pane, cx| {
+            pane.quick_actions = enabled_quick_actions(&settings, true);
+            cx.notify();
+        });
+        let user_data = self.services.user_data.clone();
+        let text = serialize_quick_action_settings(&settings);
+        let previous = self.quick_actions_saving.take();
+        let write = cx.background_spawn(async move { save_quick_actions(&user_data, &text) });
+        self.quick_actions_saving = Some(cx.spawn(async move |this, cx| {
+            if let Some(previous) = previous {
+                previous.await;
+            }
+            if let Err(error) = write.await {
+                eprintln!("Quick actions could not be saved: {error}");
+                let _ = this.update(cx, |this, cx| {
+                    this.notify("Quick actions could not be saved.", cx)
+                });
+            }
+        }));
+    }
+
+    fn open_key(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let dialog = cx.new(|cx| KeyDialog::new(self.services.clone(), window, cx));
+        let events = cx.subscribe_in(&dialog, window, |this, _, event: &KeyEvent, window, cx| {
+            match event {
+                KeyEvent::State(state) => this.key_present = state.present,
+                KeyEvent::Saved(message) => this.notify(message.clone(), cx),
+                KeyEvent::Close => {
+                    this.key_dialog = None;
+                    this.focus_back(window, cx);
+                }
+            }
+            cx.notify();
+        });
+        self._dialog_subscriptions.push(events);
+        self.key_dialog = Some(dialog);
+        cx.notify();
+    }
+
+    fn open_model(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let dialog = cx.new(|cx| ModelDialog::new(self.services.clone(), window, cx));
+        let events = cx.subscribe_in(
+            &dialog,
+            window,
+            |this, _, event: &ModelEvent, window, cx| {
+                match event {
+                    ModelEvent::Saved(message) => this.notify(message.clone(), cx),
+                    ModelEvent::Close => {
+                        this.model_dialog = None;
+                        this.focus_back(window, cx);
+                    }
+                }
+                cx.notify();
+            },
+        );
+        self._dialog_subscriptions.push(events);
+        self.model_dialog = Some(dialog);
+        cx.notify();
+    }
+
+    fn show_spend(&mut self, _: &ShowSpend, window: &mut Window, cx: &mut Context<Self>) {
+        self.open_menu = None;
+        self.preferences = None;
+        if let Some(spend) = &self.spend {
+            spend.update(cx, |spend, cx| spend.reload(cx));
+            return;
+        }
+        let view = cx.new(|cx| SpendView::new(self.services.clone(), cx));
+        let events = cx.subscribe_in(&view, window, |this, _, event: &SpendEvent, window, cx| {
+            match event {
+                SpendEvent::Close => {
+                    this.spend = None;
+                    this.pane.update(cx, |pane, cx| pane.focus(window, cx));
+                }
+            }
+            cx.notify();
+        });
+        self._dialog_subscriptions.push(events);
+        self.spend = Some(view);
         cx.notify();
     }
 
@@ -1779,6 +2069,7 @@ impl Workspace {
                         false,
                     )
                 });
+                rows.push(row("AI spend…", None, Box::new(ShowSpend), false));
                 rows
             }
             MenuKind::Edit => vec![
@@ -1855,18 +2146,16 @@ impl Workspace {
                 cx.listener(move |this, _, window, cx| {
                     window.prevent_default();
                     cx.stop_propagation();
-                    this.open_menu = if this.open_menu == Some(kind) {
-                        None
+                    if this.open_menu == Some(kind) {
+                        this.leave_menu(window, cx);
                     } else {
-                        Some(kind)
-                    };
-                    cx.notify();
+                        this.open_menu_at(kind, false, window, cx);
+                    }
                 }),
             )
-            .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
+            .on_hover(cx.listener(move |this, hovered: &bool, window, cx| {
                 if *hovered && this.open_menu.is_some() && this.open_menu != Some(kind) {
-                    this.open_menu = Some(kind);
-                    cx.notify();
+                    this.open_menu_at(kind, false, window, cx);
                 }
             }))
     }
@@ -1881,9 +2170,27 @@ impl Workspace {
             MenuKind::File => px(8.),
             MenuKind::Edit => px(52.),
         };
+        let active = self.menu_active;
         div()
             .id("menu")
             .key_context("Menu")
+            .track_focus(&self.menu_focus)
+            .on_action(cx.listener(|this, _: &MenuDown, _, cx| this.move_in_menu(true, cx)))
+            .on_action(cx.listener(|this, _: &MenuUp, _, cx| this.move_in_menu(false, cx)))
+            .on_action(
+                cx.listener(|this, _: &MenuNext, window, cx| this.shift_menu(true, window, cx)),
+            )
+            .on_action(
+                cx.listener(|this, _: &MenuPrevious, window, cx| {
+                    this.shift_menu(false, window, cx)
+                }),
+            )
+            .on_action(cx.listener(|this, _: &MenuSelect, window, cx| {
+                if let Some(index) = this.menu_active {
+                    this.select_menu_row(index, window, cx);
+                }
+            }))
+            .on_action(cx.listener(|this, _: &MenuLeave, window, cx| this.leave_menu(window, cx)))
             .occlude()
             .absolute()
             .top(px(38.))
@@ -1898,7 +2205,8 @@ impl Workspace {
                     .into_iter()
                     .enumerate()
                     .map(|(index, item)| {
-                        let action = item.action.boxed_clone();
+                        let is_active = active == Some(index);
+                        let disabled = item.disabled;
                         div()
                             .when(item.separated, |this| {
                                 this.border_t_1()
@@ -1923,13 +2231,23 @@ impl Workspace {
                                     } else {
                                         roles.ink
                                     })
+                                    .border_1()
+                                    .border_color(if is_active {
+                                        roles.accent
+                                    } else {
+                                        transparent_black()
+                                    })
+                                    .when(is_active, |this| this.bg(roles.fill))
+                                    .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
+                                        if *hovered {
+                                            this.menu_active = (!disabled).then_some(index);
+                                            cx.notify();
+                                        }
+                                    }))
                                     .when(!item.disabled, |this| {
-                                        this.hover(|this| this.bg(roles.fill).outline_accent(roles))
-                                            .on_click(cx.listener(move |this, _, window, cx| {
-                                                this.open_menu = None;
-                                                window.dispatch_action(action.boxed_clone(), cx);
-                                                cx.notify();
-                                            }))
+                                        this.on_click(cx.listener(move |this, _, window, cx| {
+                                            this.select_menu_row(index, window, cx)
+                                        }))
                                     })
                                     .child(item.label)
                                     .children(item.shortcut.map(|shortcut| {
@@ -2130,7 +2448,7 @@ impl Workspace {
 
     fn render_toast(&self, roles: Roles, cx: &mut Context<Self>) -> Option<AnyElement> {
         let toast = self.toast.as_ref()?;
-        let action = toast.action.clone();
+        let actions = toast.actions.clone();
         Some(
             div()
                 .absolute()
@@ -2155,36 +2473,24 @@ impl Workspace {
                         .items_center()
                         .gap(px(12.))
                         .child(toast.text.clone())
-                        .when_some(action, |this, action| {
-                            this.child(
-                                ui::sized_button(
-                                    "toast-action",
-                                    "Show",
-                                    ButtonKind::Default,
-                                    ui::ButtonSize::Small,
-                                    false,
-                                    roles,
-                                )
-                                .on_click(cx.listener(
-                                    move |this, _, window, cx| {
-                                        this.run_toast_action(&action, window, cx)
-                                    },
-                                )),
+                        .children(actions.into_iter().enumerate().map(|(index, action)| {
+                            ui::sized_button(
+                                ("toast-action", index),
+                                action.label(),
+                                ButtonKind::Default,
+                                ui::ButtonSize::Small,
+                                false,
+                                roles,
                             )
-                        }),
+                            .on_click(cx.listener(
+                                move |this, _, window, cx| {
+                                    this.run_toast_action(&action, window, cx)
+                                },
+                            ))
+                        })),
                 )
                 .into_any_element(),
         )
-    }
-}
-
-trait OutlineAccent {
-    fn outline_accent(self, roles: Roles) -> Self;
-}
-
-impl OutlineAccent for StyleRefinement {
-    fn outline_accent(self, roles: Roles) -> Self {
-        self.border_1().border_color(roles.accent)
     }
 }
 
@@ -2370,6 +2676,11 @@ impl Render for Workspace {
         let timeline = self.render_timeline(mode, evals_button, roles, cx);
         let version_bar = self.render_version_bar(mode, roles, cx);
         let content: AnyElement = match mode {
+            _ if self.spend.is_some() => self
+                .spend
+                .clone()
+                .map(|spend| spend.into_any_element())
+                .unwrap_or_else(|| div().into_any_element()),
             _ if evals_shown => self.evals.clone().into_any_element(),
             HistoryMode::Editing => div()
                 .size_full()
@@ -2403,6 +2714,14 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::toggle_library))
             .on_action(cx.listener(Self::search_library))
             .on_action(cx.listener(Self::show_frontmatter_problems))
+            .on_action(cx.listener(Self::open_preferences))
+            .on_action(cx.listener(Self::show_spend))
+            .on_action(cx.listener(|this, _: &OpenFileMenu, window, cx| {
+                this.toggle_menu(MenuKind::File, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &OpenEditMenu, window, cx| {
+                this.toggle_menu(MenuKind::Edit, window, cx)
+            }))
             .on_action(
                 cx.listener(|this, _: &CloseHistory, window, cx| this.close_history(window, cx)),
             )
@@ -2473,7 +2792,10 @@ impl Render for Workspace {
                                     .child(timeline)
                                     .children(version_bar),
                             )
-                            .child(div().flex_1().min_h_0().child(content)),
+                            .child(div().flex_1().min_h_0().child(content))
+                            .when(!self.key_present, |this| {
+                                this.child(self.render_missing_key(roles, cx))
+                            }),
                     )
                     .when(
                         self.library_open && self.placement() == Placement::Overlay,
@@ -2494,7 +2816,21 @@ impl Render for Workspace {
                         },
                     ),
             )
+            .when_some(self.preferences.clone(), |this, preferences| {
+                this.child(
+                    div()
+                        .absolute()
+                        .top(component::TITLE_BAR_HEIGHT)
+                        .right_0()
+                        .bottom_0()
+                        .w(px(PREFERENCES_WIDTH))
+                        .max_w_full()
+                        .child(preferences),
+                )
+            })
             .children(toast)
+            .when_some(self.model_dialog.clone(), |this, dialog| this.child(dialog))
+            .when_some(self.key_dialog.clone(), |this, dialog| this.child(dialog))
             .when_some(self.new_skill.clone(), |this, dialog| this.child(dialog))
             .when_some(self.evals.read(cx).dialog(), |this, dialog| {
                 this.child(dialog)
@@ -2523,6 +2859,28 @@ impl Render for Workspace {
 }
 
 impl Workspace {
+    fn render_missing_key(&self, roles: Roles, cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .id("missing-key")
+            .w_full()
+            .flex_none()
+            .bg(roles.raised)
+            .px(px(24.))
+            .py(px(12.))
+            .flex()
+            .flex_row()
+            .items_center()
+            .justify_center()
+            .gap(px(4.))
+            .text_size(px(14.))
+            .text_color(roles.ink)
+            .child("OpenRouter key missing.")
+            .child(
+                ui::button("set-key", "Set the key", ButtonKind::Default, roles)
+                    .on_click(cx.listener(|this, _, window, cx| this.open_key(window, cx))),
+            )
+    }
+
     fn render_rail(&self, roles: Roles, cx: &mut Context<Self>) -> impl IntoElement {
         let rail_button = |id: &'static str,
                            icon: component::IconName,

@@ -1,6 +1,18 @@
+use std::path::{Path, PathBuf};
+
+use desafinado_features::theme::{
+    catalog::{ThemeOption, omarchy_option},
+    omarchy_source::{default_omarchy_state_dir, read_omarchy_theme},
+    preference::{
+        KeyValueStorage, OMARCHY_CHOICE, THEME_STORAGE_KEY, active_theme, load_theme_choice,
+        save_theme_choice, selected_option,
+    },
+    tokens::{ThemeMode, ThemeTokens},
+};
+use desafinado_platform::files::write_atomic_unconditionally;
 use gpui_kit::{
     App, Global, Hsla, Rgba,
-    component::{Theme, highlighter::HighlightTheme},
+    component::{Theme, ThemeMode as ThemeModeKind, highlighter::HighlightTheme},
 };
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -33,22 +45,110 @@ pub fn hex(code: &str) -> Hsla {
     .into()
 }
 
-pub fn mood_indigo() -> Roles {
+pub fn roles_of(tokens: &ThemeTokens) -> Roles {
+    let r = &tokens.roles;
     Roles {
-        canvas: hex("#051230"),
-        raised: hex("#1e0e3f"),
-        ink: hex("#ffdd00"),
-        faint: hex("#a6a159"),
-        accent: hex("#a6a159"),
-        ai: hex("#f68c50"),
-        danger: hex("#d46d7a"),
-        selection: hex("#1e0e3f"),
-        fill: hex("#1e0e3f"),
-        fill_hover: hex("#051230"),
-        hairline: hex("#a6a159"),
-        scrollbar: hex("#a6a159"),
-        dark: true,
+        canvas: hex(&r.canvas),
+        raised: hex(&r.raised),
+        ink: hex(&r.ink),
+        faint: hex(&r.faint),
+        accent: hex(&r.accent),
+        ai: hex(&r.ai),
+        danger: hex(&r.danger),
+        selection: hex(&r.selection),
+        fill: hex(&r.fill),
+        fill_hover: hex(&r.fill_hover),
+        hairline: hex(&r.hairline),
+        scrollbar: hex(&r.scrollbar),
+        dark: tokens.mode == ThemeMode::Dark,
     }
+}
+
+pub const THEME_FILE_NAME: &str = "theme.txt";
+
+struct ThemeFile(PathBuf);
+
+impl KeyValueStorage for ThemeFile {
+    fn get_item(&self, key: &str) -> Result<Option<String>, String> {
+        if key != THEME_STORAGE_KEY {
+            return Ok(None);
+        }
+        match std::fs::read_to_string(&self.0) {
+            Ok(text) => Ok(Some(text.trim().to_string())),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(error.to_string()),
+        }
+    }
+
+    fn set_item(&self, key: &str, value: &str) -> Result<(), String> {
+        if key != THEME_STORAGE_KEY {
+            return Ok(());
+        }
+        write_atomic_unconditionally(&self.0, value).map_err(|error| error.to_string())
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct ThemeState {
+    pub choice: String,
+    pub omarchy: Option<ThemeTokens>,
+    file: PathBuf,
+}
+
+impl Global for ThemeState {}
+
+impl ThemeState {
+    pub fn load(user_data: &Path) -> Self {
+        let file = user_data.join(THEME_FILE_NAME);
+        let omarchy = std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .and_then(|home| read_omarchy_theme(&default_omarchy_state_dir(&home)));
+        Self {
+            choice: load_theme_choice(Some(&ThemeFile(file.clone()))),
+            omarchy,
+            file,
+        }
+    }
+
+    pub fn tokens(&self) -> &ThemeTokens {
+        active_theme(&self.choice, self.omarchy.as_ref())
+    }
+
+    pub fn selected(&self) -> String {
+        selected_option(&self.choice, self.omarchy.as_ref())
+    }
+
+    pub fn omarchy_option(&self) -> Option<ThemeOption> {
+        self.omarchy
+            .clone()
+            .map(|tokens| omarchy_option(OMARCHY_CHOICE, tokens))
+    }
+}
+
+pub fn init(user_data: &Path, cx: &mut App) {
+    let state = ThemeState::load(user_data);
+    apply(roles_of(state.tokens()), cx);
+    cx.set_global(state);
+}
+
+pub fn apply_default(cx: &mut App) {
+    apply(
+        roles_of(&desafinado_features::theme::catalog::default_theme().tokens),
+        cx,
+    );
+}
+
+pub fn state(cx: &App) -> &ThemeState {
+    cx.global::<ThemeState>()
+}
+
+pub fn choose(choice: &str, cx: &mut App) {
+    let mut state = cx.global::<ThemeState>().clone();
+    save_theme_choice(Some(&ThemeFile(state.file.clone())), choice);
+    state.choice = choice.to_string();
+    apply(roles_of(state.tokens()), cx);
+    cx.set_global(state);
+    cx.refresh_windows();
 }
 
 pub fn roles(cx: &App) -> Roles {
@@ -57,6 +157,15 @@ pub fn roles(cx: &App) -> Roles {
 
 pub fn apply(roles: Roles, cx: &mut App) {
     cx.set_global(roles);
+    Theme::change(
+        if roles.dark {
+            ThemeModeKind::Dark
+        } else {
+            ThemeModeKind::Light
+        },
+        None,
+        cx,
+    );
     Theme::update(cx, |theme| {
         let c = &mut theme.colors;
         c.background = roles.canvas;
@@ -200,4 +309,37 @@ fn highlight_theme(roles: &Roles) -> HighlightTheme {
         }
     });
     serde_json::from_value(value).expect("highlight theme")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use desafinado_features::theme::catalog::{default_theme, theme_by_id};
+
+    #[test]
+    fn maps_a_light_palette_to_light_roles() {
+        let light = desafinado_features::theme::catalog::themes_of_mode(ThemeMode::Light)[0];
+        let roles = roles_of(&light.tokens);
+        assert!(!roles.dark);
+        assert_eq!(roles.canvas, hex(&light.tokens.roles.canvas));
+        assert_eq!(roles.ai, hex(&light.tokens.roles.ai));
+    }
+
+    #[test]
+    fn maps_the_default_theme_to_mood_indigo() {
+        let roles = roles_of(&default_theme().tokens);
+        assert!(roles.dark);
+        assert_eq!(roles.canvas, hex("#051230"));
+        assert_eq!(roles.ink, hex("#ffdd00"));
+    }
+
+    #[test]
+    fn keeps_the_choice_in_a_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = ThemeFile(dir.path().join(THEME_FILE_NAME));
+        assert_eq!(load_theme_choice(Some(&file)), OMARCHY_CHOICE);
+        let id = &theme_by_id("desafinado").unwrap().id;
+        save_theme_choice(Some(&file), id);
+        assert_eq!(load_theme_choice(Some(&file)), "desafinado");
+    }
 }

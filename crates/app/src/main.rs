@@ -5,17 +5,27 @@ mod evals_view;
 mod frontmatter_view;
 mod history_store;
 mod history_view;
+mod key_dialog;
 mod last_file;
 mod library_panel;
+mod menu_nav;
+mod model_dialog;
 mod new_skill_dialog;
+mod preferences_view;
 mod single_instance;
+mod spend;
+mod spend_view;
+mod start_error;
 mod theme;
 mod ui;
 mod workspace;
 
 use std::{borrow::Cow, path::PathBuf};
 
-use desafinado_platform::{launch::launch_file_of, user_data::user_data_dir};
+use desafinado_platform::{
+    launch::launch_file_of,
+    user_data::{ensure_user_data_dir, user_data_dir},
+};
 use single_instance::{Claim, LaunchMessage};
 
 use gpui_kit::*;
@@ -28,7 +38,64 @@ const FONTS: [&[u8]; 5] = [
     include_bytes!("../assets/fonts/LeagueSpartan.ttf"),
 ];
 
+fn window_options(cx: &mut App) -> WindowOptions {
+    let mut options = component::TitleBar::window_options();
+    options.window_bounds = Some(WindowBounds::Windowed(Bounds::centered(
+        None,
+        size(px(1280.), px(860.)),
+        cx,
+    )));
+    options.app_id = Some("desafinado".into());
+    options
+}
+
+fn start_failure() -> Option<String> {
+    let dir = user_data_dir();
+    ensure_user_data_dir(&dir)
+        .and_then(|_| {
+            let probe = dir.join(".write-check");
+            std::fs::write(&probe, b"")?;
+            std::fs::remove_file(probe)
+        })
+        .err()
+        .map(|error| {
+            start_error::start_error_message(&format!(
+                "Could not use the user data folder {}: {error}",
+                dir.display()
+            ))
+        })
+}
+
+fn show_start_error(message: String) {
+    gpui_kit::application()
+        .with_assets(gpui_kit::assets::Assets::new(""))
+        .run(move |cx| {
+            gpui_kit::init(cx);
+            let _ = cx
+                .text_system()
+                .add_fonts(FONTS.iter().map(|font| Cow::Borrowed(*font)).collect());
+            theme::apply_default(cx);
+            let options = window_options(cx);
+            gpui_kit::open_window(options, cx, |_, cx| {
+                cx.new(|_| start_error::StartError::new(message))
+            })
+            .expect("failed to open the window");
+            cx.on_window_closed(|cx, _| {
+                if cx.windows().is_empty() {
+                    cx.quit();
+                }
+            })
+            .detach();
+            cx.activate(true);
+        });
+}
+
 fn main() {
+    if let Some(message) = start_failure() {
+        eprintln!("Failed to start: {message}");
+        show_start_error(message);
+        return;
+    }
     let argv: Vec<String> = std::env::args().collect();
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/"));
     let (sender, launches) = futures::channel::mpsc::unbounded::<LaunchMessage>();
@@ -57,19 +124,16 @@ fn main() {
             let _ = cx
                 .text_system()
                 .add_fonts(FONTS.iter().map(|font| Cow::Borrowed(*font)).collect());
-            theme::apply(theme::mood_indigo(), cx);
+            theme::init(&services.user_data, cx);
             workspace::init(cx);
+            preferences_view::init(cx);
+            key_dialog::init(cx);
+            model_dialog::init(cx);
             editor_pane::init(cx);
             library_panel::init(cx);
             new_skill_dialog::init(cx);
             eval_run_dialog::init(cx);
-            let mut options = component::TitleBar::window_options();
-            options.window_bounds = Some(WindowBounds::Windowed(Bounds::centered(
-                None,
-                size(px(1280.), px(860.)),
-                cx,
-            )));
-            options.app_id = Some("desafinado".into());
+            let options = window_options(cx);
             gpui_kit::open_window(options, cx, |window, cx| {
                 cx.new(|cx| {
                     workspace::Workspace::new(
