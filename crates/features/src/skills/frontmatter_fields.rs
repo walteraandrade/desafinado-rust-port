@@ -3,8 +3,8 @@ use serde_json::{Map as JsonMap, Value};
 
 use super::frontmatter_block::{Frontmatter, find_frontmatter, is_delimited_block, opening_end};
 use super::yaml::{
-    self, Map, Node, Parsed, Scalar, Style, node_start, parse, quoted_end, resolve_scalar,
-    skip_props, to_value,
+    Map, Node, Parsed, Scalar, Style, node_start, parse, quoted_end, resolve_scalar, skip_props,
+    to_value,
 };
 use super::yaml_render::{
     Carried, has_keep_chomping_header, render_double_json, render_styled, style_for,
@@ -272,9 +272,7 @@ fn anchor_in_props(text: &str, start: usize) -> Option<String> {
 
 fn token_end(text: &str, scalar: &Scalar) -> usize {
     match scalar.style {
-        Style::QuoteSingle | Style::QuoteDouble => {
-            quoted_end(text, skip_props(text, scalar.start))
-        }
+        Style::QuoteSingle | Style::QuoteDouble => quoted_end(text, skip_props(text, scalar.start)),
         Style::Plain => scalar.end,
         Style::BlockLiteral | Style::BlockFolded => {
             let bytes = text.as_bytes();
@@ -321,7 +319,7 @@ fn comment_before_of(gap: &str) -> Option<String> {
     (!comments.is_empty()).then(|| comments.join("\n"))
 }
 
-fn analyze(text: &str, key_end: usize, value: &Node, parsed: &Parsed) -> Located {
+fn analyze(text: &str, key_end: usize, value: &Node) -> Located {
     let key_line_end = line_end(text, key_end);
     match value {
         Node::Scalar(scalar) => {
@@ -331,9 +329,9 @@ fn analyze(text: &str, key_end: usize, value: &Node, parsed: &Parsed) -> Located
             };
             if scalar.style == Style::Plain && scalar.value.is_empty() {
                 let end = line_end(text, key_end.max(scalar.end));
-                let after_colon = text[key_end..end].find(':').map_or("", |colon| {
-                    &text[key_end + colon + 1..end]
-                });
+                let after_colon = text[key_end..end]
+                    .find(':')
+                    .map_or("", |colon| &text[key_end + colon + 1..end]);
                 let comment = after_colon
                     .trim()
                     .strip_prefix('#')
@@ -392,7 +390,6 @@ fn analyze(text: &str, key_end: usize, value: &Node, parsed: &Parsed) -> Located
         },
         Node::Seq(_) | Node::Map(_) => {
             let gap_end = node_start(value).max(key_end).min(text.len());
-            let _ = parsed;
             Located {
                 string_value: None,
                 carried: Carried {
@@ -416,7 +413,7 @@ fn locate(block: &str, parsed: &Parsed, field: SkillField) -> Option<Located> {
         return None;
     };
     let key_end = token_end(block, key);
-    Some(analyze(block, key_end, value, parsed))
+    Some(analyze(block, key_end, value))
 }
 
 fn is_safe_to_write(rendered: &str, field: SkillField, value: &str) -> bool {
@@ -481,8 +478,7 @@ fn block_edits(block: &str, parsed: &Parsed, values: &SkillFieldValues) -> Vec<T
         .iter()
         .map(|(field, value)| (*field, *value, locate(block, parsed, *field)))
         .collect();
-    let belongs_after_name =
-        |field: SkillField| field == SkillField::Description && name.is_some();
+    let belongs_after_name = |field: SkillField| field == SkillField::Description && name.is_some();
     let missing: Vec<(SkillField, &str)> = targets
         .iter()
         .filter(|(_, _, located)| located.is_none())
@@ -519,7 +515,12 @@ pub fn apply_edits(text: &str, edits: &[TextEdit]) -> String {
     let mut ordered: Vec<&TextEdit> = edits.iter().collect();
     ordered.sort_by_key(|edit| std::cmp::Reverse(edit.from));
     ordered.iter().fold(text.to_string(), |result, edit| {
-        format!("{}{}{}", &result[..edit.from], edit.insert, &result[edit.to..])
+        format!(
+            "{}{}{}",
+            &result[..edit.from],
+            edit.insert,
+            &result[edit.to..]
+        )
     })
 }
 
@@ -577,6 +578,3 @@ pub fn set_skill_fields(
 ) -> Result<String, FrontmatterProblem> {
     plan_skill_field_edits(text, values).map(|edits| apply_edits(text, &edits))
 }
-
-#[allow(unused_imports)]
-use yaml as _;

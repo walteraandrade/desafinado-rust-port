@@ -5,16 +5,19 @@ use super::session::{DocumentHistory, SubscriptionId};
 use super::store::HistoryKey;
 use super::types::{VersionId, VersionList};
 
+type KeyOf<Reference> = dyn Fn(Option<&Reference>) -> HistoryKey + Send + Sync;
+type Create = dyn Fn(HistoryKey, Option<VersionList>) -> DocumentHistory + Send + Sync;
+
 pub struct HubOptions<Reference> {
-    pub key_of: Box<dyn Fn(Option<&Reference>) -> HistoryKey + Send + Sync>,
-    pub create: Box<dyn Fn(HistoryKey, Option<VersionList>) -> DocumentHistory + Send + Sync>,
+    pub key_of: Box<KeyOf<Reference>>,
+    pub create: Box<Create>,
     pub first: Option<Reference>,
     pub first_initial: VersionList,
 }
 
 pub struct SwitchableHistory<Reference> {
-    key_of: Arc<dyn Fn(Option<&Reference>) -> HistoryKey + Send + Sync>,
-    create: Arc<dyn Fn(HistoryKey, Option<VersionList>) -> DocumentHistory + Send + Sync>,
+    key_of: Arc<KeyOf<Reference>>,
+    create: Arc<Create>,
     key: HistoryKey,
     current: DocumentHistory,
     retired: Vec<DocumentHistory>,
@@ -24,10 +27,8 @@ pub struct SwitchableHistory<Reference> {
 
 impl<Reference> SwitchableHistory<Reference> {
     pub fn new(options: HubOptions<Reference>) -> Self {
-        let key_of: Arc<dyn Fn(Option<&Reference>) -> HistoryKey + Send + Sync> =
-            Arc::from(options.key_of);
-        let create: Arc<dyn Fn(HistoryKey, Option<VersionList>) -> DocumentHistory + Send + Sync> =
-            Arc::from(options.create);
+        let key_of: Arc<KeyOf<Reference>> = Arc::from(options.key_of);
+        let create: Arc<Create> = Arc::from(options.create);
         let key = key_of(options.first.as_ref());
         let current = create(key.clone(), Some(options.first_initial));
         Self {

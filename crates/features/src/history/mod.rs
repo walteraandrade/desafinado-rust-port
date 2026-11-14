@@ -1,5 +1,6 @@
 pub mod cause;
 pub mod events;
+#[allow(clippy::module_inception)]
 pub mod history;
 pub mod hub;
 pub mod line_changes;

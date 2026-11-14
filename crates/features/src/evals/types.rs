@@ -52,6 +52,7 @@ pub struct StoppedRun {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "kebab-case")]
+#[allow(clippy::large_enum_variant)]
 pub enum EvalStatus {
     #[serde(rename_all = "camelCase")]
     Ready {

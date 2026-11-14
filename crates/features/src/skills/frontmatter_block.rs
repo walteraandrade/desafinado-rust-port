@@ -169,7 +169,10 @@ mod tests {
     #[test]
     fn accepts_a_closing_delimiter_at_the_very_end() {
         let text = "---\nname: demo\n---";
-        assert_eq!(find_frontmatter(text).map(|found| found.to), Some(text.len()));
+        assert_eq!(
+            find_frontmatter(text).map(|found| found.to),
+            Some(text.len())
+        );
     }
 
     #[test]

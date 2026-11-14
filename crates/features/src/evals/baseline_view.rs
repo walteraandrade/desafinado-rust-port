@@ -4,8 +4,10 @@ use super::tally::Tally;
 use super::types::ReportPart;
 use super::view::{ArmLabels, count_label, left_out_text, skill_arms, unpaired_text};
 
+type IntroFn = Box<dyn Fn(usize, &str) -> String>;
+
 pub struct RunCopy {
-    pub intro: Box<dyn Fn(usize, &str) -> String>,
+    pub intro: IntroFn,
     pub stage_note: Option<&'static str>,
     pub limit_note: &'static str,
     pub today_title: Option<&'static str>,

@@ -234,9 +234,10 @@ pub fn parse(text: &str) -> Result<Parsed, YamlError> {
             Ok(pair) => events.push(pair),
             Err(failure) => {
                 let marker = failure.marker();
+                let last_line = text.bytes().filter(|byte| *byte == b'\n').count() + 1;
                 return Err(YamlError {
                     message: failure.info().replace('\n', " "),
-                    line: marker.line(),
+                    line: marker.line().min(last_line),
                     column: marker.col() + 1,
                 });
             }
@@ -321,9 +322,8 @@ static FLOAT_SPECIAL: LazyLock<Regex> = LazyLock::new(|| {
 static FLOAT_EXP: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"^[-+]?(?:\.[0-9]+|[0-9]+(?:\.[0-9]*)?)[eE][-+]?[0-9]+$").expect("valid pattern")
 });
-static FLOAT: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^[-+]?(?:\.[0-9]+|[0-9]+\.[0-9]*)$").expect("valid pattern")
-});
+static FLOAT: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^[-+]?(?:\.[0-9]+|[0-9]+\.[0-9]*)$").expect("valid pattern"));
 
 pub fn reads_as_non_string(text: &str) -> bool {
     [
@@ -357,9 +357,9 @@ fn integer(digits: &str, radix: u32) -> Value {
         Ok(parsed) if sign < 0.0 => Value::from(-parsed),
         Ok(parsed) => Value::from(parsed),
         Err(_) => number(
-            sign * body
-                .chars()
-                .fold(0.0, |total, c| total * f64::from(radix) + f64::from(c.to_digit(radix).unwrap_or(0))),
+            sign * body.chars().fold(0.0, |total, c| {
+                total * f64::from(radix) + f64::from(c.to_digit(radix).unwrap_or(0))
+            }),
         ),
     }
 }

@@ -46,7 +46,10 @@ pub fn escape_double(value: &str) -> String {
             '\u{8}' => "\\b".to_string(),
             '\u{c}' => "\\f".to_string(),
             c if (c as u32) < 0x20
-                || matches!(c, '\u{7f}'..='\u{9f}' | '\u{2028}' | '\u{2029}' | '\u{feff}') =>
+                || matches!(
+                    c,
+                    '\u{7f}'..='\u{9f}' | '\u{2028}' | '\u{2029}' | '\u{feff}'
+                ) =>
             {
                 format!("\\u{:04x}", c as u32)
             }
@@ -230,12 +233,15 @@ fn assemble(field: &str, text: &str, carried: &Carried, trailing_comment: bool) 
 
 pub fn render_styled(field: &str, value: &str, style: Style, carried: &Carried) -> String {
     if style.is_block() {
-        let comment = [carried.comment_before.as_deref(), carried.comment.as_deref()]
-            .into_iter()
-            .flatten()
-            .map(|text| text.replace('\n', " "))
-            .collect::<Vec<_>>()
-            .join(" ");
+        let comment = [
+            carried.comment_before.as_deref(),
+            carried.comment.as_deref(),
+        ]
+        .into_iter()
+        .flatten()
+        .map(|text| text.replace('\n', " "))
+        .collect::<Vec<_>>()
+        .join(" ");
         let header_comment = (!comment.is_empty()).then_some(comment.as_str());
         let text = stringify_string(value, style, header_comment);
         let is_block_text = text.starts_with(['|', '>']);
