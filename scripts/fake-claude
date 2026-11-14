@@ -1,0 +1,158 @@
+#!/usr/bin/env python3
+"""Stand-in for the Claude CLI's `plugin eval`, for checks that must not call the model.
+
+Point DESAFINADO_CLAUDE_CLI at this file. It answers `--version` and writes a report in the
+shape `claude plugin eval --json` writes, from the Stage's evals/ folders, without any model.
+Optional settings, one `key=value` per line in $HOME/.fake-claude: delay (seconds per run),
+cost (US$ per run), fail (exit code to fail with before any report).
+An Eval whose folder name has "always" passes in both Arms, "broken" fails in both,
+"flaky" passes every other run; any other passes with the Skill and fails without it.
+"""
+import datetime
+import json
+import os
+import re
+import sys
+import time
+
+VERSION = "2.1.319"
+
+
+def settings():
+    found = {"delay": "0.4", "cost": "0.0123", "fail": ""}
+    try:
+        with open(os.path.join(os.environ.get("HOME", ""), ".fake-claude")) as handle:
+            for line in handle:
+                key, _, value = line.strip().partition("=")
+                if key:
+                    found[key] = value
+    except OSError:
+        pass
+    return found
+
+
+def frontmatter(path):
+    try:
+        text = open(path).read()
+    except OSError:
+        return {}
+    match = re.match(r"^---\n(.*?)\n---", text, re.S)
+    fields = {}
+    for line in (match.group(1).split("\n") if match else []):
+        key, sep, value = line.partition(":")
+        if not sep:
+            continue
+        value = value.strip()
+        if len(value) >= 2 and value[0] == value[-1] == "'":
+            value = value[1:-1].replace("''", "'")
+        fields[key.strip()] = value
+    return fields
+
+
+def option(args, name):
+    for index, arg in enumerate(args):
+        if arg == name and index + 1 < len(args):
+            return args[index + 1]
+        if arg.startswith(name + "="):
+            return arg.split("=", 1)[1]
+    return None
+
+
+def verdict(case, run):
+    if "always" in case:
+        return True, True
+    if "broken" in case:
+        return False, False
+    if "flaky" in case:
+        return run % 2 == 0, run % 2 == 1
+    return True, False
+
+
+def entry(passed, fired, graders, cost):
+    results = []
+    for grader in graders:
+        ok = fired if grader["type"] == "tool_used" else passed
+        results.append({"name": grader["name"], "passed": ok, "weight": 1,
+                        "explanation": "fake", "withOnly": False, "scored": True})
+    return {"score": 1 if passed else 0, "passed": passed, "turns": 2, "costUsd": cost,
+            "judgeCostUsd": 0, "durationSeconds": 1, "error": None, "graders": results}
+
+
+def main(args):
+    if args[:1] == ["--version"]:
+        print(f"{VERSION} (Claude Code)")
+        return 0
+    if args[:2] != ["plugin", "eval"]:
+        print("fake-claude only knows --version and plugin eval", file=sys.stderr)
+        return 2
+    config = settings()
+    if config["fail"]:
+        print("fake-claude: failing on purpose", file=sys.stderr)
+        return int(config["fail"])
+    runs = int(option(args, "--runs") or "1")
+    limit = float(option(args, "--max-cost-usd") or "1")
+    json_file = option(args, "--json")
+    output_dir = option(args, "--output-dir")
+    pair = option(args, "--ablation") != "none"
+    delay = float(config["delay"])
+    cost = float(config["cost"])
+    stage = os.getcwd()
+    name = frontmatter(os.path.join(stage, "SKILL.md")).get("name") or os.path.basename(stage)
+    evals = os.path.join(stage, "evals")
+    folders = sorted(
+        folder for folder in (os.listdir(evals) if os.path.isdir(evals) else [])
+        if os.path.isfile(os.path.join(evals, folder, "prompt.md"))
+    )
+    started = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+    spent = 0.0
+    partial = None
+    cases = []
+    arms = ["with", "without"] if pair else ["with"]
+    total = len(folders) * runs * len(arms)
+    done = 0
+    for folder in folders:
+        graders_dir = os.path.join(evals, folder, "graders")
+        graders = []
+        for file in sorted(os.listdir(graders_dir)) if os.path.isdir(graders_dir) else []:
+            if not file.endswith(".md"):
+                continue
+            fields = frontmatter(os.path.join(graders_dir, file))
+            kind = fields.pop("type", "regex")
+            graders.append({"name": file[:-3], "type": kind, "weight": 1, "config": fields})
+        case_arms = {arm: [] for arm in arms}
+        for arm in arms:
+            for run in range(runs):
+                if partial:
+                    break
+                if spent + cost > limit:
+                    partial = "cost_ceiling"
+                    break
+                time.sleep(delay)
+                with_pass, without_pass = verdict(folder, run)
+                passed = with_pass if arm == "with" else without_pass
+                fired = arm == "with" and "broken" not in folder
+                case_arms[arm].append(entry(passed, fired, graders, cost))
+                spent += cost
+                done += 1
+                print(f"[{done}/{total}] {folder} {arm} run {run + 1}: {'pass' if passed else 'fail'}", flush=True)
+        cases.append({"name": folder, "dir": f"evals/{folder}", "graders": graders,
+                      "runsPerCase": runs, "arms": case_arms})
+    report = {
+        "schemaVersion": 1, "claudeVersion": VERSION, "startedAt": started,
+        "durationSeconds": 1, "costUsd": round(spent, 8), "partial": partial is not None,
+        "suite": {"root": stage, "ablation": "with-without" if pair else "none",
+                  "plugins": [{"name": name, "path": stage}]},
+        "cases": cases,
+    }
+    if partial:
+        report["partialReason"] = partial
+    with open(json_file, "w") as handle:
+        json.dump(report, handle, indent=2)
+    os.makedirs(output_dir, exist_ok=True)
+    with open(os.path.join(output_dir, "report.html"), "w") as handle:
+        handle.write(f"<!doctype html><title>{name} Evals</title><pre>{json.dumps(report, indent=2)}</pre>")
+    return 1 if partial else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
