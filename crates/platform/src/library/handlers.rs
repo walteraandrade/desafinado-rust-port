@@ -128,11 +128,7 @@ pub fn skill_real_paths(snapshot: &LibrarySnapshot) -> Vec<&str> {
     snapshot
         .roots
         .iter()
-        .flat_map(|root| {
-            root.skills
-                .iter()
-                .map(|skill| skill.real_path.as_str())
-        })
+        .flat_map(|root| root.skills.iter().map(|skill| skill.real_path.as_str()))
         .collect()
 }
 

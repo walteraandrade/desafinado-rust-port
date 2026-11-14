@@ -6,6 +6,16 @@ use std::{
 };
 
 use desafinado_core::sample::SAMPLE_DOCUMENT;
+use desafinado_features::skills::{
+    frontmatter_edit::{FieldEditPlan, plan_field_edit},
+    frontmatter_fields::{SkillField, SkillFieldValues},
+    frontmatter_panel::{
+        FrontmatterContext, describe_frontmatter_problem, inspect_frontmatter, report_problems,
+    },
+    library::{CreateSkillRequest, CreateSkillResult},
+    library_view::{open_skill_file, skill_file_label},
+    scan_skills::SKILL_FILE_NAME,
+};
 use desafinado_features::{
     evals::unsaved::{self as arrival, restore_unsaved},
     history::{
@@ -26,7 +36,6 @@ use desafinado_platform::{
         save_markdown_as, with_markdown_extension,
     },
     history::{HistoryDb, Unsaved},
-    library::LibrarySnapshot,
     watch::{ExternalChanges, ExternalChangesController, WatchConfig},
 };
 use desafinado_runtime::services::Services;
@@ -40,8 +49,11 @@ use crate::{
         name_of, opened_session, suggested_file_name,
     },
     editor_pane::{EditorPane, PaneEvent},
+    frontmatter_view::{FrontmatterEvent, FrontmatterView},
     history_store::DbHistoryStore,
     last_file::{clear_last_file, load_last_file, save_last_file},
+    library_panel::{self, LibraryEvent, LibraryPanel, Placement},
+    new_skill_dialog::{NewSkillDialog, NewSkillEvent},
     single_instance::LaunchMessage,
     theme::{self, Roles},
     ui::{self, ButtonKind},
@@ -72,6 +84,9 @@ actions!(
         DotRight,
         DotHome,
         DotEnd,
+        ToggleLibrary,
+        SearchLibrary,
+        ShowFrontmatterProblems,
     ]
 );
 
@@ -82,6 +97,8 @@ pub fn init(cx: &mut App) {
         KeyBinding::new("ctrl-s", SaveDocument, None),
         KeyBinding::new("ctrl-shift-s", SaveDocumentAs, None),
         KeyBinding::new("ctrl-,", OpenPreferences, None),
+        KeyBinding::new("ctrl-b", ToggleLibrary, None),
+        KeyBinding::new("ctrl-p", SearchLibrary, None),
         KeyBinding::new("escape", CloseMenu, Some("Menu")),
         KeyBinding::new("enter", ConfirmReview, Some("ReviewPopover > Input")),
         KeyBinding::new("escape", CloseMenu, Some("ReviewPopover > Input")),
@@ -115,6 +132,7 @@ enum LeaveIntent {
     New,
     Open,
     OpenPath(PathBuf),
+    CreateSkill(CreateSkillRequest),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -125,7 +143,8 @@ enum LeaveChoice {
 }
 
 struct MenuRow {
-    label: &'static str,
+    label: SharedString,
+    danger: bool,
     shortcut: Option<&'static str>,
     action: Box<dyn Action>,
     disabled: bool,
@@ -255,6 +274,15 @@ pub struct Workspace {
     review_focus: Option<Entity<gpui_kit::component::input::InputState>>,
     after_save: Option<LeaveIntent>,
     focus: FocusHandle,
+    library: Entity<LibraryPanel>,
+    library_open: bool,
+    search_unfolded: bool,
+    search_opening: bool,
+    library_request: Option<(PathBuf, bool, bool)>,
+    viewport_width: Pixels,
+    new_skill: Option<Entity<NewSkillDialog>>,
+    frontmatter: Entity<FrontmatterView>,
+    frontmatter_due: bool,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -342,6 +370,29 @@ impl Workspace {
         let events = cx.subscribe(&pane, |this, _, event: &PaneEvent, cx| {
             this.on_pane_event(event, cx)
         });
+        let library = cx.new(|cx| LibraryPanel::new(user_data.clone(), window, cx));
+        let library_events = cx.subscribe_in(
+            &library,
+            window,
+            |this, _, event: &LibraryEvent, window, cx| this.on_library_event(event, window, cx),
+        );
+        let frontmatter = cx.new(|cx| {
+            FrontmatterView::new(
+                desafinado_runtime::ai_backend::backend(services.clone()),
+                window,
+                cx,
+            )
+        });
+        let frontmatter_events = cx.subscribe_in(
+            &frontmatter,
+            window,
+            |this, _, event: &FrontmatterEvent, window, cx| match event {
+                FrontmatterEvent::Edit(field, value) => {
+                    this.edit_frontmatter(*field, value, window, cx)
+                }
+            },
+        );
+        let library_ready = cx.observe(&library, |this, _, cx| this.sync_library(cx));
         let release = cx.on_release(|this, _| this.flush_all());
         let quit = cx.on_app_quit(|this, _| {
             this.flush_all();
@@ -397,9 +448,26 @@ impl Workspace {
             review_focus: None,
             after_save: None,
             focus: cx.focus_handle(),
-            _subscriptions: vec![events, release, quit],
+            library,
+            library_open: false,
+            search_unfolded: false,
+            search_opening: false,
+            library_request: None,
+            viewport_width: px(1280.),
+            new_skill: None,
+            frontmatter,
+            frontmatter_due: true,
+            _subscriptions: vec![
+                events,
+                release,
+                quit,
+                library_events,
+                frontmatter_events,
+                library_ready,
+            ],
         };
         workspace.start_watcher(window, cx);
+        workspace.sync_library(cx);
         workspace.listen_for_launches(launches, window, cx);
         if let Some(notice) = notice {
             workspace.notify(notice, cx);
@@ -409,11 +477,9 @@ impl Workspace {
 
     fn start_watcher(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let (sender, mut receiver) = futures::channel::mpsc::unbounded::<ExternalChanges>();
+        let user_data = self.services.user_data.clone();
         let controller = ExternalChangesController::start(WatchConfig::new(
-            || LibrarySnapshot {
-                roots: Vec::new(),
-                problem: None,
-            },
+            move || library_panel::list(&user_data),
             move |changes| {
                 let _ = sender.unbounded_send(changes);
             },
@@ -557,6 +623,7 @@ impl Workspace {
     fn text_changed(&mut self, text: &str, cx: &mut Context<Self>) {
         self.session = edited_session(self.session.as_ref(), text);
         self.announce(text, cx);
+        self.frontmatter_due = true;
     }
 
     fn announce(&mut self, text: &str, cx: &mut Context<Self>) {
@@ -788,6 +855,9 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if changes.library {
+            self.library.update(cx, |library, cx| library.refresh(cx));
+        }
         let Some(path) = self.session_path().map(Path::to_path_buf) else {
             return;
         };
@@ -881,8 +951,300 @@ impl Workspace {
         match intent {
             LeaveIntent::New => self.clear_document(window, cx),
             LeaveIntent::Open => self.prompt_open(window, cx),
-            LeaveIntent::OpenPath(path) => self.load(path, window, cx),
+            LeaveIntent::OpenPath(path) => {
+                self.load(path.clone(), window, cx);
+                let request = self.library_request.take();
+                if let Some((requested, true, _)) = request
+                    && requested == path
+                    && self.session_path() == Some(path.as_path())
+                {
+                    self.focus_text_from_library(window, cx);
+                }
+            }
+            LeaveIntent::CreateSkill(request) => self.create_skill(request, window, cx),
         }
+        self.frontmatter_due = true;
+    }
+
+    fn create_skill(
+        &mut self,
+        request: CreateSkillRequest,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match library_panel::create(&self.services.user_data, &request) {
+            CreateSkillResult::Failed { reason } => {
+                if let Some(dialog) = &self.new_skill {
+                    dialog.update(cx, |dialog, cx| dialog.fail(reason, cx));
+                }
+            }
+            CreateSkillResult::Created { path, name } => {
+                self.new_skill = None;
+                self.library.update(cx, |library, cx| library.refresh(cx));
+                let path = PathBuf::from(path);
+                self.load(path.clone(), window, cx);
+                if self.session_path() == Some(path.as_path()) {
+                    self.notify(format!("Created {name}"), cx);
+                    self.pane.update(cx, |pane, cx| pane.focus(window, cx));
+                }
+            }
+        }
+    }
+
+    fn on_library_event(
+        &mut self,
+        event: &LibraryEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match event {
+            LibraryEvent::Open { path, focus_text } => {
+                self.open_from_library(PathBuf::from(path), *focus_text, window, cx)
+            }
+            LibraryEvent::OpenResult { path } => {
+                self.search_opening = true;
+                self.open_from_library(PathBuf::from(path), true, window, cx);
+                self.search_opening = false;
+            }
+            LibraryEvent::NewSkill => self.open_new_skill(window, cx),
+            LibraryEvent::Escape => self.focus_text_from_library(window, cx),
+            LibraryEvent::Notify(text) => self.notify(text.clone(), cx),
+            LibraryEvent::RootsChanged => {
+                if let Some(watcher) = &self.watcher {
+                    watcher.roots_changed();
+                }
+            }
+            LibraryEvent::SearchLeft => {
+                if !self.search_opening && self.leave.is_none() {
+                    self.search_unfolded = false;
+                }
+            }
+        }
+        cx.notify();
+    }
+
+    fn open_from_library(
+        &mut self,
+        path: PathBuf,
+        focus_text: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.session_path() == Some(path.as_path()) {
+            if focus_text {
+                self.focus_text_from_library(window, cx);
+            }
+            return;
+        }
+        self.library_request = Some((path.clone(), focus_text, self.search_opening));
+        self.guard(LeaveIntent::OpenPath(path), window, cx);
+    }
+
+    fn modal_open(&self) -> bool {
+        self.leave.is_some() || self.new_skill.is_some()
+    }
+
+    fn placement(&self) -> Placement {
+        library_panel::placement(self.viewport_width)
+    }
+
+    fn fold_library(&mut self, cx: &mut Context<Self>) {
+        self.library_open = false;
+        self.search_unfolded = false;
+        cx.notify();
+    }
+
+    fn focus_text_from_library(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let fold_search = self.search_unfolded;
+        self.pane.update(cx, |pane, cx| pane.focus(window, cx));
+        if fold_search || self.placement() == Placement::Overlay {
+            self.fold_library(cx);
+        }
+    }
+
+    fn open_library(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.library_open = true;
+        self.library
+            .update(cx, |library, cx| library.focus_tree(window, cx));
+        cx.notify();
+    }
+
+    fn fold_and_return(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.fold_library(cx);
+        self.pane.update(cx, |pane, cx| pane.focus(window, cx));
+    }
+
+    fn toggle_library(&mut self, _: &ToggleLibrary, window: &mut Window, cx: &mut Context<Self>) {
+        if self.modal_open() {
+            return;
+        }
+        self.open_menu = None;
+        if !self.library_open {
+            self.open_library(window, cx);
+        } else if self.library.read(cx).holds_focus(window, cx) {
+            self.fold_and_return(window, cx);
+        } else {
+            self.library
+                .update(cx, |library, cx| library.focus_tree(window, cx));
+        }
+    }
+
+    fn toggle_library_from_rail(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.library_open {
+            self.fold_and_return(window, cx);
+        } else {
+            self.open_library(window, cx);
+        }
+    }
+
+    fn search_library(&mut self, _: &SearchLibrary, window: &mut Window, cx: &mut Context<Self>) {
+        if self.modal_open() {
+            return;
+        }
+        self.open_menu = None;
+        if !self.library_open {
+            self.search_unfolded = true;
+            self.library_open = true;
+        }
+        self.library
+            .update(cx, |library, cx| library.focus_search(window, cx));
+        cx.notify();
+    }
+
+    fn open_new_skill(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let roots = self.library.read(cx).roots().to_vec();
+        let dialog = cx.new(|cx| NewSkillDialog::new(&roots, window, cx));
+        let events = cx.subscribe_in(
+            &dialog,
+            window,
+            |this, _, event: &NewSkillEvent, window, cx| {
+                match event {
+                    NewSkillEvent::Close => {
+                        this.new_skill = None;
+                        this.library
+                            .update(cx, |library, cx| library.focus_tree(window, cx));
+                    }
+                    NewSkillEvent::Create(request) => {
+                        this.guard(LeaveIntent::CreateSkill(request.clone()), window, cx);
+                        if this.leave.is_none()
+                            && let Some(dialog) = &this.new_skill
+                        {
+                            dialog.update(cx, |dialog, cx| dialog.set_busy(false, cx));
+                        }
+                    }
+                }
+                cx.notify();
+            },
+        );
+        self._subscriptions.push(events);
+        self.new_skill = Some(dialog);
+        cx.notify();
+    }
+
+    fn open_path_string(&self) -> Option<String> {
+        self.session_path().map(|path| {
+            std::fs::canonicalize(path)
+                .unwrap_or_else(|_| path.to_path_buf())
+                .to_string_lossy()
+                .into_owned()
+        })
+    }
+
+    fn sync_library(&mut self, cx: &mut Context<Self>) {
+        let active = self.open_path_string();
+        self.library
+            .update(cx, |library, cx| library.set_active(active, cx));
+        self.frontmatter_due = true;
+    }
+
+    fn file_label(&self, cx: &App) -> Option<String> {
+        let active = self.open_path_string()?;
+        skill_file_label(self.library.read(cx).roots(), &|path| path == active)
+    }
+
+    fn refresh_frontmatter(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.frontmatter_due = false;
+        let text = self.text(cx);
+        let active = self.open_path_string();
+        let open = active.as_ref().and_then(|active| {
+            open_skill_file(self.library.read(cx).roots(), &|path| path == active)
+        });
+        let file_name = open
+            .as_ref()
+            .map(|open| open.file_name.clone())
+            .or_else(|| self.session.as_ref().map(|session| session.name.clone()));
+        let folder_name = if file_name.as_deref() != Some(SKILL_FILE_NAME) {
+            None
+        } else {
+            open.as_ref()
+                .map(|open| open.folder_name.clone())
+                .or_else(|| {
+                    self.session_path()
+                        .and_then(Path::parent)
+                        .and_then(Path::file_name)
+                        .map(|name| name.to_string_lossy().into_owned())
+                })
+        };
+        let report = inspect_frontmatter(
+            &text,
+            &FrontmatterContext {
+                file_name: file_name.as_deref(),
+                folder_name: folder_name.as_deref(),
+            },
+        );
+        self.pane.update(cx, |pane, _| {
+            pane.is_skill = desafinado_core::blocks::find_frontmatter(&text).is_some()
+        });
+        self.frontmatter
+            .update(cx, |view, cx| view.refresh(&text, report, window, cx));
+    }
+
+    fn frontmatter_problems(&self, cx: &App) -> Vec<String> {
+        report_problems(&self.frontmatter.read(cx).report)
+    }
+
+    fn edit_frontmatter(
+        &mut self,
+        field: SkillField,
+        value: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let text = self.text(cx);
+        let values = match field {
+            SkillField::Name => SkillFieldValues::name(value),
+            SkillField::Description => SkillFieldValues::description(value),
+        };
+        match plan_field_edit(&text, &values) {
+            FieldEditPlan::Unchanged => {}
+            FieldEditPlan::Refused { problem } => {
+                self.notify(describe_frontmatter_problem(&problem), cx)
+            }
+            FieldEditPlan::Change { changes } => {
+                let from = changes.iter().map(|change| change.from).min().unwrap_or(0);
+                let to = changes.iter().map(|change| change.to).max().unwrap_or(0);
+                let next =
+                    desafinado_features::skills::frontmatter_edit::apply_changes(&text, &changes);
+                let end = to + next.len() - text.len();
+                let insert = next[from..end].to_string();
+                self.pane.update(cx, |pane, cx| {
+                    pane.edit_range(from..to, &insert, window, cx)
+                });
+            }
+        }
+    }
+
+    fn show_frontmatter_problems(
+        &mut self,
+        _: &ShowFrontmatterProblems,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_menu = None;
+        self.close_history(window, cx);
+        self.frontmatter
+            .update(cx, |view, cx| view.focus_panel(window, cx));
+        cx.notify();
     }
 
     fn answer_leave(&mut self, choice: LeaveChoice, window: &mut Window, cx: &mut Context<Self>) {
@@ -890,7 +1252,24 @@ impl Workspace {
             return;
         };
         match choice {
-            LeaveChoice::Cancel => {}
+            LeaveChoice::Cancel => {
+                if let LeaveIntent::OpenPath(_) = intent
+                    && let Some((_, _, search)) = self.library_request.take()
+                {
+                    self.library.update(cx, |library, cx| {
+                        if search {
+                            library.focus_search(window, cx)
+                        } else {
+                            library.focus_tree(window, cx)
+                        }
+                    });
+                }
+                if let LeaveIntent::CreateSkill(_) = intent
+                    && let Some(dialog) = &self.new_skill
+                {
+                    dialog.update(cx, |dialog, cx| dialog.set_busy(false, cx));
+                }
+            }
             LeaveChoice::Discard => {
                 if let Some(path) = self.session_path().map(Path::to_path_buf) {
                     self.discard_unsaved(&path);
@@ -1163,17 +1542,39 @@ impl Workspace {
     fn menu_rows(&self, kind: MenuKind, cx: &App) -> Vec<MenuRow> {
         let open = self.pane.read(cx).open_count();
         match kind {
-            MenuKind::File => vec![
-                row("New", Some("Ctrl+N"), Box::new(NewDocument), false),
-                row("Open…", Some("Ctrl+O"), Box::new(OpenDocument), false),
-                row("Save", Some("Ctrl+S"), Box::new(SaveDocument), false),
-                row(
-                    "Save as…",
-                    Some("Ctrl+Shift+S"),
-                    Box::new(SaveDocumentAs),
-                    false,
-                ),
-                MenuRow {
+            MenuKind::File => {
+                let problems = self.frontmatter_problems(cx).len();
+                let mut rows = vec![
+                    row("New", Some("Ctrl+N"), Box::new(NewDocument), false),
+                    row("Open…", Some("Ctrl+O"), Box::new(OpenDocument), false),
+                    row("Save", Some("Ctrl+S"), Box::new(SaveDocument), false),
+                    row(
+                        "Save as…",
+                        Some("Ctrl+Shift+S"),
+                        Box::new(SaveDocumentAs),
+                        false,
+                    ),
+                ];
+                if problems > 0 {
+                    rows.push(MenuRow {
+                        danger: true,
+                        separated: true,
+                        ..row(
+                            format!(
+                                "Frontmatter: {}",
+                                if problems == 1 {
+                                    "1 problem".to_string()
+                                } else {
+                                    format!("{problems} problems")
+                                }
+                            ),
+                            None,
+                            Box::new(ShowFrontmatterProblems),
+                            false,
+                        )
+                    });
+                }
+                rows.push(MenuRow {
                     separated: true,
                     ..row(
                         "Preferences…",
@@ -1181,8 +1582,9 @@ impl Workspace {
                         Box::new(OpenPreferences),
                         false,
                     )
-                },
-            ],
+                });
+                rows
+            }
             MenuKind::Edit => vec![
                 if self.pane.read(cx).review.is_some() {
                     row("Stop Review", None, Box::new(StopReview), false)
@@ -1216,12 +1618,17 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let open = self.open_menu == Some(kind);
+        let problems = match kind {
+            MenuKind::File => self.frontmatter_problems(cx).len(),
+            MenuKind::Edit => 0,
+        };
         div()
             .id(label)
             .h(px(26.))
             .px(px(10.))
             .flex()
             .items_center()
+            .gap(px(6.))
             .text_size(px(13.))
             .text_color(roles.ink)
             .border_1()
@@ -1233,6 +1640,20 @@ impl Workspace {
             .when(open, |this| this.bg(roles.fill))
             .hover(|this| this.bg(roles.fill))
             .child(label)
+            .when(problems > 0, |this| {
+                this.child(
+                    div()
+                        .px(px(4.))
+                        .h(px(16.))
+                        .flex()
+                        .items_center()
+                        .bg(roles.danger)
+                        .text_color(roles.canvas)
+                        .text_size(px(11.))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .child(problems.to_string()),
+                )
+            })
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |this, _, window, cx| {
@@ -1267,6 +1688,7 @@ impl Workspace {
         div()
             .id("menu")
             .key_context("Menu")
+            .occlude()
             .absolute()
             .top(px(38.))
             .left(left)
@@ -1300,6 +1722,8 @@ impl Workspace {
                                     .text_size(px(13.))
                                     .text_color(if item.disabled {
                                         roles.faint
+                                    } else if item.danger {
+                                        roles.danger
                                     } else {
                                         roles.ink
                                     })
@@ -1547,13 +1971,14 @@ impl OutlineAccent for StyleRefinement {
 }
 
 fn row(
-    label: &'static str,
+    label: impl Into<SharedString>,
     shortcut: Option<&'static str>,
     action: Box<dyn Action>,
     disabled: bool,
 ) -> MenuRow {
     MenuRow {
-        label,
+        label: label.into(),
+        danger: false,
         shortcut,
         action,
         disabled,
@@ -1594,8 +2019,19 @@ impl Focusable for Workspace {
 }
 
 impl Render for Workspace {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let roles = theme::roles(cx);
+        self.viewport_width = window.viewport_size().width;
+        let active = self.open_path_string();
+        self.library
+            .update(cx, |library, cx| library.set_active(active, cx));
+        if self.frontmatter_due {
+            self.refresh_frontmatter(window, cx);
+        }
+        let label = self
+            .file_label(cx)
+            .map(SharedString::from)
+            .unwrap_or_else(|| self.file_name());
         let dirty = self.session.as_ref().is_some_and(|session| session.dirty);
         let review = self.pane.read(cx).review.as_ref().map(|run| run.added);
         let open = self.pane.read(cx).open_count();
@@ -1624,11 +2060,7 @@ impl Render for Workspace {
                 div()
                     .text_size(px(13.))
                     .text_color(roles.ink)
-                    .child(format!(
-                        "{}{}",
-                        self.file_name(),
-                        if dirty { " •" } else { "" }
-                    )),
+                    .child(format!("{label}{}", if dirty { " •" } else { "" })),
             )
             .child(div().flex_1())
             .when_some(review, |this, added| {
@@ -1701,7 +2133,15 @@ impl Render for Workspace {
         let timeline = self.render_timeline(mode, roles, cx);
         let version_bar = self.render_version_bar(mode, roles, cx);
         let content: AnyElement = match mode {
-            HistoryMode::Editing => self.pane.clone().into_any_element(),
+            HistoryMode::Editing => div()
+                .size_full()
+                .flex()
+                .flex_col()
+                .when(self.frontmatter.read(cx).has_panel(), |this| {
+                    this.child(column_row(self.frontmatter.clone()).pt(px(4.)))
+                })
+                .child(div().flex_1().min_h_0().child(self.pane.clone()))
+                .into_any_element(),
             HistoryMode::Version { id } => self.render_compare(id, roles, cx).into_any_element(),
             HistoryMode::Full => self.render_full_history(roles, cx).into_any_element(),
         };
@@ -1722,6 +2162,9 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::open_review))
             .on_action(cx.listener(Self::confirm_review))
             .on_action(cx.listener(Self::stop_review))
+            .on_action(cx.listener(Self::toggle_library))
+            .on_action(cx.listener(Self::search_library))
+            .on_action(cx.listener(Self::show_frontmatter_problems))
             .on_action(
                 cx.listener(|this, _: &CloseHistory, window, cx| this.close_history(window, cx)),
             )
@@ -1753,19 +2196,68 @@ impl Render for Workspace {
             .text_color(roles.ink)
             .font_family("Inter")
             .child(title_bar)
-            .child(header)
             .child(
                 div()
+                    .flex_1()
+                    .min_h_0()
                     .w_full()
-                    .pt(px(12.))
+                    .relative()
                     .flex()
-                    .flex_col()
-                    .children(conflict)
-                    .child(timeline)
-                    .children(version_bar),
+                    .flex_row()
+                    .child(self.render_rail(roles, cx))
+                    .when(
+                        self.library_open && self.placement() == Placement::Column,
+                        |this| {
+                            this.child(
+                                div()
+                                    .w(px(library_panel::LIBRARY_WIDTH))
+                                    .h_full()
+                                    .flex_none()
+                                    .child(self.library.clone()),
+                            )
+                        },
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .h_full()
+                            .flex()
+                            .flex_col()
+                            .child(header)
+                            .child(
+                                div()
+                                    .w_full()
+                                    .pt(px(12.))
+                                    .flex()
+                                    .flex_col()
+                                    .children(conflict)
+                                    .child(timeline)
+                                    .children(version_bar),
+                            )
+                            .child(div().flex_1().min_h_0().child(content)),
+                    )
+                    .when(
+                        self.library_open && self.placement() == Placement::Overlay,
+                        |this| {
+                            this.child(
+                                div()
+                                    .id("library-overlay")
+                                    .occlude()
+                                    .absolute()
+                                    .top_0()
+                                    .bottom_0()
+                                    .left(px(library_panel::RAIL_WIDTH))
+                                    .w(px(library_panel::LIBRARY_WIDTH))
+                                    .border_r_1()
+                                    .border_color(roles.hairline)
+                                    .child(self.library.clone()),
+                            )
+                        },
+                    ),
             )
-            .child(div().flex_1().min_h_0().child(content))
             .children(toast)
+            .when_some(self.new_skill.clone(), |this, dialog| this.child(dialog))
             .when_some(self.leave.as_ref().map(|_| ()), |this, _| {
                 this.child(self.render_leave(roles, cx))
             })
@@ -1776,6 +2268,7 @@ impl Render for Workspace {
                 this.child(
                     div()
                         .id("menu-scrim")
+                        .occlude()
                         .absolute()
                         .inset_0()
                         .on_click(cx.listener(|this, _, _, cx| {
@@ -1785,6 +2278,73 @@ impl Render for Workspace {
                 )
                 .child(self.render_menu(kind, roles, cx))
             })
+    }
+}
+
+impl Workspace {
+    fn render_rail(&self, roles: Roles, cx: &mut Context<Self>) -> impl IntoElement {
+        let rail_button = |id: &'static str,
+                           icon: component::IconName,
+                           tip: &'static str,
+                           pressed: bool| {
+            div()
+                .id(id)
+                .size(px(30.))
+                .flex()
+                .items_center()
+                .justify_center()
+                .bg(roles.fill)
+                .border_1()
+                .border_color(if pressed {
+                    roles.accent
+                } else {
+                    roles.hairline
+                })
+                .text_color(roles.ink)
+                .cursor_pointer()
+                .hover(|this| this.bg(roles.fill_hover).border_color(roles.ink))
+                .tooltip(move |window, cx| component::tooltip::Tooltip::new(tip).build(window, cx))
+                .on_mouse_down(MouseButton::Left, |_, window, _| window.prevent_default())
+                .child(
+                    component::Icon::new(icon)
+                        .size(px(16.))
+                        .text_color(roles.ink),
+                )
+        };
+        div()
+            .w(px(library_panel::RAIL_WIDTH))
+            .h_full()
+            .flex_none()
+            .flex()
+            .flex_col()
+            .items_center()
+            .gap(px(8.))
+            .pt(px(24.))
+            .bg(roles.raised)
+            .border_r_1()
+            .border_color(roles.hairline)
+            .child(
+                rail_button(
+                    "rail-library",
+                    component::IconName::BookOpen,
+                    "Library (Ctrl+B)",
+                    self.library_open,
+                )
+                .on_click(
+                    cx.listener(|this, _, window, cx| this.toggle_library_from_rail(window, cx)),
+                ),
+            )
+            .child(
+                rail_button(
+                    "rail-search",
+                    component::IconName::Search,
+                    "Search the Library (Ctrl+P)",
+                    false,
+                )
+                .on_click(cx.listener(|this, _, window, cx| {
+                    this.search_library(&SearchLibrary, window, cx)
+                })),
+            )
     }
 }
 

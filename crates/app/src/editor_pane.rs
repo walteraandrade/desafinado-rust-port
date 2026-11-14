@@ -281,6 +281,31 @@ impl EditorPane {
         cx.notify();
     }
 
+    pub fn edit_range(
+        &mut self,
+        range: std::ops::Range<usize>,
+        insert: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let cursor = self.cursor(cx);
+        let at = if cursor <= range.start {
+            cursor
+        } else if cursor >= range.end {
+            cursor + insert.len() - (range.end - range.start)
+        } else {
+            range.start + insert.len()
+        };
+        let insert = insert.to_string();
+        self.editor.update(cx, |state, cx| {
+            state.set_selected_range(range, cx);
+            state.replace(insert, window, cx);
+            state.set_selected_range(at..at, cx);
+        });
+        self.refresh_decorations(cx);
+        cx.notify();
+    }
+
     pub fn open_count(&self) -> usize {
         self.suggestions
             .items

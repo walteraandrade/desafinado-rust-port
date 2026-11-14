@@ -150,3 +150,46 @@ pub fn ai_flag(roles: Roles) -> Div {
         .font_weight(FontWeight::SEMIBOLD)
         .child("AI")
 }
+
+pub fn field(input: impl IntoElement, focused: bool, invalid: bool, roles: Roles) -> Div {
+    div()
+        .w_full()
+        .px(px(10.))
+        .py(px(3.))
+        .bg(if focused {
+            roles.fill_hover
+        } else {
+            roles.fill
+        })
+        .border_1()
+        .border_color(if invalid {
+            roles.danger
+        } else if focused {
+            roles.accent
+        } else {
+            roles.hairline
+        })
+        .text_size(px(14.))
+        .text_color(roles.ink)
+        .child(input)
+}
+
+pub fn label(text: impl Into<SharedString>, roles: Roles) -> Div {
+    div()
+        .mb(px(4.))
+        .text_size(px(12.))
+        .font_weight(FontWeight::MEDIUM)
+        .text_color(roles.ink)
+        .child(text.into())
+}
+
+pub fn problem_list(problems: Vec<String>, roles: Roles) -> Div {
+    div()
+        .mt(px(4.))
+        .flex()
+        .flex_col()
+        .gap(px(2.))
+        .text_size(px(12.))
+        .text_color(roles.danger)
+        .children(problems.into_iter().map(|problem| div().child(problem)))
+}

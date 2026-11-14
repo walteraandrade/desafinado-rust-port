@@ -157,7 +157,10 @@ mod tests {
         t.write("r/a/SKILL.md", "---\nname: a\ndescription: [oops\n---\n");
         let skill = &scan(&[t.root("r")])[0].skills[0];
         assert_eq!(skill.name, "a");
-        assert_eq!(skill.problem.as_ref().unwrap().rule.as_str(), "yaml-syntax-error");
+        assert_eq!(
+            skill.problem.as_ref().unwrap().rule.as_str(),
+            "yaml-syntax-error"
+        );
     }
 
     #[test]
