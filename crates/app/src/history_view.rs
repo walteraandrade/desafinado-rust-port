@@ -44,6 +44,40 @@ fn mark(cause: &VersionCause, roles: Roles) -> Div {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct EvalsButton {
+    pub pressed: bool,
+    pub busy: bool,
+}
+
+fn gauge_icon(busy: bool, roles: Roles) -> AnyElement {
+    let bar = |height: f32| div().w(px(1.5)).h(px(height)).bg(roles.ink);
+    let icon = div()
+        .size(px(14.))
+        .flex()
+        .flex_row()
+        .items_end()
+        .justify_center()
+        .gap(px(2.))
+        .pb(px(1.5))
+        .child(bar(5.))
+        .child(bar(9.))
+        .child(bar(6.5))
+        .child(bar(11.5));
+    if busy {
+        icon.with_animation(
+            "evals-breathe",
+            Animation::new(std::time::Duration::from_millis(3600))
+                .repeat()
+                .with_easing(bounce(ease_in_out)),
+            |icon, delta| icon.opacity(1. - 0.75 * delta),
+        )
+        .into_any_element()
+    } else {
+        icon.into_any_element()
+    }
+}
+
 fn list_icon(roles: Roles) -> Div {
     let line = || {
         ui::row()
@@ -219,9 +253,12 @@ impl Workspace {
     pub(crate) fn render_timeline(
         &mut self,
         mode: HistoryMode,
+        evals: Option<EvalsButton>,
         roles: Roles,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        let evals_pressed = evals.is_some_and(|evals| evals.pressed);
+        let editing = mode == HistoryMode::Editing && !evals_pressed;
         let versions = self.history.snapshot().clone();
         let now = now_ms();
         let offset = self.utc_offset;
@@ -344,18 +381,16 @@ impl Workspace {
                 .gap(px(8.))
                 .child(track)
                 .child(
-                    quiet_toggle(
-                        "timeline-now",
-                        "NOW",
-                        mode == HistoryMode::Editing,
-                        false,
-                        roles,
-                    )
-                    .when(mode != HistoryMode::Editing, |this| {
-                        this.on_click(
-                            cx.listener(|this, _, window, cx| this.close_history(window, cx)),
-                        )
-                    }),
+                    quiet_toggle("timeline-now", "NOW", editing, false, roles)
+                        .tooltip(|window, cx| {
+                            component::tooltip::Tooltip::new("Back to the current text (Esc)")
+                                .build(window, cx)
+                        })
+                        .when(!editing, |this| {
+                            this.on_click(
+                                cx.listener(|this, _, window, cx| this.close_history(window, cx)),
+                            )
+                        }),
                 )
                 .child(
                     ui::sized_button(
@@ -373,7 +408,30 @@ impl Workspace {
                     .child(list_icon(roles))
                     .child("FULL HISTORY")
                     .on_click(cx.listener(|this, _, window, cx| this.toggle_full(window, cx))),
-                ),
+                )
+                .when_some(evals, |this, evals| {
+                    this.child(
+                        ui::sized_button(
+                            "timeline-evals",
+                            "",
+                            ButtonKind::Quiet,
+                            ButtonSize::Small,
+                            false,
+                            roles,
+                        )
+                        .gap(px(6.))
+                        .when(evals.pressed, |this| {
+                            this.bg(roles.fill).border_color(roles.ink)
+                        })
+                        .tooltip(|window, cx| {
+                            component::tooltip::Tooltip::new("How this Skill performs")
+                                .build(window, cx)
+                        })
+                        .child(gauge_icon(evals.busy, roles))
+                        .child("EVALS")
+                        .on_click(cx.listener(|this, _, window, cx| this.toggle_evals(window, cx))),
+                    )
+                }),
         )
         .into_any_element()
     }

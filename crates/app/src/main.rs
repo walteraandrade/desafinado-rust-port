@@ -1,5 +1,7 @@
 mod document;
 mod editor_pane;
+mod eval_run_dialog;
+mod evals_view;
 mod frontmatter_view;
 mod history_store;
 mod history_view;
@@ -60,6 +62,7 @@ fn main() {
             editor_pane::init(cx);
             library_panel::init(cx);
             new_skill_dialog::init(cx);
+            eval_run_dialog::init(cx);
             let mut options = component::TitleBar::window_options();
             options.window_bounds = Some(WindowBounds::Windowed(Bounds::centered(
                 None,

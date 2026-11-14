@@ -13,11 +13,17 @@ use desafinado_features::skills::{
         FrontmatterContext, describe_frontmatter_problem, inspect_frontmatter, report_problems,
     },
     library::{CreateSkillRequest, CreateSkillResult},
-    library_view::{open_skill_file, skill_file_label},
+    library_view::{open_skill_file, skill_file_label, skill_of_file},
     scan_skills::SKILL_FILE_NAME,
 };
 use desafinado_features::{
-    evals::unsaved::{self as arrival, restore_unsaved},
+    evals::{
+        ended::ended_text,
+        unsaved::{
+            self as arrival, UnsavedInput, files_with_unsaved_text, restore_unsaved,
+            stored_is_unsaved,
+        },
+    },
     history::{
         hub::{HubOptions, SwitchableHistory},
         line_changes::LineChange,
@@ -49,8 +55,10 @@ use crate::{
         name_of, opened_session, suggested_file_name,
     },
     editor_pane::{EditorPane, PaneEvent},
+    evals_view::{self, EvalSkill, EvalsEvent, EvalsView},
     frontmatter_view::{FrontmatterEvent, FrontmatterView},
     history_store::DbHistoryStore,
+    history_view::EvalsButton,
     last_file::{clear_last_file, load_last_file, save_last_file},
     library_panel::{self, LibraryEvent, LibraryPanel, Placement},
     new_skill_dialog::{NewSkillDialog, NewSkillEvent},
@@ -62,6 +70,7 @@ use crate::{
 const HISTORY_IDLE_MS: i64 = 30_000;
 const UNSAVED_DELAY: Duration = Duration::from_millis(400);
 const TOAST_DURATION: Duration = Duration::from_millis(4500);
+const ACTION_TOAST_DURATION: Duration = Duration::from_millis(12000);
 const FLASH_DURATION: Duration = Duration::from_millis(1200);
 const HISTORY_FILE: &str = "history.sqlite";
 
@@ -117,7 +126,7 @@ pub fn now_ms() -> i64 {
         .unwrap_or(0)
 }
 
-fn utc_offset_minutes() -> i64 {
+pub(crate) fn utc_offset_minutes() -> i64 {
     i64::from(chrono::Local::now().offset().local_minus_utc()) / 60
 }
 
@@ -173,8 +182,14 @@ struct Reopened {
     gone: bool,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum ToastAction {
+    ShowEvals { path: String },
+}
+
 struct Toast {
     text: SharedString,
+    action: Option<ToastAction>,
     _timer: Task<()>,
 }
 
@@ -283,6 +298,9 @@ pub struct Workspace {
     new_skill: Option<Entity<NewSkillDialog>>,
     frontmatter: Entity<FrontmatterView>,
     frontmatter_due: bool,
+    evals: Entity<EvalsView>,
+    evals_page: bool,
+    unsaved_checked: Option<(String, bool)>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -345,6 +363,7 @@ impl Workspace {
         );
         let first_initial = store.list(&start_key).unwrap_or_default();
         let history_store = store.clone();
+        let evals_service = evals_view::service(user_data.clone(), store.clone());
         let history = SwitchableHistory::new(HubOptions {
             key_of: Box::new(|reference: Option<&PathBuf>| {
                 history_key(reference.map(PathBuf::as_path))
@@ -393,6 +412,20 @@ impl Workspace {
             },
         );
         let library_ready = cx.observe(&library, |this, _, cx| this.sync_library(cx));
+        let utc_offset = utc_offset_minutes();
+        let evals = cx.new(|_| EvalsView::new(evals_service, utc_offset));
+        let evals_events =
+            cx.subscribe_in(&evals, window, |this, _, event: &EvalsEvent, window, cx| {
+                this.on_evals_event(event, window, cx)
+            });
+        let evals_changed = cx.observe(&evals, |_, _, cx| cx.notify());
+        let evals_quit = cx.on_app_quit({
+            let service = evals.read(cx).service();
+            move |_, _| {
+                let service = service.clone();
+                async move { service.shutdown() }
+            }
+        });
         let release = cx.on_release(|this, _| this.flush_all());
         let quit = cx.on_app_quit(|this, _| {
             this.flush_all();
@@ -442,7 +475,7 @@ impl Workspace {
             history_scroll: ScrollHandle::new(),
             compare_scroll: ScrollHandle::new(),
             timeline_width: std::rc::Rc::new(std::cell::Cell::new(px(560.))),
-            utc_offset: utc_offset_minutes(),
+            utc_offset,
             open_menu: None,
             leave: None,
             review_focus: None,
@@ -457,7 +490,13 @@ impl Workspace {
             new_skill: None,
             frontmatter,
             frontmatter_due: true,
+            evals,
+            evals_page: false,
+            unsaved_checked: None,
             _subscriptions: vec![
+                evals_events,
+                evals_changed,
+                evals_quit,
                 events,
                 release,
                 quit,
@@ -559,8 +598,22 @@ impl Workspace {
     }
 
     fn notify(&mut self, text: impl Into<SharedString>, cx: &mut Context<Self>) {
+        self.notify_with(text, None, cx);
+    }
+
+    fn notify_with(
+        &mut self,
+        text: impl Into<SharedString>,
+        action: Option<ToastAction>,
+        cx: &mut Context<Self>,
+    ) {
+        let duration = if action.is_some() {
+            ACTION_TOAST_DURATION
+        } else {
+            TOAST_DURATION
+        };
         let timer = cx.spawn(async move |this, cx| {
-            cx.background_executor().timer(TOAST_DURATION).await;
+            cx.background_executor().timer(duration).await;
             let _ = this.update(cx, |this, cx| {
                 this.toast = None;
                 cx.notify();
@@ -568,6 +621,7 @@ impl Workspace {
         });
         self.toast = Some(Toast {
             text: text.into(),
+            action,
             _timer: timer,
         });
         cx.notify();
@@ -1044,6 +1098,138 @@ impl Workspace {
         self.leave.is_some() || self.new_skill.is_some()
     }
 
+    fn open_skill(&self, cx: &App) -> Option<EvalSkill> {
+        let active = self.open_path_string()?;
+        skill_of_file(self.library.read(cx).roots(), &|path| path == active).map(EvalSkill::from)
+    }
+
+    fn evals_shown(&self, cx: &App) -> bool {
+        self.evals_page && self.open_skill(cx).is_some()
+    }
+
+    fn busy_name(&self, cx: &App) -> Option<String> {
+        let evals = self.evals.read(cx);
+        let going = evals.going()?;
+        if evals.skill().map(|skill| skill.path.as_str()) == Some(going) {
+            return None;
+        }
+        self.library
+            .read(cx)
+            .roots()
+            .iter()
+            .flat_map(|root| root.skills.iter())
+            .find(|skill| skill.real_path == going)
+            .map(|skill| skill.name.clone())
+    }
+
+    pub(crate) fn toggle_evals(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.evals_shown(cx) {
+            self.close_history(window, cx);
+        } else {
+            self.open_evals(window, cx);
+        }
+    }
+
+    fn open_evals(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.mode = HistoryMode::Editing;
+        self.evals_page = true;
+        self.hovered = None;
+        self.open_menu = None;
+        self.unsaved_checked = None;
+        window.focus(&self.focus, cx);
+        self.evals.update(cx, |evals, cx| evals.refresh(cx));
+        cx.notify();
+    }
+
+    fn run_toast_action(
+        &mut self,
+        action: &ToastAction,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.toast = None;
+        match action {
+            ToastAction::ShowEvals { path } => {
+                if self.open_skill(cx).is_some_and(|skill| &skill.path == path) {
+                    self.open_evals(window, cx);
+                }
+            }
+        }
+        cx.notify();
+    }
+
+    fn unsaved_skill_files(&mut self, skill: &EvalSkill, cx: &App) -> Vec<String> {
+        let markdown: Vec<_> = skill.files.iter().filter(|file| file.is_markdown).collect();
+        let active = self.open_path_string();
+        let is_open = |path: &str| active.as_deref() == Some(path);
+        let open_dirty = self.unsaved_changes(cx);
+        let stored = markdown
+            .iter()
+            .filter(|file| !is_open(&file.path))
+            .filter(|file| {
+                let stored = self.offered(Path::new(&file.path));
+                stored.is_some()
+                    && stored_is_unsaved(
+                        std::fs::read_to_string(&file.path).ok().as_deref(),
+                        stored.as_ref(),
+                    )
+            })
+            .map(|file| file.path.clone())
+            .collect();
+        let paths: Vec<String> = markdown.iter().map(|file| file.path.clone()).collect();
+        let unsaved = files_with_unsaved_text(&UnsavedInput {
+            files: &paths,
+            is_open: &is_open,
+            open_dirty,
+            stored: &stored,
+        });
+        markdown
+            .iter()
+            .filter(|file| unsaved.contains(&file.path))
+            .map(|file| file.name.clone())
+            .collect()
+    }
+
+    fn check_unsaved(&mut self, force: bool, cx: &mut Context<Self>) {
+        let Some(skill) = self.open_skill(cx) else {
+            return;
+        };
+        let key = (skill.path.clone(), self.unsaved_changes(cx));
+        if !force && self.unsaved_checked.as_ref() == Some(&key) {
+            return;
+        }
+        self.unsaved_checked = Some(key);
+        let names = self.unsaved_skill_files(&skill, cx);
+        self.evals
+            .update(cx, |evals, cx| evals.set_unsaved(names, cx));
+    }
+
+    fn on_evals_event(&mut self, event: &EvalsEvent, window: &mut Window, cx: &mut Context<Self>) {
+        match event {
+            EvalsEvent::Ask => {
+                self.evals
+                    .update(cx, |evals, cx| evals.set_checking(true, cx));
+                self.check_unsaved(true, cx);
+                self.evals.update(cx, |evals, cx| {
+                    evals.set_checking(false, cx);
+                    evals.ask(window, cx);
+                });
+            }
+            EvalsEvent::DialogClosed => window.focus(&self.focus, cx),
+            EvalsEvent::Ended { path, name, result } => {
+                let here = self.open_skill(cx).is_some_and(|skill| &skill.path == path);
+                if here && self.evals_shown(cx) {
+                    return;
+                }
+                self.notify_with(
+                    ended_text(name, result),
+                    here.then(|| ToastAction::ShowEvals { path: path.clone() }),
+                    cx,
+                );
+            }
+        }
+    }
+
     fn placement(&self) -> Placement {
         library_panel::placement(self.viewport_width)
     }
@@ -1456,8 +1642,15 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         let ids = self.history_ids();
-        let was_editing = self.visible_mode() == HistoryMode::Editing;
-        self.mode = next_history_mode(&ids, self.visible_mode(), action);
+        let from_evals = self.evals_shown(cx);
+        let was_editing = self.visible_mode() == HistoryMode::Editing && !from_evals;
+        let from = if from_evals {
+            HistoryMode::Editing
+        } else {
+            self.visible_mode()
+        };
+        self.evals_page = false;
+        self.mode = next_history_mode(&ids, from, action);
         let editing = self.visible_mode() == HistoryMode::Editing;
         if editing {
             self.hovered = None;
@@ -1518,6 +1711,9 @@ impl Workspace {
     }
 
     fn step_dot(&mut self, key: &str, window: &mut Window, cx: &mut Context<Self>) {
+        if self.evals_shown(cx) {
+            return;
+        }
         let ids = self.history_ids();
         let current = match self.visible_mode() {
             HistoryMode::Version { id } => Some(id),
@@ -1932,8 +2128,9 @@ impl Workspace {
         .into_any_element()
     }
 
-    fn render_toast(&self, roles: Roles) -> Option<AnyElement> {
+    fn render_toast(&self, roles: Roles, cx: &mut Context<Self>) -> Option<AnyElement> {
         let toast = self.toast.as_ref()?;
+        let action = toast.action.clone();
         Some(
             div()
                 .absolute()
@@ -1953,7 +2150,28 @@ impl Workspace {
                         .py(px(8.))
                         .text_size(px(14.))
                         .text_color(roles.ink)
-                        .child(toast.text.clone()),
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap(px(12.))
+                        .child(toast.text.clone())
+                        .when_some(action, |this, action| {
+                            this.child(
+                                ui::sized_button(
+                                    "toast-action",
+                                    "Show",
+                                    ButtonKind::Default,
+                                    ui::ButtonSize::Small,
+                                    false,
+                                    roles,
+                                )
+                                .on_click(cx.listener(
+                                    move |this, _, window, cx| {
+                                        this.run_toast_action(&action, window, cx)
+                                    },
+                                )),
+                            )
+                        }),
                 )
                 .into_any_element(),
         )
@@ -2035,7 +2253,26 @@ impl Render for Workspace {
         let dirty = self.session.as_ref().is_some_and(|session| session.dirty);
         let review = self.pane.read(cx).review.as_ref().map(|run| run.added);
         let open = self.pane.read(cx).open_count();
-        let mode = self.visible_mode();
+        let open_skill = self.open_skill(cx);
+        let evals_skill = open_skill.clone();
+        self.evals
+            .update(cx, |evals, cx| evals.set_skill(evals_skill, window, cx));
+        let busy_name = self.busy_name(cx);
+        self.evals
+            .update(cx, |evals, _| evals.set_busy_name(busy_name));
+        let evals_shown = self.evals_page && open_skill.is_some();
+        if evals_shown {
+            self.check_unsaved(false, cx);
+        }
+        let mode = if evals_shown {
+            HistoryMode::Editing
+        } else {
+            self.visible_mode()
+        };
+        let evals_button = open_skill.as_ref().map(|_| EvalsButton {
+            pressed: evals_shown,
+            busy: self.evals.read(cx).going().is_some(),
+        });
         let title_bar = TitleBar::new().child(
             h_flex_row()
                 .gap(px(2.))
@@ -2130,9 +2367,10 @@ impl Render for Workspace {
             .conflict
             .clone()
             .map(|conflict| self.render_conflict(&conflict, roles, cx));
-        let timeline = self.render_timeline(mode, roles, cx);
+        let timeline = self.render_timeline(mode, evals_button, roles, cx);
         let version_bar = self.render_version_bar(mode, roles, cx);
         let content: AnyElement = match mode {
+            _ if evals_shown => self.evals.clone().into_any_element(),
             HistoryMode::Editing => div()
                 .size_full()
                 .flex()
@@ -2145,10 +2383,10 @@ impl Render for Workspace {
             HistoryMode::Version { id } => self.render_compare(id, roles, cx).into_any_element(),
             HistoryMode::Full => self.render_full_history(roles, cx).into_any_element(),
         };
-        let toast = self.render_toast(roles);
+        let toast = self.render_toast(roles, cx);
         div()
             .id("workspace")
-            .key_context(if mode == HistoryMode::Editing {
+            .key_context(if mode == HistoryMode::Editing && !evals_shown {
                 "Workspace"
             } else {
                 "HistoryView"
@@ -2258,6 +2496,9 @@ impl Render for Workspace {
             )
             .children(toast)
             .when_some(self.new_skill.clone(), |this, dialog| this.child(dialog))
+            .when_some(self.evals.read(cx).dialog(), |this, dialog| {
+                this.child(dialog)
+            })
             .when_some(self.leave.as_ref().map(|_| ()), |this, _| {
                 this.child(self.render_leave(roles, cx))
             })
