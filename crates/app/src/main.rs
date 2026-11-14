@@ -1,4 +1,5 @@
 mod theme;
+mod ui;
 mod workspace;
 
 use std::{borrow::Cow, path::PathBuf};

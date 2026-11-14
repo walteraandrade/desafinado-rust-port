@@ -9,7 +9,10 @@ use gpui_kit::{
     *,
 };
 
-use crate::theme::{self, Roles};
+use crate::{
+    theme::{self, Roles},
+    ui::{self, ButtonKind},
+};
 
 actions!(
     desafinado,
@@ -43,6 +46,20 @@ enum MenuKind {
     Edit,
 }
 
+#[derive(Clone, Debug, PartialEq)]
+enum LeaveIntent {
+    New,
+    Open,
+    OpenPath(PathBuf),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum LeaveChoice {
+    Save,
+    Discard,
+    Cancel,
+}
+
 struct MenuRow {
     label: &'static str,
     shortcut: Option<&'static str>,
@@ -57,6 +74,8 @@ pub struct Workspace {
     saved_text: String,
     open_menu: Option<MenuKind>,
     notice: Option<SharedString>,
+    leave: Option<LeaveIntent>,
+    after_save: Option<LeaveIntent>,
     focus: FocusHandle,
     _subscriptions: Vec<Subscription>,
 }
@@ -80,6 +99,8 @@ impl Workspace {
             saved_text: String::new(),
             open_menu: None,
             notice: None,
+            leave: None,
+            after_save: None,
             focus: cx.focus_handle(),
             _subscriptions: vec![subscription],
         };
@@ -113,7 +134,7 @@ impl Workspace {
         cx.notify();
     }
 
-    fn write(&mut self, path: PathBuf, cx: &mut Context<Self>) {
+    fn write(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
         let text = self.text(cx);
         let temp = path.with_extension("desafinado-tmp");
         let result = std::fs::write(&temp, &text).and_then(|_| std::fs::rename(&temp, &path));
@@ -122,16 +143,56 @@ impl Workspace {
                 self.saved_text = text;
                 self.path = Some(path);
                 self.notice = None;
+                if let Some(intent) = self.after_save.take() {
+                    self.continue_with(intent, window, cx);
+                }
             }
             Err(error) => {
+                self.after_save = None;
                 self.notice = Some(format!("Could not save: {error}").into());
             }
         }
         cx.notify();
     }
 
-    fn new_document(&mut self, _: &NewDocument, window: &mut Window, cx: &mut Context<Self>) {
+    fn guard(&mut self, intent: LeaveIntent, window: &mut Window, cx: &mut Context<Self>) {
         self.open_menu = None;
+        if self.dirty(cx) {
+            self.leave = Some(intent);
+            cx.notify();
+        } else {
+            self.continue_with(intent, window, cx);
+        }
+    }
+
+    fn continue_with(&mut self, intent: LeaveIntent, window: &mut Window, cx: &mut Context<Self>) {
+        match intent {
+            LeaveIntent::New => self.clear_document(window, cx),
+            LeaveIntent::Open => self.prompt_open(window, cx),
+            LeaveIntent::OpenPath(path) => self.load(path, window, cx),
+        }
+    }
+
+    fn answer_leave(&mut self, choice: LeaveChoice, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(intent) = self.leave.take() else {
+            return;
+        };
+        match choice {
+            LeaveChoice::Cancel => {}
+            LeaveChoice::Discard => self.continue_with(intent, window, cx),
+            LeaveChoice::Save => {
+                self.after_save = Some(intent);
+                self.save_document(&SaveDocument, window, cx);
+            }
+        }
+        cx.notify();
+    }
+
+    fn new_document(&mut self, _: &NewDocument, window: &mut Window, cx: &mut Context<Self>) {
+        self.guard(LeaveIntent::New, window, cx);
+    }
+
+    fn clear_document(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.editor
             .update(cx, |state, cx| state.set_value("", window, cx));
         self.saved_text = String::new();
@@ -140,7 +201,10 @@ impl Workspace {
     }
 
     fn open_document(&mut self, _: &OpenDocument, window: &mut Window, cx: &mut Context<Self>) {
-        self.open_menu = None;
+        self.guard(LeaveIntent::Open, window, cx);
+    }
+
+    fn prompt_open(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let paths = cx.prompt_for_paths(PathPromptOptions {
             files: true,
             directories: false,
@@ -160,12 +224,12 @@ impl Workspace {
     fn save_document(&mut self, _: &SaveDocument, window: &mut Window, cx: &mut Context<Self>) {
         self.open_menu = None;
         match self.path.clone() {
-            Some(path) => self.write(path, cx),
+            Some(path) => self.write(path, window, cx),
             None => self.save_document_as(&SaveDocumentAs, window, cx),
         }
     }
 
-    fn save_document_as(&mut self, _: &SaveDocumentAs, _: &mut Window, cx: &mut Context<Self>) {
+    fn save_document_as(&mut self, _: &SaveDocumentAs, window: &mut Window, cx: &mut Context<Self>) {
         self.open_menu = None;
         let directory = self
             .path
@@ -180,9 +244,14 @@ impl Workspace {
             .map(|name| name.to_string_lossy().to_string())
             .unwrap_or_else(|| "Untitled.md".into());
         let target = cx.prompt_for_new_path(&directory, Some(&name));
-        cx.spawn(async move |this, cx| {
-            if let Ok(Ok(Some(path))) = target.await {
-                let _ = this.update(cx, |this, cx| this.write(path, cx));
+        cx.spawn_in(window, async move |this, cx| {
+            match target.await {
+                Ok(Ok(Some(path))) => {
+                    let _ = this.update_in(cx, |this, window, cx| this.write(path, window, cx));
+                }
+                _ => {
+                    let _ = this.update(cx, |this, _| this.after_save = None);
+                }
             }
         })
         .detach();
@@ -303,6 +372,31 @@ impl Workspace {
             }))
     }
 
+    fn render_leave(&self, roles: Roles, cx: &mut Context<Self>) -> impl IntoElement {
+        let answer = |choice: LeaveChoice| {
+            cx.listener(move |this: &mut Self, _: &ClickEvent, window: &mut Window, cx: &mut Context<Self>| {
+                this.answer_leave(choice, window, cx)
+            })
+        };
+        ui::modal_backdrop(
+            "leave-backdrop",
+            roles,
+            ui::dialog_frame("leave", px(416.), roles)
+                .key_context("LeaveDialog")
+                .child(ui::heading(format!("Save changes to {}?", self.file_name()), roles))
+                .child(ui::detail(
+                    "Discard removes your unsaved changes. Cancel keeps you here.",
+                    roles,
+                ))
+                .child(
+                    ui::actions_row()
+                        .child(ui::button("leave-cancel", "Cancel", ButtonKind::Default, roles).on_click(answer(LeaveChoice::Cancel)))
+                        .child(ui::button("leave-discard", "Discard", ButtonKind::Default, roles).on_click(answer(LeaveChoice::Discard)))
+                        .child(ui::button("leave-save", "Save", ButtonKind::Strong, roles).on_click(answer(LeaveChoice::Save))),
+                ),
+        )
+    }
+
     fn file_name(&self) -> SharedString {
         self.path
             .as_ref()
@@ -406,6 +500,9 @@ impl Render for Workspace {
             .child(title_bar)
             .child(header)
             .child(editor)
+            .when_some(self.leave.as_ref().map(|_| ()), |this, _| {
+                this.child(self.render_leave(roles, cx))
+            })
             .when_some(self.open_menu, |this, kind| {
                 this.child(
                     div()
