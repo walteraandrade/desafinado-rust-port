@@ -1,7 +1,16 @@
-use std::sync::Arc;
+use std::{
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
-use desafinado_ai::prompts::{DescriptionPromptInput, PromptParts, build_description_prompt};
-use desafinado_core::suggestions::{ClientError, SuggestionResult};
+use desafinado_ai::{
+    edits::{DroppedEdit, ReviewValidationContext},
+    prompts::{DescriptionPromptInput, PromptParts, build_description_prompt},
+    records::{CallObservation, CallOutcome, CallTiming, ShapeRecordInput, shape_ai_call_record},
+    review_stream::{ReviewStream, ReviewStreamEvent, should_retry_review},
+};
+use desafinado_core::suggestions::{ClientError, SuggestionResult, ValidatedEdit};
+use desafinado_platform::records::AiCallLog;
 
 #[derive(Clone, Debug)]
 pub struct TargetCall {
@@ -14,6 +23,7 @@ pub struct TargetCall {
 pub struct ReviewCall {
     pub task: String,
     pub parts: PromptParts,
+    pub context: ReviewValidationContext,
 }
 
 pub const DESCRIPTION_TASK: &str = "Improve skill description";
@@ -41,9 +51,11 @@ impl DescriptionCall {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ReviewEvent {
-    Chunk(String),
-    Done,
+    Edit(ValidatedEdit),
+    Dropped(DroppedEdit),
+    Done { error: Option<ClientError> },
     Failed(ClientError),
 }
 
@@ -53,7 +65,105 @@ pub trait AiBackend: Send + Sync {
     fn description(&self, call: DescriptionCall) -> Result<SuggestionResult, ClientError>;
 }
 
-pub struct FakeAi;
+pub fn outcome_of(failure: Option<&ClientError>) -> CallOutcome {
+    match failure {
+        None => CallOutcome::Valid,
+        Some(ClientError::InvalidOutput { .. }) => CallOutcome::Invalid,
+        Some(_) => CallOutcome::Error,
+    }
+}
+
+pub fn stopped_error() -> ClientError {
+    ClientError::Aborted {
+        message: "Stopped by the caller".into(),
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReviewAttempt {
+    pub validated: usize,
+    pub failure: Option<ClientError>,
+    pub stopped: bool,
+}
+
+pub type Emit<'a> = dyn FnMut(ReviewEvent) -> bool + 'a;
+
+pub fn drive_review(
+    attempt: &mut dyn FnMut(u32, &mut Emit) -> ReviewAttempt,
+    emit: &mut dyn FnMut(ReviewEvent) -> bool,
+) {
+    let first = attempt(1, emit);
+    if first.stopped {
+        return;
+    }
+    let last = if should_retry_review(first.failure.as_ref(), first.validated) {
+        attempt(2, emit)
+    } else {
+        first
+    };
+    if last.stopped {
+        return;
+    }
+    match last.failure {
+        Some(error) if last.validated == 0 => {
+            emit(ReviewEvent::Failed(error));
+        }
+        error => {
+            emit(ReviewEvent::Done { error });
+        }
+    }
+}
+
+pub fn feed_review(
+    stream: &mut ReviewStream,
+    chunk: &str,
+    emit: &mut dyn FnMut(ReviewEvent) -> bool,
+    on_edit: &mut dyn FnMut(),
+) -> bool {
+    for event in stream.feed(chunk) {
+        let event = match event {
+            ReviewStreamEvent::Edit(edit) => {
+                on_edit();
+                ReviewEvent::Edit(edit)
+            }
+            ReviewStreamEvent::Dropped(dropped) => ReviewEvent::Dropped(dropped),
+            ReviewStreamEvent::InvalidElement { .. } => continue,
+        };
+        if !emit(event) {
+            return false;
+        }
+    }
+    true
+}
+
+pub struct FakeAi {
+    log: Option<AiCallLog>,
+}
+
+const FAKE_MODEL: &str = "fake/desafinado";
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FakeScript {
+    Normal,
+    Slow,
+    Network,
+    Invalid,
+    Credit,
+    Partial,
+}
+
+fn fake_script(prompt: &str) -> FakeScript {
+    [
+        ("fake:slow", FakeScript::Slow),
+        ("fake:network", FakeScript::Network),
+        ("fake:invalid", FakeScript::Invalid),
+        ("fake:credit", FakeScript::Credit),
+        ("fake:partial", FakeScript::Partial),
+    ]
+    .into_iter()
+    .find(|(marker, _)| prompt.contains(marker))
+    .map_or(FakeScript::Normal, |(_, script)| script)
+}
 
 fn fake_rewrite(original: &str) -> String {
     let words: Vec<&str> = original.split_whitespace().collect();
@@ -65,26 +175,126 @@ fn fake_rewrite(original: &str) -> String {
     text
 }
 
+fn fake_refine(original: &str) -> String {
+    let words: Vec<&str> = original.split_whitespace().collect();
+    let keep = (words.len() / 2).max(1);
+    format!(
+        "{}, gently.",
+        words[..keep.min(words.len())]
+            .join(" ")
+            .trim_end_matches(['.', ','])
+    )
+}
+
 fn fake_description(name: &str, description: &str) -> String {
     let topic = name.replace('-', " ");
     let current = description.trim().trim_end_matches('.');
     format!("Use when the writer asks for {topic}, or when a task matches: {current}.")
 }
 
+fn network_error() -> ClientError {
+    ClientError::Network {
+        message: "fake: connection refused".into(),
+    }
+}
+
+impl FakeAi {
+    pub fn new(log: Option<AiCallLog>) -> Self {
+        Self { log }
+    }
+
+    fn record(
+        &self,
+        task: &str,
+        attempt: u32,
+        failure: Option<&ClientError>,
+        clock: Instant,
+        first_suggestion_ms: Option<f64>,
+    ) {
+        let Some(log) = self.log.as_ref() else {
+            return;
+        };
+        let record = shape_ai_call_record(&ShapeRecordInput {
+            task: task.to_string(),
+            attempt,
+            outcome: outcome_of(failure),
+            started_at: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+            observation: CallObservation {
+                requested_model: FAKE_MODEL.into(),
+                served_model: failure.is_none().then(|| FAKE_MODEL.into()),
+                provider: failure.is_none().then(|| "Fake".into()),
+                finish_reason: failure.is_none().then(|| "stop".into()),
+                error: failure.map(|error| error.kind().to_string()),
+                ..Default::default()
+            },
+            generation: None,
+            timing: CallTiming {
+                client_total_ms: clock.elapsed().as_millis() as u64,
+                first_element_ms: first_suggestion_ms,
+                first_suggestion_ms,
+            },
+        });
+        let _ = log.append(&record);
+    }
+
+    fn answer(
+        &self,
+        call: &TargetCall,
+        result: impl Fn() -> SuggestionResult,
+    ) -> Result<SuggestionResult, ClientError> {
+        let script = fake_script(&call.parts.prompt);
+        let wait = if script == FakeScript::Slow {
+            4000
+        } else {
+            600
+        };
+        let failure = match script {
+            FakeScript::Network => Some(network_error()),
+            FakeScript::Credit => Some(ClientError::OutOfCredit {
+                message: "fake: insufficient credits".into(),
+            }),
+            FakeScript::Invalid => Some(ClientError::InvalidOutput {
+                message: "The replacement was empty".into(),
+            }),
+            _ => None,
+        };
+        let attempts = if script == FakeScript::Invalid { 2 } else { 1 };
+        for attempt in 1..=attempts {
+            let clock = Instant::now();
+            std::thread::sleep(Duration::from_millis(wait));
+            self.record(&call.task, attempt, failure.as_ref(), clock, None);
+        }
+        match failure {
+            Some(error) => Err(error),
+            None => Ok(result()),
+        }
+    }
+}
+
 impl AiBackend for FakeAi {
     fn target(&self, call: TargetCall) -> Result<SuggestionResult, ClientError> {
-        std::thread::sleep(std::time::Duration::from_millis(600));
-        let replacement = fake_rewrite(&call.original);
-        Ok(SuggestionResult {
-            unchanged: replacement == call.original,
-            replacement,
-            rationale: "Cuts the last third to keep the point short.".into(),
+        self.answer(&call, || {
+            let refining = call.parts.prompt.contains("<latest-replacement>");
+            let replacement = if refining {
+                fake_refine(&call.original)
+            } else {
+                fake_rewrite(&call.original)
+            };
+            SuggestionResult {
+                unchanged: replacement == call.original,
+                replacement,
+                rationale: if refining {
+                    "Halves the text and softens the ending.".into()
+                } else {
+                    "Cuts the last third to keep the point short.".into()
+                },
+            }
         })
     }
 
     fn description(&self, call: DescriptionCall) -> Result<SuggestionResult, ClientError> {
-        std::thread::sleep(std::time::Duration::from_millis(600));
-        Ok(SuggestionResult {
+        let target = call.target_call();
+        self.answer(&target, || SuggestionResult {
             replacement: fake_description(&call.input.name, &call.input.description),
             rationale: "Names when to invoke the skill instead of what it does.".into(),
             unchanged: false,
@@ -92,16 +302,15 @@ impl AiBackend for FakeAi {
     }
 
     fn review(&self, call: ReviewCall, emit: &mut dyn FnMut(ReviewEvent) -> bool) {
+        let script = fake_script(&call.parts.prompt);
         let ids: Vec<String> = call
-            .parts
-            .prompt
-            .lines()
-            .filter_map(|line| {
-                line.strip_prefix("<block id=\"")
-                    .and_then(|rest| rest.split('"').next())
-                    .map(String::from)
-            })
-            .take(2)
+            .context
+            .blocks
+            .iter()
+            .filter(|block| block.kind == desafinado_core::blocks::BlockKind::Paragraph)
+            .map(|block| block.id.clone())
+            .filter(|id| !call.context.occupied.contains(id))
+            .take(if script == FakeScript::Partial { 1 } else { 2 })
             .collect();
         let body = ids
             .iter()
@@ -116,21 +325,57 @@ impl AiBackend for FakeAi {
             .collect::<Vec<_>>()
             .join(",");
         let text = format!("{{\"elements\":[{body}]}}");
-        for chunk in text.as_bytes().chunks(16) {
-            std::thread::sleep(std::time::Duration::from_millis(40));
-            if !emit(ReviewEvent::Chunk(
-                String::from_utf8_lossy(chunk).to_string(),
-            )) {
-                return;
-            }
-        }
-        emit(ReviewEvent::Done);
+        let text = match script {
+            FakeScript::Network => String::new(),
+            FakeScript::Partial => text[..text.len() - 2].to_string(),
+            _ => text,
+        };
+        let chunk_ms = if script == FakeScript::Slow { 160 } else { 40 };
+        drive_review(
+            &mut |attempt, emit| {
+                let clock = Instant::now();
+                let mut stream = ReviewStream::new(call.context.clone());
+                let mut validated = 0;
+                let mut first: Option<f64> = None;
+                for chunk in text.as_bytes().chunks(16) {
+                    std::thread::sleep(Duration::from_millis(chunk_ms));
+                    let alive = feed_review(
+                        &mut stream,
+                        &String::from_utf8_lossy(chunk),
+                        emit,
+                        &mut || {
+                            validated += 1;
+                            first.get_or_insert(clock.elapsed().as_millis() as f64);
+                        },
+                    );
+                    if !alive {
+                        self.record(&call.task, attempt, Some(&stopped_error()), clock, first);
+                        return ReviewAttempt {
+                            validated,
+                            failure: None,
+                            stopped: true,
+                        };
+                    }
+                }
+                let failure = match script {
+                    FakeScript::Network | FakeScript::Partial => Some(network_error()),
+                    _ => stream.finish().err(),
+                };
+                self.record(&call.task, attempt, failure.as_ref(), clock, first);
+                ReviewAttempt {
+                    validated,
+                    failure,
+                    stopped: false,
+                }
+            },
+            emit,
+        );
     }
 }
 
 pub fn backend(services: Arc<crate::services::Services>) -> Arc<dyn AiBackend> {
     if std::env::var_os("DESAFINADO_FAKE_AI").is_some() {
-        Arc::new(FakeAi)
+        Arc::new(FakeAi::new(Some(AiCallLog::new(&services.user_data))))
     } else {
         Arc::new(crate::openrouter_ai::OpenRouterAi::new(services))
     }
@@ -139,6 +384,8 @@ pub fn backend(services: Arc<crate::services::Services>) -> Arc<dyn AiBackend> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use desafinado_ai::prompts::{ReviewPromptInput, build_review_prompt};
+    use desafinado_core::blocks::extract_blocks;
 
     fn input() -> DescriptionPromptInput {
         DescriptionPromptInput {
@@ -158,8 +405,166 @@ mod tests {
 
     #[test]
     fn the_fake_description_differs_from_the_current_one() {
-        let result = FakeAi.description(DescriptionCall::new(input())).unwrap();
+        let result = FakeAi::new(None)
+            .description(DescriptionCall::new(input()))
+            .unwrap();
         assert_ne!(result.replacement, "Helps with PDFs.");
         assert!(result.replacement.starts_with("Use when"));
+    }
+
+    #[test]
+    fn names_the_outcome_of_a_call_by_its_failure() {
+        assert_eq!(outcome_of(None), CallOutcome::Valid);
+        assert_eq!(
+            outcome_of(Some(&ClientError::InvalidOutput {
+                message: "x".into()
+            })),
+            CallOutcome::Invalid
+        );
+        assert_eq!(outcome_of(Some(&network_error())), CallOutcome::Error);
+        assert_eq!(outcome_of(Some(&stopped_error())), CallOutcome::Error);
+    }
+
+    fn invalid() -> ClientError {
+        ClientError::InvalidOutput {
+            message: "bad".into(),
+        }
+    }
+
+    fn run(attempts: Vec<ReviewAttempt>) -> (Vec<u32>, Vec<ReviewEvent>) {
+        let mut queue = attempts.into_iter();
+        let mut made = Vec::new();
+        let mut events = Vec::new();
+        drive_review(
+            &mut |number, _| {
+                made.push(number);
+                queue.next().unwrap()
+            },
+            &mut |event| {
+                events.push(event);
+                true
+            },
+        );
+        (made, events)
+    }
+
+    #[test]
+    fn a_clean_review_pass_is_done_after_one_attempt() {
+        let (made, events) = run(vec![ReviewAttempt {
+            validated: 2,
+            failure: None,
+            stopped: false,
+        }]);
+        assert_eq!(made, vec![1]);
+        assert_eq!(events, vec![ReviewEvent::Done { error: None }]);
+    }
+
+    #[test]
+    fn retries_a_review_pass_whose_output_was_invalid_before_any_suggestion() {
+        let (made, events) = run(vec![
+            ReviewAttempt {
+                validated: 0,
+                failure: Some(invalid()),
+                stopped: false,
+            },
+            ReviewAttempt {
+                validated: 1,
+                failure: None,
+                stopped: false,
+            },
+        ]);
+        assert_eq!(made, vec![1, 2]);
+        assert_eq!(events, vec![ReviewEvent::Done { error: None }]);
+    }
+
+    #[test]
+    fn a_network_failure_before_any_suggestion_fails_without_a_retry() {
+        let (made, events) = run(vec![ReviewAttempt {
+            validated: 0,
+            failure: Some(network_error()),
+            stopped: false,
+        }]);
+        assert_eq!(made, vec![1]);
+        assert_eq!(events, vec![ReviewEvent::Failed(network_error())]);
+    }
+
+    #[test]
+    fn a_failure_after_some_suggestions_ends_the_pass_with_the_error() {
+        let (made, events) = run(vec![ReviewAttempt {
+            validated: 1,
+            failure: Some(invalid()),
+            stopped: false,
+        }]);
+        assert_eq!(made, vec![1]);
+        assert_eq!(
+            events,
+            vec![ReviewEvent::Done {
+                error: Some(invalid())
+            }]
+        );
+    }
+
+    #[test]
+    fn a_stopped_pass_emits_nothing_more() {
+        let (_, events) = run(vec![ReviewAttempt {
+            validated: 0,
+            failure: None,
+            stopped: true,
+        }]);
+        assert!(events.is_empty());
+    }
+
+    fn review_call(document: &str) -> ReviewCall {
+        let blocks = extract_blocks(document);
+        ReviewCall {
+            task: "review document → default criteria".into(),
+            parts: build_review_prompt(&ReviewPromptInput {
+                blocks: blocks.clone(),
+                focus: None,
+            }),
+            context: ReviewValidationContext {
+                blocks,
+                occupied: Default::default(),
+            },
+        }
+    }
+
+    #[test]
+    fn the_fake_review_streams_validated_edits_and_ends() {
+        let mut events = Vec::new();
+        FakeAi::new(None).review(
+            review_call("One two three.\n\nFour five six.\n"),
+            &mut |event| {
+                events.push(event);
+                true
+            },
+        );
+        let edits = events
+            .iter()
+            .filter(|event| matches!(event, ReviewEvent::Edit(_)))
+            .count();
+        assert_eq!(edits, 2);
+        assert_eq!(events.last(), Some(&ReviewEvent::Done { error: None }));
+    }
+
+    #[test]
+    fn the_fake_scripts_failures_from_markers_in_the_prompt() {
+        assert_eq!(
+            fake_script("Instruction: fake:network"),
+            FakeScript::Network
+        );
+        assert_eq!(fake_script("Instruction: Shorter"), FakeScript::Normal);
+        let call = TargetCall {
+            task: "cursor in p1 → free text: fake:invalid".into(),
+            parts: PromptParts {
+                instructions: String::new(),
+                prompt: "Instruction: fake:credit".into(),
+            },
+            original: "Text.".into(),
+        };
+        assert!(matches!(
+            FakeAi::new(None).target(call),
+            Err(ClientError::OutOfCredit { .. })
+        ));
     }
 }

@@ -54,7 +54,7 @@ use crate::{
         decide_external_change, edited_session, has_unsaved_changes, history_key, minimal_change,
         name_of, opened_session, suggested_file_name,
     },
-    editor_pane::{EditorPane, PaneEvent},
+    editor_pane::{EditorPane, PaneEvent, PaneToastAction},
     evals_view::{self, EvalSkill, EvalsEvent, EvalsView},
     frontmatter_view::{FrontmatterEvent, FrontmatterView},
     history_store::DbHistoryStore,
@@ -83,6 +83,9 @@ const TOAST_DURATION: Duration = Duration::from_millis(4500);
 const ACTION_TOAST_DURATION: Duration = Duration::from_millis(12000);
 const FLASH_DURATION: Duration = Duration::from_millis(1200);
 const HISTORY_FILE: &str = "history.sqlite";
+
+const LEAVE_CHOICES: [LeaveChoice; 3] =
+    [LeaveChoice::Cancel, LeaveChoice::Discard, LeaveChoice::Save];
 
 actions!(
     desafinado,
@@ -115,6 +118,10 @@ actions!(
         MenuPrevious,
         MenuSelect,
         MenuLeave,
+        LeaveNext,
+        LeavePrevious,
+        LeavePress,
+        LeaveCancel,
     ]
 );
 
@@ -142,6 +149,11 @@ pub fn init(cx: &mut App) {
         KeyBinding::new("enter", ConfirmReview, Some("ReviewPopover > Input")),
         KeyBinding::new("escape", CloseMenu, Some("ReviewPopover > Input")),
         KeyBinding::new("escape", CloseHistory, Some("HistoryView")),
+        KeyBinding::new("escape", LeaveCancel, Some("LeaveDialog")),
+        KeyBinding::new("tab", LeaveNext, Some("LeaveDialog")),
+        KeyBinding::new("shift-tab", LeavePrevious, Some("LeaveDialog")),
+        KeyBinding::new("enter", LeavePress, Some("LeaveDialog")),
+        KeyBinding::new("space", LeavePress, Some("LeaveDialog")),
         KeyBinding::new("left", DotLeft, Some("HistoryView")),
         KeyBinding::new("right", DotRight, Some("HistoryView")),
         KeyBinding::new("home", DotHome, Some("HistoryView")),
@@ -217,12 +229,17 @@ struct Reopened {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum ToastAction {
     ShowEvals { path: String },
+    Pane(PaneToastAction),
 }
 
 impl ToastAction {
     fn label(&self) -> &'static str {
         match self {
             Self::ShowEvals { .. } => "Show",
+            Self::Pane(PaneToastAction::RetrySuggestion(_) | PaneToastAction::RetryReview(_)) => {
+                "Retry"
+            }
+            Self::Pane(PaneToastAction::ShowSuggestion(_)) => "Show",
         }
     }
 }
@@ -329,6 +346,8 @@ pub struct Workspace {
     review_focus: Option<Entity<gpui_kit::component::input::InputState>>,
     after_save: Option<LeaveIntent>,
     focus: FocusHandle,
+    leave_focus: FocusHandle,
+    leave_index: usize,
     library: Entity<LibraryPanel>,
     library_open: bool,
     search_unfolded: bool,
@@ -541,6 +560,8 @@ impl Workspace {
             review_focus: None,
             after_save: None,
             focus: cx.focus_handle(),
+            leave_focus: cx.focus_handle(),
+            leave_index: 0,
             library,
             library_open: false,
             search_unfolded: false,
@@ -740,6 +761,10 @@ impl Workspace {
                     now_ms(),
                 );
                 self.settle_history(cx);
+            }
+            PaneEvent::Toast { text, actions } => {
+                let actions = actions.iter().cloned().map(ToastAction::Pane).collect();
+                self.notify_with(text.clone(), actions, cx);
             }
         }
         cx.notify();
@@ -1066,6 +1091,8 @@ impl Workspace {
         self.open_menu = None;
         if self.unsaved_changes(cx) {
             self.leave = Some(intent);
+            self.leave_index = 0;
+            window.focus(&self.leave_focus, cx);
             cx.notify();
         } else {
             self.continue_with(intent, window, cx);
@@ -1226,6 +1253,22 @@ impl Workspace {
             ToastAction::ShowEvals { path } => {
                 if self.open_skill(cx).is_some_and(|skill| &skill.path == path) {
                     self.open_evals(window, cx);
+                }
+            }
+            ToastAction::Pane(action) => {
+                self.show_editing(window, cx);
+                match action {
+                    PaneToastAction::RetrySuggestion(id) => {
+                        self.pane.update(cx, |pane, cx| pane.retry(id, window, cx))
+                    }
+                    PaneToastAction::ShowSuggestion(id) => {
+                        self.pane.update(cx, |pane, cx| pane.show(id, window, cx))
+                    }
+                    PaneToastAction::RetryReview(focus) => {
+                        let focus = focus.clone();
+                        self.pane
+                            .update(cx, |pane, cx| pane.start_review(focus, cx))
+                    }
                 }
             }
         }
@@ -1515,6 +1558,7 @@ impl Workspace {
         };
         match choice {
             LeaveChoice::Cancel => {
+                self.pane.update(cx, |pane, cx| pane.focus(window, cx));
                 if let LeaveIntent::OpenPath(_) = intent
                     && let Some((_, _, search)) = self.library_request.take()
                 {
@@ -1738,6 +1782,12 @@ impl Workspace {
             window.focus(&self.focus, cx);
         }
         cx.notify();
+    }
+
+    fn show_editing(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.visible_mode() != HistoryMode::Editing {
+            self.close_history(window, cx);
+        }
     }
 
     pub(crate) fn close_history(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -2026,7 +2076,7 @@ impl Workspace {
     }
 
     fn menu_rows(&self, kind: MenuKind, cx: &App) -> Vec<MenuRow> {
-        let open = self.pane.read(cx).open_count();
+        let open = self.pane.read(cx).open_review_count();
         match kind {
             MenuKind::File => {
                 let problems = self.frontmatter_problems(cx).len();
@@ -2260,9 +2310,12 @@ impl Workspace {
 
     fn open_review(&mut self, _: &StartReview, window: &mut Window, cx: &mut Context<Self>) {
         self.open_menu = None;
+        if self.pane.read(cx).review.is_some() {
+            return;
+        }
         let input = cx.new(|cx| {
             gpui_kit::component::input::InputState::new(window, cx)
-                .placeholder("Focus (optional), such as tone or clarity")
+                .placeholder("Focus (optional): tone, concision…")
         });
         input.update(cx, |state, cx| state.focus(window, cx));
         self.review_focus = Some(input);
@@ -2273,11 +2326,11 @@ impl Workspace {
         let Some(input) = self.review_focus.take() else {
             return;
         };
-        let focus = input.read(cx).value().to_string();
-        self.pane.update(cx, |pane, cx| {
-            pane.start_review(focus, cx);
-            pane.focus(window, cx);
-        });
+        let focus = input.read(cx).value().trim().to_string();
+        self.show_editing(window, cx);
+        window.focus(&self.focus, cx);
+        self.pane
+            .update(cx, |pane, cx| pane.start_review(focus, cx));
         cx.notify();
     }
 
@@ -2300,43 +2353,32 @@ impl Workspace {
             .absolute()
             .top(px(38.))
             .left(px(52.))
-            .w(px(360.))
-            .p(px(12.))
+            .w(px(384.))
+            .p(px(8.))
             .bg(roles.raised)
             .border_1()
             .border_color(roles.hairline)
             .flex()
-            .flex_col()
-            .gap(px(10.))
-            .child(ui::heading("Review the Document", roles).text_size(px(14.)))
-            .child(div().text_size(px(13.)).child(
-                "The AI reads the whole Document and suggests up to 6 changes, one per Block.",
-            ))
-            .child(gpui_kit::component::input::Input::new(input))
+            .flex_row()
+            .items_center()
+            .gap(px(8.))
+            .child(div().flex_1().child(ui::field(
+                gpui_kit::component::input::Input::new(input).appearance(false),
+                true,
+                false,
+                roles,
+            )))
             .child(
-                ui::row()
-                    .justify_end()
-                    .gap(px(8.))
-                    .child(
-                        ui::button("review-cancel", "Cancel", ButtonKind::Default, roles).on_click(
-                            cx.listener(|this, _, window, cx| {
-                                this.review_focus = None;
-                                this.pane.update(cx, |pane, cx| pane.focus(window, cx));
-                                cx.notify();
-                            }),
-                        ),
-                    )
-                    .child(
-                        ui::button("review-start", "Review", ButtonKind::Primary, roles).on_click(
-                            cx.listener(|this, _, window, cx| {
-                                this.confirm_review(&ConfirmReview, window, cx)
-                            }),
-                        ),
-                    ),
+                ui::button("review-start", "Review", ButtonKind::Default, roles).on_click(
+                    cx.listener(|this, _, window, cx| {
+                        this.confirm_review(&ConfirmReview, window, cx)
+                    }),
+                ),
             )
     }
 
     fn render_leave(&self, roles: Roles, cx: &mut Context<Self>) -> impl IntoElement {
+        let focused = self.leave_index;
         let answer = |choice: LeaveChoice| {
             cx.listener(
                 move |this: &mut Self,
@@ -2352,6 +2394,23 @@ impl Workspace {
             roles,
             ui::dialog_frame("leave", px(416.), roles)
                 .key_context("LeaveDialog")
+                .track_focus(&self.leave_focus)
+                .on_action(cx.listener(|this, _: &LeaveCancel, window, cx| {
+                    this.answer_leave(LeaveChoice::Cancel, window, cx)
+                }))
+                .on_action(cx.listener(|this, _: &LeaveNext, _, cx| {
+                    this.leave_index = (this.leave_index + 1) % LEAVE_CHOICES.len();
+                    cx.notify();
+                }))
+                .on_action(cx.listener(|this, _: &LeavePrevious, _, cx| {
+                    this.leave_index =
+                        (this.leave_index + LEAVE_CHOICES.len() - 1) % LEAVE_CHOICES.len();
+                    cx.notify();
+                }))
+                .on_action(cx.listener(|this, _: &LeavePress, window, cx| {
+                    let choice = LEAVE_CHOICES[this.leave_index.min(LEAVE_CHOICES.len() - 1)];
+                    this.answer_leave(choice, window, cx)
+                }))
                 .child(ui::heading(
                     format!("Save changes to {}?", self.file_name()),
                     roles,
@@ -2364,14 +2423,23 @@ impl Workspace {
                     ui::actions_row()
                         .child(
                             ui::button("leave-cancel", "Cancel", ButtonKind::Default, roles)
+                                .when(focused == 0, |this| {
+                                    this.border_2().border_color(roles.accent)
+                                })
                                 .on_click(answer(LeaveChoice::Cancel)),
                         )
                         .child(
                             ui::button("leave-discard", "Discard", ButtonKind::Default, roles)
+                                .when(focused == 1, |this| {
+                                    this.border_2().border_color(roles.accent)
+                                })
                                 .on_click(answer(LeaveChoice::Discard)),
                         )
                         .child(
                             ui::button("leave-save", "Save", ButtonKind::Strong, roles)
+                                .when(focused == 2, |this| {
+                                    this.border_2().border_color(roles.accent)
+                                })
                                 .on_click(answer(LeaveChoice::Save)),
                         ),
                 ),
@@ -2558,7 +2626,7 @@ impl Render for Workspace {
             .unwrap_or_else(|| self.file_name());
         let dirty = self.session.as_ref().is_some_and(|session| session.dirty);
         let review = self.pane.read(cx).review.as_ref().map(|run| run.added);
-        let open = self.pane.read(cx).open_count();
+        let open = self.pane.read(cx).open_review_count();
         let open_skill = self.open_skill(cx);
         let evals_skill = open_skill.clone();
         self.evals
@@ -2606,35 +2674,21 @@ impl Render for Workspace {
                     .child(format!("{label}{}", if dirty { " •" } else { "" })),
             )
             .child(div().flex_1())
-            .when_some(review, |this, added| {
-                this.child(
-                    ui::row()
-                        .gap(px(8.))
-                        .text_size(px(13.))
-                        .child(ui::ai_flag(roles))
-                        .child(div().text_color(roles.ai).child(format!(
-                            "Reviewing · {added} {}",
-                            if added == 1 {
-                                "suggestion"
-                            } else {
-                                "suggestions"
-                            }
-                        )))
-                        .child(
-                            ui::sized_button(
-                                "header-stop",
-                                "Stop",
-                                ButtonKind::Default,
-                                ui::ButtonSize::Small,
-                                false,
-                                roles,
-                            )
-                            .on_click(cx.listener(
-                                |this, _, window, cx| this.stop_review(&StopReview, window, cx),
-                            )),
-                        ),
-                )
-            })
+            .child(
+                ui::row()
+                    .gap(px(6.))
+                    .text_size(px(13.))
+                    .text_color(roles.faint)
+                    .child("Select text and press")
+                    .child(
+                        div()
+                            .px(px(6.))
+                            .py(px(1.))
+                            .bg(roles.fill)
+                            .text_color(roles.ink)
+                            .child("Ctrl+K"),
+                    ),
+            )
             .when(open > 0, |this| {
                 this.child(
                     ui::row()
@@ -2650,6 +2704,7 @@ impl Render for Workspace {
                             )
                             .on_click(cx.listener(
                                 |this, _, window, cx| {
+                                    this.show_editing(window, cx);
                                     this.pane.update(cx, |pane, cx| pane.accept_all(window, cx))
                                 },
                             )),
@@ -2663,10 +2718,57 @@ impl Render for Workspace {
                                 false,
                                 roles,
                             )
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.pane.update(cx, |pane, cx| pane.reject_all(cx))
-                            })),
+                            .on_click(cx.listener(
+                                |this, _, window, cx| {
+                                    this.show_editing(window, cx);
+                                    this.pane.update(cx, |pane, cx| pane.reject_all(window, cx))
+                                },
+                            )),
                         ),
+                )
+            })
+            .when_some(review, |this, added| {
+                this.child(
+                    div()
+                        .id("header-reviewing")
+                        .h(px(24.))
+                        .px(px(8.))
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap(px(6.))
+                        .border_1()
+                        .border_color(roles.hairline)
+                        .bg(roles.fill)
+                        .text_size(px(12.))
+                        .font_weight(FontWeight::MEDIUM)
+                        .cursor_pointer()
+                        .hover(|this| this.bg(roles.fill_hover).border_color(roles.ink))
+                        .tooltip(|window, cx| {
+                            gpui_kit::component::tooltip::Tooltip::new("Stop the Review pass")
+                                .build(window, cx)
+                        })
+                        .child(div().size(px(6.)).bg(roles.ai))
+                        .child("Reviewing…")
+                        .when(added > 0, |this| {
+                            this.child(div().text_color(roles.ai).child(format!(
+                                "{added} {}",
+                                if added == 1 {
+                                    "suggestion"
+                                } else {
+                                    "suggestions"
+                                }
+                            )))
+                        })
+                        .child(
+                            div()
+                                .ml(px(4.))
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .child("Stop"),
+                        )
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.stop_review(&StopReview, window, cx)
+                        })),
                 )
             });
         let conflict = self
@@ -2739,11 +2841,13 @@ impl Render for Workspace {
             .on_action(cx.listener(|this, _: &DotEnd, window, cx| this.step_dot("End", window, cx)))
             .on_action(cx.listener(|this, _: &AcceptAll, window, cx| {
                 this.open_menu = None;
+                this.show_editing(window, cx);
                 this.pane.update(cx, |pane, cx| pane.accept_all(window, cx));
             }))
-            .on_action(cx.listener(|this, _: &RejectAll, _, cx| {
+            .on_action(cx.listener(|this, _: &RejectAll, window, cx| {
                 this.open_menu = None;
-                this.pane.update(cx, |pane, cx| pane.reject_all(cx));
+                this.show_editing(window, cx);
+                this.pane.update(cx, |pane, cx| pane.reject_all(window, cx));
             }))
             .relative()
             .size_full()
