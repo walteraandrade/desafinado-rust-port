@@ -46,8 +46,9 @@ use gpui_kit::{
     *,
 };
 
+use desafinado_runtime::ai_backend::{AiBackend, ReviewCall, ReviewEvent, TargetCall};
+
 use crate::{
-    ai_backend::{AiBackend, ReviewCall, ReviewEvent, TargetCall},
     theme::{self, Roles},
     ui::{self, ButtonKind, ButtonSize},
 };

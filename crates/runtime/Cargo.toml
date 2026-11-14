@@ -1,0 +1,12 @@
+[package]
+name = "desafinado-runtime"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+desafinado-core = { path = "../core" }
+desafinado-ai = { path = "../ai" }
+desafinado-platform = { path = "../platform" }
+serde_json.workspace = true
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }

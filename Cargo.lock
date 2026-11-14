@@ -1251,10 +1251,10 @@ dependencies = [
 name = "desafinado"
 version = "0.1.0"
 dependencies = [
- "chrono",
  "desafinado-ai",
  "desafinado-core",
  "desafinado-platform",
+ "desafinado-runtime",
  "futures",
  "gpui-kit",
  "serde_json",
@@ -1317,6 +1317,17 @@ dependencies = [
  "thiserror 2.0.21",
  "ureq",
  "webpki-root-certs",
+]
+
+[[package]]
+name = "desafinado-runtime"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "desafinado-ai",
+ "desafinado-core",
+ "desafinado-platform",
+ "serde_json",
 ]
 
 [[package]]

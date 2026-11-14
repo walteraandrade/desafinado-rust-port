@@ -3,7 +3,6 @@ use std::path::PathBuf;
 use gpui_kit::{component::TitleBar, prelude::FluentBuilder as _, *};
 
 use crate::{
-    ai_backend,
     editor_pane::{EditorPane, PaneEvent},
     theme::{self, Roles},
     ui::{self, ButtonKind},
@@ -82,7 +81,7 @@ pub struct Workspace {
 
 impl Workspace {
     pub fn new(launch: Option<PathBuf>, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let pane = cx.new(|cx| EditorPane::new(ai_backend::backend(crate::services::Services::load()), window, cx));
+        let pane = cx.new(|cx| EditorPane::new(desafinado_runtime::ai_backend::backend(desafinado_runtime::services::Services::load()), window, cx));
         let subscription = cx.subscribe(&pane, |_, _, _: &PaneEvent, cx| cx.notify());
         let mut workspace = Self {
             pane,
