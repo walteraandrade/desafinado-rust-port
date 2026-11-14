@@ -34,8 +34,8 @@ Every feature of `desafinado`'s Electron build (as of `b269c9c`, 2026-11-14) and
 - [x] Improve description (AI) (the proposal appears and leaves without the unfold motion)
 
 ## Evals
-- [ ] Evals page "How this Skill performs": last run, Did the Skill fire? / Did it help?, Each Eval table, suspicious cases
-- [ ] Eval run through the Claude CLI with Arms, runs 1–5, Cancel, toast at the end, first-eval guide
+- [x] Evals page "How this Skill performs": last run, Did the Skill fire? / Did it help?, Each Eval table, suspicious cases (the Each Eval table is rows of flex cells; a flag's full wording is its tooltip, with no help cursor; inline `code` in the guide's sentences is plain text, the example blocks use DejaVu Sans Mono; Open report hands the file to `xdg-open`; the Evals icon breathes with GPUI's opacity animation)
+- [x] Eval run through the Claude CLI with Arms, runs 1–5, Cancel, toast at the end, first-eval guide (Compare against is a list that unfolds under the field instead of a native select; Runs and Cost limit are text fields with the same checks, no spinner; `DESAFINADO_CLAUDE_CLI=<path>` names the CLI before PATH and `~/.local/bin`, a port addition for checks, with `scripts/fake-claude` as a stand-in that never calls the model; quitting during a run waits up to 6 s for it to stop, as in Electron)
 
 ## Preferences and themes
 - [ ] Preferences (`Ctrl+,`): themes (24 Palettes + Desafinado; Omarchy theme when present), Model, OpenRouter key, Quick actions (toggle, order, add, edit, delete)
