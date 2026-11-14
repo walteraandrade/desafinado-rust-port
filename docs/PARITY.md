@@ -3,7 +3,7 @@
 Every feature of `desafinado`'s Electron build (as of `b269c9c`, 2026-11-14) and its state in the native build. Done means it works the same from the writer's side; motion is matched where GPUI allows and noted where not.
 
 ## Document and files
-- [ ] New (`Ctrl+N`), Open… (`Ctrl+O`), Save (`Ctrl+S`), Save as… (`Ctrl+Shift+S`), asking Save / Discard / Cancel over unsaved text
+- [x] New (`Ctrl+N`), Open… (`Ctrl+O`), Save (`Ctrl+S`), Save as… (`Ctrl+Shift+S`), asking Save / Discard / Cancel over unsaved text (the dialogs are the GPUI file pickers, or `DESAFINADO_DEV_PICK_FILE`; the leave dialog is a GPUI dialog with Cancel, Discard and Save, focused on open, `Tab` `Shift+Tab` move between them, `Enter` or `Space` chooses and `Esc` cancels, with a 2px accent border as the focus ring)
 - [x] Atomic save keeping mode and symlinks; conflict when the disk changed since the last read (External change notice: Reload from disk / Keep mine)
 - [x] Unsaved text kept per file across restarts and a killed process; the last file reopens at start (the last file is kept in `last-file.txt` in the user data dir instead of `localStorage`)
 - [x] First Markdown argument on the command line opens; one instance per user data dir hands later files to the running app (an `flock` on `instance.lock` and a Unix socket `instance.sock` in the user data dir stand in for `requestSingleInstanceLock`)
@@ -11,15 +11,15 @@ Every feature of `desafinado`'s Electron build (as of `b269c9c`, 2026-11-14) and
 - [x] Frontmatter: not a Block; frontmatter problems in the File menu; frontmatter panel to edit `name` and `description` (the panel sits above the editor instead of scrolling with the text; `Ctrl+Z` in a field undoes the field and writes that back as a new edit instead of undoing the Document; no screen-reader live region)
 
 ## Editor and Suggestions
-- [ ] Raw Markdown with light styling, Inter, 48rem column, headings bold (bigger headings: see ADR 0001)
-- [ ] Bubble (`Ctrl+K`): Quick actions by typing, `↑` `↓` `Enter`, "Ask AI: …" free text
-- [ ] Target: selection or the Block under the cursor; Neighbors and title/section as context
-- [ ] Suggestion overlay: deleted text struck through, Replacement in the AI color, Changes counted, Rationale
-- [ ] Card with Accept (`Ctrl+Enter`), Reject (`Esc`), Refine; Refine steps `‹ n / m ›` (`Ctrl+H` / `Ctrl+L`); `Alt+[` `Alt+]` between Suggestions; `Tab` into the Card
-- [ ] Accept is an undoable edit; Discard when the writer edits inside a Suggestion or a newer one overlaps
-- [ ] AI caret with flag and Instruction while the AI works
-- [ ] Review pass with Focus (Edit → Review…), streamed one Suggestion at a time, Stop; Accept all / Reject all
-- [ ] Errors and retries shown as in the Electron build
+- [x] Raw Markdown with light styling, Inter, 48rem column, headings bold (headings keep the body size and fenced or inline code stays in Inter, since the GPUI editor has one font size and family per buffer: ADR 0001)
+- [x] Bubble (`Ctrl+K`): Quick actions by typing, `↑` `↓` `Enter`, "Ask AI: …" free text (also shows on its own over a mouse or keyboard selection and hides while the pointer is down, as in Electron; `Esc` closes it and keeps it closed for that selection; it appears without the fade and scale motion)
+- [x] Target: selection or the Block under the cursor; Neighbors and title/section as context (the Target is previewed with the selection fill while the bubble is open)
+- [x] Suggestion overlay: deleted text struck through, Replacement in the AI color, Changes counted, Rationale (GPUI has no inline block widgets, so the Replacement shows in the Card, in the right margin when the window is wide enough and floating under the range otherwise, ADR 0001; the range is struck through and tinted in place; no shimmer or word-by-word reveal)
+- [x] Card with Accept (`Ctrl+Enter`), Reject (`Esc`), Refine; Refine steps `‹ n / m ›` (`Ctrl+H` / `Ctrl+L`); `Alt+[` `Alt+]` between Suggestions; `Tab` into the Card (Reject is undoable with `Ctrl+Z` until the writer edits the text again, a stack standing in for the CodeMirror effect; `Ctrl+H` inside a Suggestion with one version does nothing instead of falling through to Find and replace; the focused Card button has a 2px accent border instead of an outline ring)
+- [x] Accept is an undoable edit; Discard when the writer edits inside a Suggestion or a newer one overlaps (Accept leaves the cursor at the end of the Replacement)
+- [x] AI caret with flag and Instruction while the AI works ("Reviewing" during a Review pass; the flag flips left at the right edge; no caret glide or dot animation)
+- [x] Review pass with Focus (Edit → Review…), streamed one Suggestion at a time, Stop; Accept all / Reject all (at most 6 Suggestions, one retry when the first answer is invalid and nothing validated yet; Accept all and Reject all act on review Suggestions only, and Accept all is one undoable edit; the first Suggestion is revealed when the pass ends if the editor is not focused)
+- [x] Errors and retries shown as in the Electron build (toasts with Retry and Show actions for a failed Suggestion, Retry for a failed Review pass, notices for a partial pass, too-large Documents and no room; a failed Suggestion shows Retry and Dismiss in its Card instead of an inline error widget; Show moves the cursor to the Suggestion)
 
 ## History
 - [x] Versions with Cause (Started, Edited, Accepted, Opened, Restored, External, Saved mark) in `history.sqlite`, one History per file
@@ -42,12 +42,12 @@ Every feature of `desafinado`'s Electron build (as of `b269c9c`, 2026-11-14) and
 - [x] Version and commit at the bottom (the native crate version; `build.rs` reads the commit from `.git` like `config/build-info.ts`, `unknown` outside a checkout, `DESAFINADO_COMMIT` overrides it for packaging)
 
 ## AI and spend
-- [ ] OpenRouter called directly, through `HTTPS_PROXY` and `SSL_CERT_FILE` (oneCLI)
+- [x] OpenRouter called directly, through `HTTPS_PROXY` and `SSL_CERT_FILE` (oneCLI) (checked on the maintainer's machine; `SSL_CERT_FILE` adds to the bundled roots; `DESAFINADO_FAKE_AI=1` is a scripted local model for checks, a port addition)
 - [x] Key screen and libsecret key store (the OpenRouter key dialog opens from the missing key banner and from Preferences, with the same states, plain-text offer and Remove key; a saved key reaches the next AI call without a restart; checked in Xvfb through the session and plain-text paths, since Xvfb has no Secret Service)
-- [ ] AI call records (task, models, provider, tokens, cost, latencies, finish reason, generation id) in `ai-calls.jsonl`
+- [x] AI call records (task, models, provider, tokens, cost, latencies, finish reason, generation id) in `ai-calls.jsonl` (one record per attempt for a Suggestion, Refine, Review pass and Improve description, with the Electron task labels such as "cursor in p3 → Shorter", "refine p3 → warmer" and "review document → focus: …"; a failed or stopped call records its error kind; each record is written once, after the generation lookup, instead of being enriched in place; there is no `window.__aiCalls`)
 - [x] Spend view: calls and total cost (the Electron build has no in-app view, only `ai-calls.jsonl` and `window.__aiCalls`; the native page, File → AI spend… or Preferences → AI spend, shows total US$, calls and priced calls, average per call, tokens, failed and retried calls, a 14-day chart, cost by model and by task, and the newest 50 calls, filtered by Today, 7 days, 30 days or All time)
 
 ## Shell
 - [x] Custom title bar with File and Edit menus and keyboard menu navigation (`↑` `↓` skip disabled items and wrap, `←` `→` switch menus, `Enter` or `Space` choose, `Esc` closes, `Tab` leaves; the menu buttons are not Tab stops in GPUI, so `Alt+F`, `Alt+E` and `F10` open a menu with its first item active, a port addition; `Esc` returns focus to where it was instead of to the menu button)
 - [x] Toasts, missing key banner, start error screen (toasts take any number of actions, each a button that dismisses the toast; the start error screen shows when the user data folder cannot be created or written, the native counterpart of a failed platform kit)
-- [ ] Installs and runs locally (`cargo install --path crates/app` plus a desktop entry)
+- [x] Installs and runs locally (`cargo install --path crates/app` plus a desktop entry) (`./install.sh` installs the binary, a "Desafinado (native)" desktop entry for `text/markdown` with `%f`, and the icon under `~/.local/share`; `--uninstall` removes them; the window class is `desafinado-native` so it does not group with the Electron app)
