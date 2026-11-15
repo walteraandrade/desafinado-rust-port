@@ -61,7 +61,7 @@ impl OpenRouterAi {
             shape_ai_call_record(&ShapeRecordInput {
                 task: task.clone(),
                 attempt,
-                outcome: outcome.clone(),
+                outcome,
                 started_at: started_at.clone(),
                 observation: observation.clone(),
                 generation,
