@@ -357,6 +357,8 @@ pub struct Workspace {
     new_skill: Option<Entity<NewSkillDialog>>,
     frontmatter: Entity<FrontmatterView>,
     frontmatter_due: bool,
+    frontmatter_scrolled: std::rc::Rc<std::cell::Cell<Pixels>>,
+    frontmatter_height: std::rc::Rc<std::cell::Cell<Pixels>>,
     evals: Entity<EvalsView>,
     evals_page: bool,
     unsaved_checked: Option<(String, bool)>,
@@ -572,6 +574,8 @@ impl Workspace {
             new_skill: None,
             frontmatter,
             frontmatter_due: true,
+            frontmatter_scrolled: std::rc::Rc::new(std::cell::Cell::new(px(0.))),
+            frontmatter_height: std::rc::Rc::new(std::cell::Cell::new(px(0.))),
             evals,
             evals_page: false,
             unsaved_checked: None,
@@ -2790,15 +2794,7 @@ impl Render for Workspace {
                 .map(|spend| spend.into_any_element())
                 .unwrap_or_else(|| div().into_any_element()),
             _ if evals_shown => self.evals.clone().into_any_element(),
-            HistoryMode::Editing => div()
-                .size_full()
-                .flex()
-                .flex_col()
-                .when(self.frontmatter.read(cx).has_panel(), |this| {
-                    this.child(column_row(self.frontmatter.clone()).pt(px(4.)))
-                })
-                .child(div().flex_1().min_h_0().child(self.pane.clone()))
-                .into_any_element(),
+            HistoryMode::Editing => self.render_editing(cx),
             HistoryMode::Version { id } => self.render_compare(id, roles, cx).into_any_element(),
             HistoryMode::Full => self.render_full_history(roles, cx).into_any_element(),
         };
@@ -2969,6 +2965,92 @@ impl Render for Workspace {
 }
 
 impl Workspace {
+    fn render_editing(&self, cx: &mut Context<Self>) -> AnyElement {
+        let has_panel = self.frontmatter.read(cx).has_panel();
+        let height = self.frontmatter_height.get();
+        let scrolled = self.frontmatter_scrolled.get().min(height);
+        let measured = self.frontmatter_height.clone();
+        let entity = cx.entity().downgrade();
+        let wheel_entity = entity.clone();
+        let wheel_scrolled = self.frontmatter_scrolled.clone();
+        let wheel_height = self.frontmatter_height.clone();
+        let editor = self.pane.read(cx).editor.clone();
+        div()
+            .size_full()
+            .relative()
+            .flex()
+            .flex_col()
+            .when(has_panel, |this| {
+                this.child(
+                    div()
+                        .flex_none()
+                        .overflow_hidden()
+                        .when(height > px(0.), |this| this.h(height - scrolled))
+                        .child(
+                            div()
+                                .relative()
+                                .mt(-scrolled)
+                                .child(column_row(self.frontmatter.clone()).pt(px(4.)))
+                                .child(
+                                    canvas(
+                                        move |bounds, _, cx| {
+                                            if measured.replace(bounds.size.height)
+                                                != bounds.size.height
+                                                && let Some(entity) = entity.upgrade()
+                                            {
+                                                entity.update(cx, |_, cx| cx.notify());
+                                            }
+                                        },
+                                        |_, _, _, _| {},
+                                    )
+                                    .absolute()
+                                    .top_0()
+                                    .left_0()
+                                    .size_full(),
+                                ),
+                        ),
+                )
+            })
+            .child(div().flex_1().min_h_0().child(self.pane.clone()))
+            .child(
+                canvas(
+                    |_, _, _| {},
+                    move |bounds, _, window, _| {
+                        if !has_panel {
+                            return;
+                        }
+                        let scrolled = wheel_scrolled.clone();
+                        let height = wheel_height.clone();
+                        let entity = wheel_entity.clone();
+                        let editor = editor.clone();
+                        window.on_mouse_event(move |event: &ScrollEvent, phase, _, cx| {
+                            if phase != DispatchPhase::Capture || !bounds.contains(&event.position)
+                            {
+                                return;
+                            }
+                            let full = height.get();
+                            let delta = event.delta.pixel_delta(px(24.)).y;
+                            let at_top = editor.read(cx).scroll_offset().y >= px(0.);
+                            let current = scrolled.get().min(full);
+                            let next = frontmatter_scroll(current, full, delta, at_top);
+                            if next != current {
+                                scrolled.set(next);
+                                cx.stop_propagation();
+                                if let Some(entity) = entity.upgrade() {
+                                    entity.update(cx, |_, cx| cx.notify());
+                                }
+                            }
+                        });
+                    },
+                )
+                .absolute()
+                .top_0()
+                .left_0()
+                .size_full(),
+            )
+            .into_any_element()
+    }
+
     fn render_missing_key(&self, roles: Roles, cx: &mut Context<Self>) -> impl IntoElement {
         div()
             .id("missing-key")
@@ -3059,4 +3141,52 @@ impl Workspace {
 
 fn h_flex_row() -> Div {
     div().flex().flex_row().items_center()
+}
+
+fn frontmatter_scroll(current: Pixels, full: Pixels, delta: Pixels, editor_at_top: bool) -> Pixels {
+    if delta < px(0.) && current < full {
+        (current - delta).min(full)
+    } else if delta > px(0.) && editor_at_top && current > px(0.) {
+        (current - delta).max(px(0.))
+    } else {
+        current
+    }
+}
+
+#[cfg(test)]
+mod frontmatter_scroll_tests {
+    use super::frontmatter_scroll;
+    use gpui_kit::px;
+
+    #[test]
+    fn scrolling_down_hides_the_panel_before_the_editor_moves() {
+        assert_eq!(
+            frontmatter_scroll(px(0.), px(300.), px(-120.), true),
+            px(120.)
+        );
+        assert_eq!(
+            frontmatter_scroll(px(250.), px(300.), px(-120.), true),
+            px(300.)
+        );
+        assert_eq!(
+            frontmatter_scroll(px(300.), px(300.), px(-120.), true),
+            px(300.)
+        );
+    }
+
+    #[test]
+    fn scrolling_up_brings_the_panel_back_only_once_the_editor_is_at_the_top() {
+        assert_eq!(
+            frontmatter_scroll(px(300.), px(300.), px(120.), false),
+            px(300.)
+        );
+        assert_eq!(
+            frontmatter_scroll(px(300.), px(300.), px(120.), true),
+            px(180.)
+        );
+        assert_eq!(
+            frontmatter_scroll(px(60.), px(300.), px(120.), true),
+            px(0.)
+        );
+    }
 }
