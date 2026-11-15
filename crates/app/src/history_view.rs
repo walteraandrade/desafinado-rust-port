@@ -289,7 +289,7 @@ impl Workspace {
                 };
                 deferred(
                     side.border_1()
-                        .border_color(roles.hairline)
+                        .border_color(roles.raised)
                         .bg(roles.raised)
                         .p(px(12.))
                         .text_size(px(12.))
@@ -643,7 +643,7 @@ impl Workspace {
                         .font_family("League Spartan")
                         .font_weight(FontWeight::SEMIBOLD)
                         .text_size(px(30.))
-                        .text_color(roles.ink)
+                        .text_color(roles.heading)
                         .child("How this Document changed"),
                 )
                 .child(div().mt(px(8.)).text_size(px(14.)).child(format!(

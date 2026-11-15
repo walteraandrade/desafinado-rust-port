@@ -227,7 +227,7 @@ fn meter(label: &str, tally: &Tally, roles: Roles) -> Div {
                 .child(
                     div()
                         .text_size(px(12.))
-                        .text_color(roles.ink)
+                        .text_color(roles.muted)
                         .child(label.to_string()),
                 )
                 .child(
@@ -235,7 +235,7 @@ fn meter(label: &str, tally: &Tally, roles: Roles) -> Div {
                         .font_family("League Spartan")
                         .font_weight(FontWeight::SEMIBOLD)
                         .text_size(px(20.))
-                        .text_color(roles.ink)
+                        .text_color(roles.heading)
                         .child(count_label(tally)),
                 ),
         )
@@ -243,9 +243,8 @@ fn meter(label: &str, tally: &Tally, roles: Roles) -> Div {
             div()
                 .mt(px(4.))
                 .h(px(6.))
-                .border_1()
-                .border_color(roles.hairline)
-                .child(div().h_full().w(relative(share)).bg(roles.ink)),
+                .bg(roles.fill)
+                .child(div().h_full().w(relative(share)).bg(roles.success)),
         )
 }
 
@@ -262,8 +261,8 @@ fn pips(marks: Vec<Mark>, tally: Option<Tally>, roles: Roles) -> Div {
                 .children(marks.into_iter().map(|mark| {
                     let pip = div().size(px(10.)).border_1();
                     match mark {
-                        Mark::Pass => pip.border_color(roles.ink).bg(roles.ink),
-                        Mark::Fail => pip.border_color(roles.faint),
+                        Mark::Pass => pip.border_color(roles.success).bg(roles.success),
+                        Mark::Fail => pip.border_color(roles.danger),
                         Mark::None => pip.border_color(roles.faint).border_dashed(),
                     }
                 })),
@@ -279,8 +278,11 @@ fn flags(row: usize, signal: &CaseSignals, labels: &ArmLabels, roles: Roles) -> 
         div()
             .px(px(6.))
             .text_size(px(12.))
-            .border_1()
-            .border_color(if danger { roles.danger } else { roles.hairline })
+            .bg(if danger {
+                roles.danger_fill
+            } else {
+                roles.fill
+            })
             .text_color(if danger { roles.danger } else { roles.ink })
             .child(text)
     };
@@ -311,7 +313,7 @@ fn code_block(text: &str, roles: Roles) -> Div {
     div()
         .mt(px(4.))
         .border_1()
-        .border_color(roles.hairline)
+        .border_color(roles.raised)
         .bg(roles.raised)
         .px(px(12.))
         .py(px(8.))
@@ -948,7 +950,7 @@ impl Render for EvalsView {
                     .font_family("League Spartan")
                     .font_weight(FontWeight::SEMIBOLD)
                     .text_size(px(30.))
-                    .text_color(roles.ink)
+                    .text_color(roles.heading)
                     .child("How this Skill performs"),
             )
             .child(

@@ -213,7 +213,7 @@ impl Render for KeyDialog {
                         .font_family("League Spartan")
                         .font_weight(FontWeight::SEMIBOLD)
                         .text_size(px(20.))
-                        .text_color(roles.ink)
+                        .text_color(roles.heading)
                         .child("OpenRouter key"),
                 )
                 .child(
@@ -248,7 +248,7 @@ impl Render for KeyDialog {
                             .gap(px(8.))
                             .p(px(12.))
                             .border_1()
-                            .border_color(roles.hairline)
+                            .border_color(roles.raised)
                             .bg(roles.raised)
                             .text_size(px(14.))
                             .child(

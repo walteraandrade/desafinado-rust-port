@@ -45,8 +45,8 @@ mod tests {
     use std::collections::HashMap;
 
     use super::*;
-    use crate::theme::book_palettes::BOOK_PALETTES;
     use crate::theme::catalog::desafinado_theme;
+    use crate::theme::screen_palettes::THEME_SEEDS;
 
     #[derive(Default)]
     struct Memory(RefCell<HashMap<String, String>>);
@@ -148,8 +148,8 @@ mod tests {
 
     #[test]
     fn knows_every_palette() {
-        for palette in BOOK_PALETTES {
-            assert_eq!(active_theme(palette.id, None).name, palette.id);
+        for seed in THEME_SEEDS {
+            assert_eq!(active_theme(seed.id, None).name, seed.id);
         }
     }
 

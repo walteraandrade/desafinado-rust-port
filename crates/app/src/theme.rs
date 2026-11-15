@@ -19,11 +19,18 @@ use gpui_kit::{
 pub struct Roles {
     pub canvas: Hsla,
     pub raised: Hsla,
+    pub overlay: Hsla,
+    pub heading: Hsla,
     pub ink: Hsla,
+    pub muted: Hsla,
     pub faint: Hsla,
     pub accent: Hsla,
     pub ai: Hsla,
+    pub ai_fill: Hsla,
     pub danger: Hsla,
+    pub danger_fill: Hsla,
+    pub success: Hsla,
+    pub success_fill: Hsla,
     pub selection: Hsla,
     pub fill: Hsla,
     pub fill_hover: Hsla,
@@ -50,11 +57,18 @@ pub fn roles_of(tokens: &ThemeTokens) -> Roles {
     Roles {
         canvas: hex(&r.canvas),
         raised: hex(&r.raised),
+        overlay: hex(&r.overlay),
+        heading: hex(&r.heading),
         ink: hex(&r.ink),
+        muted: hex(&r.muted),
         faint: hex(&r.faint),
         accent: hex(&r.accent),
         ai: hex(&r.ai),
+        ai_fill: hex(&r.ai_fill),
         danger: hex(&r.danger),
+        danger_fill: hex(&r.danger_fill),
+        success: hex(&r.success),
+        success_fill: hex(&r.success_fill),
         selection: hex(&r.selection),
         fill: hex(&r.fill),
         fill_hover: hex(&r.fill_hover),
@@ -171,13 +185,13 @@ pub fn apply(roles: Roles, cx: &mut App) {
         c.background = roles.canvas;
         c.foreground = roles.ink;
         c.muted = roles.fill;
-        c.muted_foreground = roles.faint;
+        c.muted_foreground = roles.muted;
         c.border = roles.hairline;
         c.input = roles.hairline;
         c.ring = roles.accent;
         c.caret = roles.ink;
         c.selection = roles.selection;
-        c.popover = roles.raised;
+        c.popover = roles.overlay;
         c.popover_foreground = roles.ink;
         c.accent = roles.fill_hover;
         c.accent_foreground = roles.ink;
@@ -191,6 +205,8 @@ pub fn apply(roles: Roles, cx: &mut App) {
         c.secondary_active = roles.fill_hover;
         c.danger = roles.danger;
         c.danger_foreground = roles.canvas;
+        c.success = roles.success;
+        c.success_foreground = roles.canvas;
         c.link = roles.accent;
         c.link_hover = roles.accent;
         c.link_active = roles.accent;
@@ -198,14 +214,14 @@ pub fn apply(roles: Roles, cx: &mut App) {
         c.scrollbar_thumb = roles.scrollbar;
         c.scrollbar_thumb_hover = roles.ink;
         c.title_bar = roles.raised;
-        c.title_bar_border = roles.hairline;
+        c.title_bar_border = roles.raised;
         c.list = roles.raised;
         c.list_hover = roles.canvas;
         c.list_active = roles.canvas;
         c.list_active_border = roles.accent;
         c.sidebar = roles.raised;
         c.sidebar_foreground = roles.ink;
-        c.sidebar_border = roles.hairline;
+        c.sidebar_border = roles.raised;
         c.window_border = roles.hairline;
         c.overlay = roles.canvas;
         c.button = roles.fill;
@@ -238,6 +254,8 @@ fn highlight_theme(roles: &Roles) -> HighlightTheme {
     let ink = css(roles.ink);
     let faint = css(roles.faint);
     let accent = css(roles.accent);
+    let heading = css(roles.heading);
+    let muted = css(roles.muted);
     let canvas = css(roles.canvas);
     let plain = |color: &str| serde_json::json!({ "color": color });
     let weighted =
@@ -287,7 +305,10 @@ fn highlight_theme(roles: &Roles) -> HighlightTheme {
     ] {
         syntax.insert(key.into(), plain(&faint));
     }
-    syntax.insert("title".into(), weighted(&ink, 700));
+    for key in ["text.literal", "text.code.span", "string", "embedded"] {
+        syntax.insert(key.into(), plain(&muted));
+    }
+    syntax.insert("title".into(), weighted(&heading, 700));
     syntax.insert(
         "emphasis".into(),
         serde_json::json!({ "color": ink, "font_style": "italic" }),
@@ -327,10 +348,13 @@ mod tests {
 
     #[test]
     fn maps_the_default_theme_to_mood_indigo() {
-        let roles = roles_of(&default_theme().tokens);
+        let tokens = &default_theme().tokens;
+        let roles = roles_of(tokens);
         assert!(roles.dark);
-        assert_eq!(roles.canvas, hex("#051230"));
-        assert_eq!(roles.ink, hex("#ffdd00"));
+        assert_eq!(tokens.name, "mood-indigo");
+        assert_eq!(roles.canvas, hex(&tokens.roles.canvas));
+        assert_eq!(roles.heading, hex(&tokens.roles.heading));
+        assert_eq!(roles.success, hex(&tokens.roles.success));
     }
 
     #[test]

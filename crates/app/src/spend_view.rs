@@ -80,7 +80,7 @@ fn section_title(text: &'static str, roles: Roles) -> Div {
         .mb(px(8.))
         .text_size(px(14.))
         .font_weight(FontWeight::SEMIBOLD)
-        .text_color(roles.ink)
+        .text_color(roles.heading)
         .child(text)
 }
 
@@ -91,7 +91,7 @@ fn tile(label: &'static str, value: String, note: Option<String>, roles: Roles) 
         .p(px(12.))
         .bg(roles.raised)
         .border_1()
-        .border_color(roles.hairline)
+        .border_color(roles.raised)
         .flex()
         .flex_col()
         .gap(px(2.))
@@ -155,7 +155,7 @@ fn share_bar(share: f64, roles: Roles) -> Div {
         .flex_none()
         .bg(roles.fill)
         .border_1()
-        .border_color(roles.hairline)
+        .border_color(roles.fill)
         .child(
             div()
                 .h_full()

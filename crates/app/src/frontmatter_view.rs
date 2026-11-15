@@ -250,7 +250,7 @@ impl FrontmatterView {
                         div()
                             .id("description-proposal")
                             .border_1()
-                            .border_color(roles.hairline)
+                            .border_color(roles.raised)
                             .bg(roles.raised)
                             .px(px(12.))
                             .py(px(8.))
