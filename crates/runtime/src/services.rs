@@ -1,6 +1,6 @@
 use std::{
-    path::PathBuf,
     collections::BTreeMap,
+    path::PathBuf,
     sync::{
         Arc, Mutex,
         atomic::{AtomicU64, Ordering},
