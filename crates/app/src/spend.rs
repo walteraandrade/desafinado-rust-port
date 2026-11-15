@@ -397,7 +397,7 @@ mod tests {
             attempt: 2,
             ..record("2026-11-14T09:00:00Z", "a", "m", None)
         };
-        let report = spend_report(&[failed.clone()], now(), utc());
+        let report = spend_report(std::slice::from_ref(&failed), now(), utc());
         assert_eq!(report.failed, 1);
         assert_eq!(report.retried, 1);
         assert_eq!(finish_of(&failed), "error (retry)");
