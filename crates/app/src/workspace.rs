@@ -246,6 +246,7 @@ impl ToastAction {
 
 struct Toast {
     text: SharedString,
+    success: bool,
     actions: Vec<ToastAction>,
     _timer: Task<()>,
 }
@@ -714,6 +715,7 @@ impl Workspace {
         });
         self.toast = Some(Toast {
             text: text.into(),
+            success: false,
             actions,
             _timer: timer,
         });
@@ -1734,6 +1736,9 @@ impl Workspace {
                 self.settle_history(cx);
                 self.announce(&current, cx);
                 self.notify(format!("Saved {name}"), cx);
+                if let Some(toast) = self.toast.as_mut() {
+                    toast.success = true;
+                }
                 self.watch();
             }
         }
@@ -2169,12 +2174,7 @@ impl Workspace {
             .gap(px(6.))
             .text_size(px(13.))
             .text_color(roles.ink)
-            .border_1()
-            .border_color(if open {
-                roles.hairline
-            } else {
-                transparent_black()
-            })
+            .when(open, |this| this.bg(roles.fill))
             .when(open, |this| this.bg(roles.fill))
             .hover(|this| this.bg(roles.fill))
             .child(label)
@@ -2247,9 +2247,9 @@ impl Workspace {
             .top(px(38.))
             .left(left)
             .min_w(px(240.))
-            .bg(roles.raised)
+            .bg(roles.overlay)
             .border_1()
-            .border_color(roles.hairline)
+            .border_color(roles.overlay)
             .py(px(4.))
             .children(
                 self.menu_rows(kind, cx)
@@ -2356,9 +2356,9 @@ impl Workspace {
             .left(px(52.))
             .w(px(384.))
             .p(px(8.))
-            .bg(roles.raised)
+            .bg(roles.overlay)
             .border_1()
-            .border_color(roles.hairline)
+            .border_color(roles.overlay)
             .flex()
             .flex_row()
             .items_center()
@@ -2530,13 +2530,19 @@ impl Workspace {
                 .child(
                     div()
                         .id("toast")
-                        .border_1()
-                        .border_color(roles.hairline)
-                        .bg(roles.raised)
+                        .bg(if toast.success {
+                            roles.success_fill
+                        } else {
+                            roles.overlay
+                        })
                         .px(px(16.))
                         .py(px(8.))
                         .text_size(px(14.))
-                        .text_color(roles.ink)
+                        .text_color(if toast.success {
+                            roles.success
+                        } else {
+                            roles.ink
+                        })
                         .flex()
                         .flex_row()
                         .items_center()
@@ -2658,14 +2664,13 @@ impl Render for Workspace {
             .h(px(48.))
             .px(px(16.))
             .gap(px(12.))
-            .border_b_1()
-            .border_color(roles.hairline)
+            .bg(roles.raised)
             .child(
                 div()
                     .font_family("League Spartan")
                     .font_weight(FontWeight::SEMIBOLD)
                     .text_size(px(24.))
-                    .text_color(roles.ink)
+                    .text_color(roles.heading)
                     .child("Desafinado"),
             )
             .child(
@@ -2739,7 +2744,7 @@ impl Render for Workspace {
                         .items_center()
                         .gap(px(6.))
                         .border_1()
-                        .border_color(roles.hairline)
+                        .border_color(roles.fill)
                         .bg(roles.fill)
                         .text_size(px(12.))
                         .font_weight(FontWeight::MEDIUM)
@@ -2914,8 +2919,6 @@ impl Render for Workspace {
                                     .bottom_0()
                                     .left(px(library_panel::RAIL_WIDTH))
                                     .w(px(library_panel::LIBRARY_WIDTH))
-                                    .border_r_1()
-                                    .border_color(roles.hairline)
                                     .child(self.library.clone()),
                             )
                         },
@@ -2997,22 +3000,16 @@ impl Workspace {
                 .flex()
                 .items_center()
                 .justify_center()
-                .bg(roles.fill)
-                .border_1()
-                .border_color(if pressed {
-                    roles.accent
-                } else {
-                    roles.hairline
-                })
-                .text_color(roles.ink)
+                .bg(if pressed { roles.selection } else { roles.fill })
+                .text_color(if pressed { roles.accent } else { roles.ink })
+                .hover(|this| this.bg(roles.fill_hover))
                 .cursor_pointer()
-                .hover(|this| this.bg(roles.fill_hover).border_color(roles.ink))
                 .tooltip(move |window, cx| component::tooltip::Tooltip::new(tip).build(window, cx))
                 .on_mouse_down(MouseButton::Left, |_, window, _| window.prevent_default())
                 .child(
                     component::Icon::new(icon)
                         .size(px(16.))
-                        .text_color(roles.ink),
+                        .text_color(if pressed { roles.accent } else { roles.ink }),
                 )
         };
         div()
@@ -3025,8 +3022,6 @@ impl Workspace {
             .gap(px(8.))
             .pt(px(24.))
             .bg(roles.raised)
-            .border_r_1()
-            .border_color(roles.hairline)
             .child(
                 rail_button(
                     "rail-library",

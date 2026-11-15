@@ -51,28 +51,26 @@ pub fn sized_button(
         .child(label.into());
     if disabled {
         return base
-            .border_dashed()
-            .border_color(roles.hairline)
+            .border_color(transparent_black())
             .text_color(roles.faint);
     }
     match kind {
         ButtonKind::Default => base
             .bg(roles.fill)
-            .border_color(roles.hairline)
+            .border_color(roles.fill)
             .text_color(roles.ink)
-            .hover(|this| this.bg(roles.fill_hover).border_color(roles.ink))
+            .hover(|this| this.bg(roles.fill_hover).border_color(roles.fill_hover))
             .cursor_pointer(),
         ButtonKind::Strong => base
-            .bg(roles.fill)
-            .border_color(roles.ink)
+            .bg(roles.accent)
+            .border_color(roles.accent)
             .font_weight(FontWeight::SEMIBOLD)
-            .text_color(roles.ink)
-            .hover(|this| this.bg(roles.fill_hover))
+            .text_color(roles.canvas)
             .cursor_pointer(),
         ButtonKind::Quiet => base
             .border_color(transparent_black())
-            .text_color(roles.ink)
-            .hover(|this| this.bg(roles.fill))
+            .text_color(roles.muted)
+            .hover(|this| this.bg(roles.fill).text_color(roles.ink))
             .cursor_pointer(),
         ButtonKind::Primary => base
             .bg(roles.ai)
@@ -89,9 +87,9 @@ pub fn dialog_frame(id: impl Into<ElementId>, width: Pixels, roles: Roles) -> St
         .w(width)
         .max_w_full()
         .p(px(24.))
-        .bg(roles.raised)
+        .bg(roles.overlay)
         .border_1()
-        .border_color(roles.hairline)
+        .border_color(roles.overlay)
         .text_color(roles.ink)
         .flex()
         .flex_col()
@@ -118,7 +116,7 @@ pub fn heading(text: impl Into<SharedString>, roles: Roles) -> Div {
     div()
         .text_size(px(16.))
         .font_weight(FontWeight::SEMIBOLD)
-        .text_color(roles.ink)
+        .text_color(roles.heading)
         .child(text.into())
 }
 
@@ -167,7 +165,7 @@ pub fn field(input: impl IntoElement, focused: bool, invalid: bool, roles: Roles
         } else if focused {
             roles.accent
         } else {
-            roles.hairline
+            roles.fill
         })
         .text_size(px(14.))
         .text_color(roles.ink)
@@ -179,7 +177,7 @@ pub fn label(text: impl Into<SharedString>, roles: Roles) -> Div {
         .mb(px(4.))
         .text_size(px(12.))
         .font_weight(FontWeight::MEDIUM)
-        .text_color(roles.ink)
+        .text_color(roles.muted)
         .child(text.into())
 }
 

@@ -379,7 +379,7 @@ impl PreferencesPanel {
             .my(px(8.))
             .p(px(12.))
             .border_1()
-            .border_color(roles.hairline)
+            .border_color(roles.canvas)
             .bg(roles.canvas)
             .flex()
             .flex_col()
@@ -653,8 +653,6 @@ impl Render for PreferencesPanel {
             .flex()
             .flex_col()
             .bg(roles.raised)
-            .border_l_1()
-            .border_color(roles.hairline)
             .text_color(roles.ink)
             .child(
                 ui::row()
@@ -684,6 +682,7 @@ impl Render for PreferencesPanel {
                             .pt(px(16.))
                             .text_size(px(14.))
                             .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(roles.heading)
                             .child("Theme"),
                     )
                     .when_some(omarchy, |this, option| {

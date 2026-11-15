@@ -109,7 +109,7 @@ impl NewSkillDialog {
             .flex()
             .flex_col()
             .border_1()
-            .border_color(roles.hairline)
+            .border_color(roles.fill)
             .bg(roles.fill)
             .children(self.roots.iter().enumerate().map(|(index, root)| {
                 let chosen = Some(&root.root) == self.root.as_ref();

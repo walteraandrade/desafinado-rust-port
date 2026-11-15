@@ -539,7 +539,7 @@ impl LibraryPanel {
                     .font_family("League Spartan")
                     .font_weight(FontWeight::SEMIBOLD)
                     .text_size(px(18.))
-                    .text_color(roles.ink)
+                    .text_color(roles.heading)
                     .child("Library"),
             )
             .when(self.is_ready(), |this| {
@@ -604,7 +604,7 @@ impl LibraryPanel {
                         .max_h(max_height)
                         .overflow_y_scroll()
                         .border_1()
-                        .border_color(roles.hairline)
+                        .border_color(roles.fill)
                         .bg(roles.fill)
                         .children(list),
                 )
@@ -616,7 +616,7 @@ impl LibraryPanel {
                         .px(px(10.))
                         .py(px(8.))
                         .border_1()
-                        .border_color(roles.hairline)
+                        .border_color(roles.fill)
                         .bg(roles.fill)
                         .text_size(px(12.))
                         .text_color(roles.ink)

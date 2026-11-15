@@ -599,7 +599,7 @@ impl EditorPane {
                     }
                     Suggestion::Ready(_) if active => decoration
                         .with_style(RangeDecorationStyle::Fill)
-                        .with_color(roles.raised),
+                        .with_color(roles.ai_fill),
                     Suggestion::Ready(_) => decoration
                         .with_style(RangeDecorationStyle::Fill)
                         .with_color(roles.fill),
@@ -1692,6 +1692,7 @@ impl EditorPane {
                 let retry_id = id.clone();
                 let dismiss_id = id.clone();
                 card.border_color(roles.danger)
+                    .bg(roles.danger_fill)
                     .child(
                         div()
                             .text_color(roles.danger)
@@ -2139,9 +2140,9 @@ impl EditorPane {
                 })
                 .when(!above, |this| this.top(line.bottom() - origin.y + px(6.)))
                 .w(px(360.))
-                .bg(roles.raised)
+                .bg(roles.overlay)
                 .border_1()
-                .border_color(roles.hairline)
+                .border_color(roles.overlay)
                 .p(px(8.))
                 .flex()
                 .flex_col()
@@ -2194,9 +2195,13 @@ impl EditorPane {
                         .items_center()
                         .justify_between()
                         .border_1()
-                        .border_color(if highlighted { roles.ai } else { roles.raised })
+                        .border_color(if highlighted {
+                            roles.ai_fill
+                        } else {
+                            roles.fill
+                        })
                         .bg(if highlighted {
-                            roles.raised
+                            roles.ai_fill
                         } else {
                             roles.fill
                         })
@@ -2265,7 +2270,7 @@ fn styled_replacement(hunks: &[DiffHunk], roles: Roles) -> StyledText {
                     start..text.len(),
                     HighlightStyle {
                         color: Some(roles.ai),
-                        background_color: Some(roles.raised),
+                        background_color: Some(roles.ai_fill),
                         ..Default::default()
                     },
                 ));
