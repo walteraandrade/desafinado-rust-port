@@ -18,6 +18,9 @@ use desafinado_ai::{
         ask_menu::{self, AskMenu, AskRow},
         card_placement::{CardPlacement, MARGIN_CARD_WIDTH, placement_for},
         focus_cycle::cycle_index,
+        geometry::{Rect, Viewport},
+        popover_place::{PopoverInput, Side, place_popover},
+        shown_cards::{CardKind, CardStatus, shown_cards},
     },
     edits::{MAX_REVIEW_EDITS, ReviewValidationContext},
     prompts::{
@@ -96,6 +99,8 @@ actions!(
 const COLUMN_WIDTH: f32 = 768.;
 const COLUMN_PADDING: f32 = 24.;
 const MARGIN_GAP: f32 = 24.;
+const BUBBLE_WIDTH: f32 = 360.;
+const BUBBLE_KEY: &str = "\u{0}bubble";
 
 pub fn init(cx: &mut App) {
     cx.bind_keys([
@@ -185,6 +190,8 @@ enum Applying {
     Many(Vec<String>, ChangeSet),
 }
 
+type CardRects = Rc<RefCell<Vec<(Bounds<Pixels>, CardKind)>>>;
+
 pub struct EditorPane {
     pub editor: Entity<EditorState>,
     pub suggestions: SuggestionsState,
@@ -210,6 +217,8 @@ pub struct EditorPane {
     ai: Arc<dyn AiBackend>,
     bounds: Rc<Cell<Bounds<Pixels>>>,
     heights: Rc<RefCell<HashMap<String, Pixels>>>,
+    card_rects: CardRects,
+    hovered: Option<String>,
     pub review: Option<ReviewRun>,
     reveal_pending: bool,
     _subscriptions: Vec<Subscription>,
@@ -349,6 +358,8 @@ impl EditorPane {
             ai,
             bounds: Rc::new(Cell::new(Bounds::default())),
             heights: Rc::new(RefCell::new(HashMap::new())),
+            card_rects: Rc::new(RefCell::new(Vec::new())),
+            hovered: None,
             review: None,
             reveal_pending: false,
             _subscriptions: vec![edits, moves, typing],
@@ -1622,7 +1633,7 @@ impl EditorPane {
     fn render_card(
         &self,
         item: &Suggestion,
-        active: bool,
+        kind: CardKind,
         floor: Pixels,
         card_focused: bool,
         roles: Roles,
@@ -1638,25 +1649,58 @@ impl EditorPane {
             }
             _ => item.from,
         };
-        let line = state.range_to_bounds(&(anchor_at..anchor_at))?;
+        let active = kind == CardKind::Active;
+        if self.above_view(item.to, cx) {
+            return None;
+        }
+        let line = state
+            .range_to_bounds(&(anchor_at..anchor_at))
+            .or_else(|| state.range_to_bounds(&(item.from..item.from)))?;
+        let end = state.range_to_bounds(&(item.to..item.to)).unwrap_or(line);
         let pane = self.bounds.get();
+        let origin = pane.origin;
         let width = px(MARGIN_CARD_WIDTH as f32);
-        let (left, top) = match self.card_placement() {
-            CardPlacement::Margin => (
-                self.content_right() + px(MARGIN_GAP) - pane.origin.x,
-                line.top() - pane.origin.y,
-            ),
-            CardPlacement::Floating => {
-                let range = state.range_to_bounds(&(item.to..item.to)).unwrap_or(line);
-                (
-                    (self.content_right() - width - pane.origin.x).max(px(8.)),
-                    range.bottom() + px(8.) - pane.origin.y,
-                )
-            }
-        };
-        let top = top.max(floor);
         let id = item.id.clone();
         let height = self.heights.borrow().get(&id).copied().unwrap_or(px(96.));
+        let replacement_cap = (pane.size.height * 0.45).max(px(96.));
+        let placement = self.card_placement();
+        let (left, flip, gap, bottom) = match placement {
+            CardPlacement::Margin => (
+                self.content_right() + px(MARGIN_GAP) - origin.x,
+                false,
+                0.,
+                line.top() - origin.y,
+            ),
+            CardPlacement::Floating => (
+                self.content_right() - width - origin.x,
+                true,
+                8.,
+                end.bottom() - origin.y,
+            ),
+        };
+        let placed = place_popover(&PopoverInput {
+            anchor: Rect {
+                left: to_f64(left),
+                right: to_f64(left),
+                top: to_f64(line.top() - origin.y),
+                bottom: to_f64(bottom),
+            },
+            width: to_f64(width),
+            height: to_f64(height),
+            area: area_of(pane),
+            side: Side::Below,
+            flip,
+            gap,
+        })?;
+        let left = px(placed.left as f32);
+        let top = match placement {
+            CardPlacement::Margin => px(placed.top as f32).max(floor),
+            CardPlacement::Floating => px(placed.top as f32),
+        };
+        self.card_rects.borrow_mut().push((
+            Bounds::new(point(origin.x + left, origin.y + top), size(width, height)),
+            kind,
+        ));
         let heights = self.heights.clone();
         let measured_id = id.clone();
         let entity = cx.entity().downgrade();
@@ -1860,7 +1904,14 @@ impl EditorPane {
                                 .child(ready.rationale.clone()),
                         ),
                 )
-                .child(div().text_size(px(14.)).child(replacement))
+                .child(
+                    div()
+                        .id(SharedString::from(format!("replacement-{id}")))
+                        .max_h(replacement_cap)
+                        .overflow_y_scroll()
+                        .text_size(px(14.))
+                        .child(replacement),
+                )
                 .when_some(changes, |this, label| {
                     this.child(
                         ui::row()
@@ -2029,8 +2080,61 @@ impl EditorPane {
         Some((element.into_any_element(), top + height + px(8.)))
     }
 
+    fn above_view(&self, offset: usize, cx: &App) -> bool {
+        let state = self.editor.read(cx);
+        state.visible_row_range().is_some_and(|rows| {
+            rows.start > 0
+                && offset < component::RopeExt::line_start_offset(state.text(), rows.start)
+        })
+    }
+
+    fn hovered_at(&self, position: Point<Pixels>, cx: &App) -> Option<String> {
+        if self
+            .card_rects
+            .borrow()
+            .iter()
+            .any(|(rect, kind)| *kind != CardKind::Hover && rect.contains(&position))
+        {
+            return None;
+        }
+        let state = self.editor.read(cx);
+        let pane = self.bounds.get();
+        let column = px(COLUMN_WIDTH).min(pane.size.width);
+        let column_left = pane.origin.x + (pane.size.width - column) / 2. + px(COLUMN_PADDING);
+        let column_right = self.content_right();
+        self.suggestions
+            .items
+            .iter()
+            .filter(|item| matches!(item, Suggestion::Ready(_)))
+            .filter(|item| !self.above_view(item.to, cx))
+            .filter(|item| {
+                let (Some(from), Some(to)) = (
+                    state.range_to_bounds(&(item.from..item.from)),
+                    state.range_to_bounds(&(item.to..item.to)),
+                ) else {
+                    return false;
+                };
+                hits_text_range(position, from, to, column_left..column_right)
+            })
+            .max_by_key(|item| item.sequence)
+            .map(|item| item.id.clone())
+    }
+
+    fn track_hover(&mut self, position: Option<Point<Pixels>>, cx: &mut Context<Self>) {
+        let next = position
+            .filter(|position| self.bounds.get().contains(position))
+            .and_then(|position| self.hovered_at(position, cx));
+        if next != self.hovered {
+            self.hovered = next;
+            cx.notify();
+        }
+    }
+
     fn render_caret(&self, roles: Roles, cx: &App) -> Option<AnyElement> {
         let caret = ai_caret_of(&self.suggestions, self.review.is_some())?;
+        if self.above_view(caret.pos, cx) {
+            return None;
+        }
         let bounds = self
             .editor
             .read(cx)
@@ -2119,9 +2223,28 @@ impl EditorPane {
             .then(|| ask_menu::ask_hint(&actions))
             .flatten();
         let active = self.menu.active;
-        let left = (line.left() - origin.x - px(12.))
-            .max(px(8.))
-            .min((pane.size.width - px(368.)).max(px(8.)));
+        let height = self
+            .heights
+            .borrow()
+            .get(BUBBLE_KEY)
+            .copied()
+            .unwrap_or(px(120.));
+        let placed = place_popover(&PopoverInput {
+            anchor: Rect {
+                left: to_f64(line.left() - origin.x - px(12.)),
+                right: to_f64(line.left() - origin.x - px(12.)),
+                top: to_f64(line.top() - origin.y),
+                bottom: to_f64(line.bottom() - origin.y),
+            },
+            width: f64::from(BUBBLE_WIDTH),
+            height: to_f64(height),
+            area: area_of(pane),
+            side: if above { Side::Above } else { Side::Below },
+            flip: true,
+            gap: 6.,
+        })?;
+        let heights = self.heights.clone();
+        let entity = cx.entity().downgrade();
         Some(
             div()
                 .id("bubble")
@@ -2133,12 +2256,28 @@ impl EditorPane {
                 .on_action(cx.listener(|_, _: &Stay, _, _| {}))
                 .occlude()
                 .absolute()
-                .left(left)
-                .when(above, |this| {
-                    this.bottom(pane.size.height - (line.top() - origin.y) + px(6.))
-                })
-                .when(!above, |this| this.top(line.bottom() - origin.y + px(6.)))
-                .w(px(360.))
+                .left(px(placed.left as f32))
+                .top(px(placed.top as f32))
+                .w(px(BUBBLE_WIDTH))
+                .child(
+                    canvas(
+                        move |bounds, _, cx| {
+                            let previous = heights
+                                .borrow_mut()
+                                .insert(BUBBLE_KEY.to_string(), bounds.size.height);
+                            if previous != Some(bounds.size.height)
+                                && let Some(entity) = entity.upgrade()
+                            {
+                                entity.update(cx, |_, cx| cx.notify());
+                            }
+                        },
+                        |_, _, _, _| {},
+                    )
+                    .absolute()
+                    .top_0()
+                    .left_0()
+                    .size_full(),
+                )
                 .bg(roles.raised)
                 .border_1()
                 .border_color(roles.hairline)
@@ -2291,12 +2430,32 @@ impl Render for EditorPane {
         let card_focused = self.card_focus.is_focused(window);
         let mut items = self.suggestions.items.clone();
         items.sort_by_key(|item| item.from);
+        let shown: HashMap<String, CardKind> = shown_cards(
+            items
+                .iter()
+                .map(|item| (item.id.as_str(), card_status(item))),
+            active_id.as_deref(),
+            self.hovered.as_deref(),
+        )
+        .into_iter()
+        .map(|(id, kind)| (id.to_string(), kind))
+        .collect();
+        self.card_rects.borrow_mut().clear();
         let mut cards: Vec<AnyElement> = Vec::new();
         let mut floor = px(0.);
-        for item in &items {
-            let active = Some(&item.id) == active_id.as_ref();
-            if let Some((card, next)) =
-                self.render_card(item, active, floor, card_focused, roles, cx)
+        let hover_last = items
+            .iter()
+            .filter(|item| shown.get(&item.id) != Some(&CardKind::Hover))
+            .chain(
+                items
+                    .iter()
+                    .filter(|item| shown.get(&item.id) == Some(&CardKind::Hover)),
+            );
+        for item in hover_last {
+            let Some(kind) = shown.get(&item.id).copied() else {
+                continue;
+            };
+            if let Some((card, next)) = self.render_card(item, kind, floor, card_focused, roles, cx)
             {
                 cards.push(card);
                 floor = next;
@@ -2324,6 +2483,12 @@ impl Render for EditorPane {
             .on_action(cx.listener(Self::focus_card_back))
             .on_action(cx.listener(Self::pane_undo))
             .on_action(cx.listener(Self::pane_redo))
+            .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _, cx| {
+                this.track_hover(Some(event.position), cx)
+            }))
+            .on_hover(cx.listener(|this, _: &bool, window, cx| {
+                this.track_hover(Some(window.mouse_position()), cx)
+            }))
             .relative()
             .size_full()
             .child(
@@ -2368,4 +2533,40 @@ impl Render for EditorPane {
             .children(cards)
             .children(bubble)
     }
+}
+
+fn to_f64(value: Pixels) -> f64 {
+    f64::from(f32::from(value))
+}
+
+fn area_of(pane: Bounds<Pixels>) -> Viewport {
+    Viewport {
+        width: to_f64(pane.size.width),
+        height: to_f64(pane.size.height),
+    }
+}
+
+fn card_status(item: &Suggestion) -> CardStatus {
+    match item {
+        Suggestion::Pending(_) => CardStatus::Pending,
+        Suggestion::Ready(_) => CardStatus::Ready,
+        Suggestion::Failed(_) => CardStatus::Failed,
+    }
+}
+
+fn hits_text_range(
+    position: Point<Pixels>,
+    from: Bounds<Pixels>,
+    to: Bounds<Pixels>,
+    column: Range<Pixels>,
+) -> bool {
+    let (x, y) = (position.x, position.y);
+    if y < from.top() || y >= to.bottom() {
+        return false;
+    }
+    let on_first = y < from.bottom();
+    let on_last = y >= to.top();
+    let start = if on_first { from.left() } else { column.start };
+    let end = if on_last { to.left() } else { column.end };
+    x >= start && x <= end
 }

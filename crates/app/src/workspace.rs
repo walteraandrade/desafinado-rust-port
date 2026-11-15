@@ -2350,6 +2350,11 @@ impl Workspace {
         div()
             .id("review-popover")
             .key_context("ReviewPopover")
+            .on_mouse_down_out(cx.listener(|this, _, _, cx| {
+                if this.review_focus.take().is_some() {
+                    cx.notify();
+                }
+            }))
             .occlude()
             .absolute()
             .top(px(38.))
