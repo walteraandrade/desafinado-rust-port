@@ -1,7 +1,7 @@
 use desafinado_features::{
     evals::{
         baseline::{RunBaseline, version_option_label},
-        baseline_view::{RunKind, run_copy},
+        baseline_view::{RunCopy, RunKind, run_copy},
         limits::{LIMIT_TOO_SMALL, first_run_limit},
         risks::risk_lines,
         settings::{EvalSettings, check_eval_settings, default_eval_settings},
@@ -17,7 +17,7 @@ use gpui_kit::{
 
 use crate::{
     theme::{self, Roles},
-    ui::{self, ButtonKind, ButtonSize},
+    ui::{self, ButtonKind, ButtonSize, Type as _},
     workspace::{now_ms, utc_offset_minutes},
 };
 
@@ -208,23 +208,7 @@ impl EvalRunDialog {
             )
             .collect();
         let disabled = self.refreshing;
-        let field = div()
-            .id("eval-baseline")
-            .w_full()
-            .h(px(30.))
-            .px(px(10.))
-            .flex()
-            .items_center()
-            .gap(px(8.))
-            .bg(roles.fill)
-            .border_1()
-            .border_color(if self.picking {
-                roles.accent
-            } else {
-                roles.hairline
-            })
-            .text_size(px(14.))
-            .text_color(if disabled { roles.faint } else { roles.ink })
+        let field = ui::select_field("eval-baseline", self.picking, disabled, roles)
             .child(
                 div()
                     .flex_1()
@@ -238,12 +222,10 @@ impl EvalRunDialog {
                     .text_color(roles.ink),
             )
             .when(!disabled, |this| {
-                this.cursor_pointer()
-                    .hover(|this| this.bg(roles.fill_hover))
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.picking = !this.picking;
-                        cx.notify();
-                    }))
+                this.on_click(cx.listener(|this, _, _, cx| {
+                    this.picking = !this.picking;
+                    cx.notify();
+                }))
             });
         let list = self.picking.then(|| {
             div()
@@ -251,31 +233,24 @@ impl EvalRunDialog {
                 .w_full()
                 .max_h(px(200.))
                 .overflow_y_scroll()
-                .border_1()
-                .border_t_0()
-                .border_color(roles.hairline)
                 .bg(roles.fill)
                 .children(options.into_iter().enumerate().map(|(index, option)| {
-                    let chosen = option == self.baseline;
-                    div()
-                        .id(("eval-baseline-option", index))
-                        .px(px(10.))
-                        .py(px(4.))
-                        .text_size(px(13.))
-                        .text_color(roles.ink)
-                        .border_1()
-                        .border_color(if chosen { roles.accent } else { roles.fill })
-                        .when(chosen, |this| this.bg(roles.raised))
-                        .cursor_pointer()
-                        .hover(|this| this.bg(roles.fill_hover))
-                        .child(self.baseline_label(option))
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.picking = false;
-                            if option != this.baseline {
-                                cx.emit(EvalRunEvent::Pick(option));
-                            }
-                            cx.notify();
-                        }))
+                    ui::option_row(
+                        ("eval-baseline-option", index),
+                        false,
+                        option == self.baseline,
+                        roles,
+                    )
+                    .px(px(8.))
+                    .py(px(4.))
+                    .child(self.baseline_label(option))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.picking = false;
+                        if option != this.baseline {
+                            cx.emit(EvalRunEvent::Pick(option));
+                        }
+                        cx.notify();
+                    }))
                 }))
         });
         div()
@@ -286,75 +261,27 @@ impl EvalRunDialog {
             .children(list)
             .into_any_element()
     }
-}
 
-fn small_heading(text: &'static str, roles: Roles) -> Div {
-    div()
-        .mt(px(16.))
-        .text_size(px(12.))
-        .font_weight(FontWeight::MEDIUM)
-        .text_color(roles.ink)
-        .child(text)
-}
+    fn render_risks(&self, copy: &RunCopy, roles: Roles) -> Div {
+        if self.refreshing {
+            return ui::meta("Checking this Version…", roles).mt(px(4.));
+        }
+        div()
+            .child(risk_list(
+                copy.today_title,
+                risk_lines(&self.prepared.risks),
+                roles,
+            ))
+            .when_some(self.prepared.baseline_risks.clone(), |this, older| {
+                this.child(risk_list(copy.older_title, risk_lines(&older), roles))
+            })
+    }
 
-fn risk_list(title: Option<&'static str>, lines: Vec<String>, roles: Roles) -> Div {
-    div()
-        .when_some(title, |this, title| {
-            this.child(
-                div()
-                    .mt(px(8.))
-                    .text_size(px(14.))
-                    .font_weight(FontWeight::MEDIUM)
-                    .text_color(roles.ink)
-                    .child(title),
-            )
-        })
-        .child(if lines.is_empty() {
-            div()
-                .mt(px(4.))
-                .text_size(px(14.))
-                .child("Nothing flagged.")
-        } else {
-            div()
-                .mt(px(4.))
-                .flex()
-                .flex_col()
-                .gap(px(4.))
-                .text_size(px(14.))
-                .children(lines.into_iter().map(|line| {
-                    ui::row()
-                        .items_start()
-                        .gap(px(8.))
-                        .pl(px(6.))
-                        .child(div().flex_none().child("•"))
-                        .child(div().flex_1().min_w_0().child(line))
-                }))
-        })
-}
-
-impl Render for EvalRunDialog {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_limits(&self, copy: &RunCopy, window: &Window, cx: &App) -> Div {
         let roles = theme::roles(cx);
         let settings = self.settings(cx);
         let problems = self.problems(&settings);
-        let ready = self.ready(cx);
-        let kind = match self.baseline {
-            RunBaseline::None => RunKind::None,
-            RunBaseline::Version { .. } => RunKind::Version,
-        };
-        let copy = run_copy(kind);
-        let no_cases = self.prepared.case_count == 0;
-        let intro = if no_cases {
-            "This Skill has no Evals yet. Close this dialog to see how to write the first one."
-                .to_string()
-        } else {
-            (copy.intro)(self.prepared.case_count, &self.prepared.claude_version)
-        };
-        let field = |id: &'static str,
-                     label: &'static str,
-                     state: &Entity<InputState>,
-                     window: &Window,
-                     cx: &App| {
+        let field = |id: &'static str, label: &'static str, state: &Entity<InputState>| {
             let focused = state.read(cx).focus_handle(cx).is_focused(window);
             div()
                 .id(id)
@@ -368,22 +295,77 @@ impl Render for EvalRunDialog {
                     roles,
                 ))
         };
-        let risks = if self.refreshing {
-            div()
-                .mt(px(4.))
-                .text_size(px(14.))
-                .text_color(roles.faint)
-                .child("Checking this Version…")
+        div()
+            .child(
+                ui::row()
+                    .mt(px(16.))
+                    .items_start()
+                    .gap(px(12.))
+                    .child(field("eval-runs", "Runs per Arm", &self.runs))
+                    .child(field("eval-model", "Model", &self.model))
+                    .child(field("eval-cost", "Cost limit (US$)", &self.cost)),
+            )
+            .when(!problems.is_empty(), |this| {
+                this.child(ui::problem_list(problems, roles).mt(px(8.)))
+            })
+            .child(
+                ui::meta(
+                    format!("{} A run reads what is saved on disk.", copy.limit_note),
+                    roles,
+                )
+                .mt(px(8.)),
+            )
+    }
+}
+
+fn small_heading(text: &'static str, roles: Roles) -> Div {
+    ui::label(text, roles).mt(px(16.))
+}
+
+fn risk_list(title: Option<&'static str>, lines: Vec<String>, roles: Roles) -> Div {
+    div()
+        .when_some(title, |this, title| {
+            this.child(
+                div()
+                    .mt(px(8.))
+                    .weight_medium()
+                    .text_color(roles.heading)
+                    .child(title),
+            )
+        })
+        .child(if lines.is_empty() {
+            div().mt(px(4.)).child("Nothing flagged.")
         } else {
             div()
-                .child(risk_list(
-                    copy.today_title,
-                    risk_lines(&self.prepared.risks),
-                    roles,
-                ))
-                .when_some(self.prepared.baseline_risks.clone(), |this, older| {
-                    this.child(risk_list(copy.older_title, risk_lines(&older), roles))
-                })
+                .mt(px(4.))
+                .flex()
+                .flex_col()
+                .gap(px(4.))
+                .children(lines.into_iter().map(|line| {
+                    ui::row()
+                        .items_start()
+                        .gap(px(8.))
+                        .pl(px(8.))
+                        .child(div().flex_none().child("•"))
+                        .child(div().flex_1().min_w_0().child(line))
+                }))
+        })
+}
+
+impl Render for EvalRunDialog {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let roles = theme::roles(cx);
+        let ready = self.ready(cx);
+        let kind = match self.baseline {
+            RunBaseline::None => RunKind::None,
+            RunBaseline::Version { .. } => RunKind::Version,
+        };
+        let copy = run_copy(kind);
+        let intro = if self.prepared.case_count == 0 {
+            "This Skill has no Evals yet. Close this dialog to see how to write the first one."
+                .to_string()
+        } else {
+            (copy.intro)(self.prepared.case_count, &self.prepared.claude_version)
         };
         ui::modal_backdrop(
             "eval-run-backdrop",
@@ -399,70 +381,28 @@ impl Render for EvalRunDialog {
                     roles,
                 ))
                 .child(ui::detail(intro, roles))
-                .child(small_heading("Compare against", roles).mb(px(4.)))
+                .child(small_heading("Compare against", roles))
                 .child(self.render_select(roles, cx))
                 .when_some(copy.stage_note, |this, note| {
-                    this.child(
-                        div()
-                            .mt(px(4.))
-                            .text_size(px(12.))
-                            .text_color(roles.faint)
-                            .child(note),
-                    )
+                    this.child(ui::meta(note, roles).mt(px(4.)))
                 })
                 .child(small_heading("What a run can reach", roles))
-                .child(div().mt(px(4.)).text_size(px(14.)).child(REACH))
+                .child(div().mt(px(4.)).child(REACH))
                 .child(small_heading("Found on this Skill", roles))
-                .child(risks)
+                .child(self.render_risks(&copy, roles))
                 .when_some(self.unsaved_notice.clone(), |this, notice| {
                     this.child(
                         div()
                             .mt(px(16.))
-                            .text_size(px(14.))
-                            .text_color(roles.ink)
                             .child(format!("{notice} Save first to measure your edits.")),
                     )
                 })
-                .child(
-                    ui::row()
-                        .mt(px(16.))
-                        .items_start()
-                        .gap(px(12.))
-                        .child(field("eval-runs", "Runs per Arm", &self.runs, window, cx))
-                        .child(field("eval-model", "Model", &self.model, window, cx))
-                        .child(field(
-                            "eval-cost",
-                            "Cost limit (US$)",
-                            &self.cost,
-                            window,
-                            cx,
-                        )),
-                )
-                .when(!problems.is_empty(), |this| {
-                    this.child(ui::problem_list(problems, roles).mt(px(8.)))
-                })
-                .child(
-                    div()
-                        .mt(px(8.))
-                        .text_size(px(12.))
-                        .text_color(roles.faint)
-                        .child(format!(
-                            "{} A run reads what is saved on disk.",
-                            copy.limit_note
-                        )),
-                )
+                .child(self.render_limits(&copy, window, cx))
                 .child(
                     ui::actions_row()
                         .child(
-                            ui::sized_button(
-                                "eval-run-cancel",
-                                "Cancel",
-                                ButtonKind::Default,
-                                ButtonSize::Regular,
-                                ui::Control::default(),
-                                roles,
-                            )
-                            .on_click(cx.listener(|_, _, _, cx| cx.emit(EvalRunEvent::Close))),
+                            ui::button("eval-run-cancel", "Cancel", ButtonKind::Default, roles)
+                                .on_click(cx.listener(|_, _, _, cx| cx.emit(EvalRunEvent::Close))),
                         )
                         .child(
                             ui::sized_button(

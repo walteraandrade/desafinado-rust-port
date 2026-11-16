@@ -11,7 +11,7 @@ use crate::{
         format_latency, format_usd, recent, records_in, served_by, spend_report, when_of,
     },
     theme::{self, Roles},
-    ui::{self, ButtonKind, ButtonSize},
+    ui::{self, ButtonKind, ButtonSize, Type as _},
     workspace::utc_offset_minutes,
 };
 
@@ -75,13 +75,7 @@ fn offset() -> FixedOffset {
 }
 
 fn section_title(text: &'static str, roles: Roles) -> Div {
-    div()
-        .mt(px(28.))
-        .mb(px(8.))
-        .text_size(px(14.))
-        .font_weight(FontWeight::SEMIBOLD)
-        .text_color(roles.heading)
-        .child(text)
+    ui::title(text, roles).mt(px(28.)).mb(px(8.))
 }
 
 fn tile(label: &'static str, value: String, note: Option<String>, roles: Roles) -> Div {
@@ -90,19 +84,12 @@ fn tile(label: &'static str, value: String, note: Option<String>, roles: Roles) 
         .min_w(px(140.))
         .p(px(12.))
         .bg(roles.raised)
-        .border_1()
-        .border_color(roles.raised)
         .flex()
         .flex_col()
-        .gap(px(2.))
-        .child(div().text_size(px(12.)).child(label))
-        .child(
-            div()
-                .text_size(px(22.))
-                .font_weight(FontWeight::SEMIBOLD)
-                .child(value),
-        )
-        .children(note.map(|note| div().text_size(px(12.)).text_color(roles.faint).child(note)))
+        .gap(px(4.))
+        .child(ui::meta(label, roles))
+        .child(div().weight_strong().text_color(roles.heading).child(value))
+        .children(note.map(|note| ui::meta(note, roles)))
 }
 
 #[derive(Clone, Copy)]
@@ -128,13 +115,16 @@ const fn fixed(width: f32, right: bool) -> Column {
 fn table_row(cells: Vec<String>, columns: &[Column], header: bool, roles: Roles) -> Div {
     ui::row()
         .w_full()
-        .min_h(px(30.))
+        .min_h(px(32.))
         .gap(px(12.))
         .px(px(8.))
-        .border_b_1()
-        .border_color(roles.hairline)
-        .text_size(px(if header { 12. } else { 13. }))
-        .when(header, |this| this.font_weight(FontWeight::SEMIBOLD))
+        .map(|this| {
+            if header {
+                this.type_small().text_color(roles.muted)
+            } else {
+                this.bg(roles.raised)
+            }
+        })
         .children(cells.into_iter().zip(columns.iter()).map(|(text, column)| {
             let cell = if column.right {
                 div().flex().justify_end().whitespace_nowrap().child(text)
@@ -148,20 +138,27 @@ fn table_row(cells: Vec<String>, columns: &[Column], header: bool, roles: Roles)
         }))
 }
 
-fn share_bar(share: f64, roles: Roles) -> Div {
+fn table(header: Div, rows: impl IntoIterator<Item = Div>) -> Div {
     div()
-        .w(px(80.))
-        .h(px(8.))
-        .flex_none()
-        .bg(roles.fill)
-        .border_1()
-        .border_color(roles.fill)
-        .child(
-            div()
-                .h_full()
-                .w(px((78. * share.clamp(0., 1.)) as f32))
-                .bg(roles.accent),
-        )
+        .flex()
+        .flex_col()
+        .gap(px(4.))
+        .child(header)
+        .children(rows)
+}
+
+fn share_bar(share: f64, roles: Roles) -> Div {
+    div().w(px(80.)).h(px(8.)).flex_none().bg(roles.fill).child(
+        div()
+            .h_full()
+            .w(px((80. * share.clamp(0., 1.)) as f32))
+            .bg(roles.accent),
+    )
+}
+
+fn tokens(input: Option<f64>, output: Option<f64>) -> String {
+    let count = |value: Option<f64>| value.map(format_count).unwrap_or_else(|| "–".into());
+    format!("{} / {}", count(input), count(output))
 }
 
 fn bucket_table(title_column: &'static str, rows: &[SpendRow], roles: Roles) -> Div {
@@ -172,43 +169,95 @@ fn bucket_table(title_column: &'static str, rows: &[SpendRow], roles: Roles) -> 
         fixed(96., true),
         fixed(80., false),
     ];
-    div()
-        .border_t_1()
-        .border_color(roles.hairline)
-        .child(table_row(
-            vec![
-                title_column.into(),
-                "Calls".into(),
-                "Tokens in / out".into(),
-                "Cost".into(),
-                "Share".into(),
-            ],
-            &columns,
-            true,
-            roles,
-        ))
-        .children(rows.iter().map(|row| {
-            let priced = row.bucket.priced_calls > 0;
+    let header = table_row(
+        vec![
+            title_column.into(),
+            "Calls".into(),
+            "Tokens in / out".into(),
+            "Cost".into(),
+            "Share".into(),
+        ],
+        &columns,
+        true,
+        roles,
+    );
+    table(
+        header,
+        rows.iter().map(|row| {
+            let bucket = &row.bucket;
             let cells = vec![
                 row.label.clone(),
-                row.bucket.calls.to_string(),
-                if row.bucket.input_tokens + row.bucket.output_tokens > 0.0 {
-                    format!(
-                        "{} / {}",
-                        format_count(row.bucket.input_tokens),
-                        format_count(row.bucket.output_tokens)
-                    )
+                bucket.calls.to_string(),
+                if bucket.input_tokens + bucket.output_tokens > 0.0 {
+                    tokens(Some(bucket.input_tokens), Some(bucket.output_tokens))
                 } else {
                     "–".into()
                 },
-                if priced {
-                    format_usd(row.bucket.cost_usd)
+                if bucket.priced_calls > 0 {
+                    format_usd(bucket.cost_usd)
                 } else {
                     "–".into()
                 },
             ];
             table_row(cells, &columns[..4], false, roles).child(share_bar(row.share, roles))
-        }))
+        }),
+    )
+}
+
+fn recent_table(
+    shown: &[AiCallRecord],
+    now: chrono::DateTime<Utc>,
+    offset: FixedOffset,
+    roles: Roles,
+) -> Div {
+    let columns = [
+        fixed(92., false),
+        grow(),
+        fixed(210., false),
+        fixed(100., true),
+        fixed(96., true),
+        fixed(60., true),
+        fixed(96., false),
+    ];
+    let header = table_row(
+        [
+            "When",
+            "Task",
+            "Served by",
+            "Tokens in / out",
+            "Cost",
+            "Latency",
+            "Finish",
+        ]
+        .map(String::from)
+        .to_vec(),
+        &columns,
+        true,
+        roles,
+    );
+    table(
+        header,
+        recent(shown, RECENT_LIMIT).iter().map(|record| {
+            table_row(
+                vec![
+                    when_of(record, now, offset),
+                    record.task.clone(),
+                    served_by(record),
+                    tokens(record.tokens.input, record.tokens.output),
+                    record
+                        .cost_usd
+                        .map(format_usd)
+                        .unwrap_or_else(|| "–".into()),
+                    format_latency(record.latency_ms.client),
+                    finish_of(record),
+                ],
+                &columns,
+                false,
+                roles,
+            )
+            .when(record.error.is_some(), |this| this.text_color(roles.danger))
+        }),
+    )
 }
 
 fn day_chart(report: &SpendReport, roles: Roles) -> Div {
@@ -227,11 +276,9 @@ fn day_chart(report: &SpendReport, roles: Roles) -> Div {
                 .items_end()
                 .h(px(height as f32))
                 .gap(px(4.))
-                .border_b_1()
-                .border_color(roles.hairline)
                 .children(report.days.iter().enumerate().map(|(index, day)| {
                     let share = if peak > 0.0 { day.cost_usd / peak } else { 0.0 };
-                    let bar = ((height - 2.0) * share).max(if day.calls > 0 { 2.0 } else { 0.0 });
+                    let bar = (height * share).max(if day.calls > 0 { 2.0 } else { 0.0 });
                     let tip = format!(
                         "{}: {} in {} {}",
                         day.date.format("%b %-d"),
@@ -239,25 +286,24 @@ fn day_chart(report: &SpendReport, roles: Roles) -> Div {
                         day.calls,
                         if day.calls == 1 { "call" } else { "calls" }
                     );
-                    div()
-                        .id(("spend-day", index))
+                    ui::chart_slot(("spend-day", index), roles)
                         .flex_1()
                         .h_full()
                         .flex()
                         .flex_col()
                         .justify_end()
-                        .hover(|this| this.bg(roles.fill))
                         .tooltip(move |window, cx| {
                             component::tooltip::Tooltip::new(tip.clone()).build(window, cx)
                         })
                         .child(div().w_full().h(px(bar as f32)).bg(roles.accent))
                 })),
         )
+        .child(ui::axis(roles))
         .child(
             ui::row()
                 .gap(px(4.))
-                .text_size(px(11.))
-                .text_color(roles.faint)
+                .type_small()
+                .text_color(roles.muted)
                 .children(report.days.iter().enumerate().map(|(index, day)| {
                     div().flex_1().flex().justify_center().child(
                         if index % 2 == 1 || index + 1 == report.days.len() {
@@ -270,102 +316,89 @@ fn day_chart(report: &SpendReport, roles: Roles) -> Div {
         )
 }
 
+fn tiles(report: &SpendReport, roles: Roles) -> Div {
+    let total = &report.total;
+    let unpriced = total.calls - total.priced_calls;
+    ui::row()
+        .mt(px(16.))
+        .flex_wrap()
+        .gap(px(8.))
+        .child(tile(
+            "Total",
+            format_usd(total.cost_usd),
+            Some(if unpriced == 0 {
+                "Every call is priced".into()
+            } else {
+                format!(
+                    "{unpriced} {} without a price",
+                    if unpriced == 1 { "call" } else { "calls" }
+                )
+            }),
+            roles,
+        ))
+        .child(tile(
+            "Calls",
+            total.calls.to_string(),
+            Some(format!("{} priced", total.priced_calls)),
+            roles,
+        ))
+        .child(tile(
+            "Per call",
+            average_cost(total)
+                .map(format_usd)
+                .unwrap_or_else(|| "–".into()),
+            Some("Average of priced calls".into()),
+            roles,
+        ))
+        .child(tile(
+            "Tokens",
+            tokens(Some(total.input_tokens), Some(total.output_tokens)),
+            Some(format!(
+                "In / out · {} reasoning",
+                format_count(total.reasoning_tokens)
+            )),
+            roles,
+        ))
+        .child(tile(
+            "Failed",
+            report.failed.to_string(),
+            Some(format!("{} retried", report.retried)),
+            roles,
+        ))
+}
+
 impl SpendView {
+    fn render_periods(&self, roles: Roles, cx: &mut Context<Self>) -> Div {
+        ui::row().gap(px(4.)).children(PERIODS.iter().map(|period| {
+            let period = *period;
+            ui::toggle_button(
+                SharedString::from(format!("spend-period-{}", period.label())),
+                period.label(),
+                period == self.period,
+                ui::Control::default(),
+                roles,
+            )
+            .on_click(cx.listener(move |this, _, _, cx| {
+                this.period = period;
+                cx.notify();
+            }))
+        }))
+    }
+
     fn render_ready(&self, records: &[AiCallRecord], roles: Roles, cx: &mut Context<Self>) -> Div {
+        if records.is_empty() {
+            return div().mt(px(24.)).child(
+                "No AI calls yet. Each call the AI makes for you is listed here with its cost.",
+            );
+        }
         let now = Utc::now();
         let offset = offset();
         let shown = records_in(records, self.period, now, offset);
         let report = spend_report(&shown, now, offset);
         let all_days = spend_report(records, now, offset);
-        let total = &report.total;
-        let periods = ui::row().gap(px(4.)).children(PERIODS.iter().map(|period| {
-            let period = *period;
-            let chosen = period == self.period;
-            ui::sized_button(
-                SharedString::from(format!("spend-period-{}", period.label())),
-                period.label(),
-                ButtonKind::Quiet,
-                ButtonSize::Small,
-                ui::Control::default(),
-                roles,
-            )
-            .when(chosen, |this| {
-                this.bg(roles.fill).border_color(roles.accent)
-            })
-            .on_click(cx.listener(move |this, _, _, cx| {
-                this.period = period;
-                cx.notify();
-            }))
-        }));
-        if records.is_empty() {
-            return div().child(div().mt(px(24.)).text_size(px(14.)).child(
-                "No AI calls yet. Each call the AI makes for you is listed here with its cost.",
-            ));
-        }
-        let unpriced = total.calls - total.priced_calls;
-        let recent_columns = [
-            fixed(92., false),
-            grow(),
-            fixed(210., false),
-            fixed(100., true),
-            fixed(96., true),
-            fixed(60., true),
-            fixed(96., false),
-        ];
         div()
-            .child(div().mt(px(20.)).child(periods))
-            .child(
-                ui::row()
-                    .mt(px(16.))
-                    .flex_wrap()
-                    .gap(px(8.))
-                    .child(tile(
-                        "Total",
-                        format_usd(total.cost_usd),
-                        Some(if unpriced == 0 {
-                            "Every call is priced".into()
-                        } else {
-                            format!(
-                                "{unpriced} {} without a price",
-                                if unpriced == 1 { "call" } else { "calls" }
-                            )
-                        }),
-                        roles,
-                    ))
-                    .child(tile(
-                        "Calls",
-                        total.calls.to_string(),
-                        Some(format!("{} priced", total.priced_calls)),
-                        roles,
-                    ))
-                    .child(tile(
-                        "Per call",
-                        average_cost(total)
-                            .map(format_usd)
-                            .unwrap_or_else(|| "–".into()),
-                        Some("Average of priced calls".into()),
-                        roles,
-                    ))
-                    .child(tile(
-                        "Tokens",
-                        format!(
-                            "{} / {}",
-                            format_count(total.input_tokens),
-                            format_count(total.output_tokens)
-                        ),
-                        Some(format!(
-                            "In / out · {} reasoning",
-                            format_count(total.reasoning_tokens)
-                        )),
-                        roles,
-                    ))
-                    .child(tile(
-                        "Failed",
-                        report.failed.to_string(),
-                        Some(format!("{} retried", report.retried)),
-                        roles,
-                    )),
-            )
+            .child(div().mt(px(20.)).child(self.render_periods(roles, cx)))
+            .child(tiles(&report, roles))
             .child(section_title("Last 14 days", roles))
             .child(day_chart(&all_days, roles))
             .child(section_title("By model", roles))
@@ -373,69 +406,18 @@ impl SpendView {
             .child(section_title("By task", roles))
             .child(bucket_table("Task", &report.by_task, roles))
             .child(section_title("Recent calls", roles))
-            .child(
-                div()
-                    .border_t_1()
-                    .border_color(roles.hairline)
-                    .child(table_row(
-                        vec![
-                            "When".into(),
-                            "Task".into(),
-                            "Served by".into(),
-                            "Tokens in / out".into(),
-                            "Cost".into(),
-                            "Latency".into(),
-                            "Finish".into(),
-                        ],
-                        &recent_columns,
-                        true,
-                        roles,
-                    ))
-                    .children(recent(&shown, RECENT_LIMIT).iter().map(|record| {
-                        let failed = record.error.is_some();
-                        table_row(
-                            vec![
-                                when_of(record, now, offset),
-                                record.task.clone(),
-                                served_by(record),
-                                format!(
-                                    "{} / {}",
-                                    record
-                                        .tokens
-                                        .input
-                                        .map(format_count)
-                                        .unwrap_or_else(|| "–".into()),
-                                    record
-                                        .tokens
-                                        .output
-                                        .map(format_count)
-                                        .unwrap_or_else(|| "–".into())
-                                ),
-                                record
-                                    .cost_usd
-                                    .map(format_usd)
-                                    .unwrap_or_else(|| "–".into()),
-                                format_latency(record.latency_ms.client),
-                                finish_of(record),
-                            ],
-                            &recent_columns,
-                            false,
-                            roles,
-                        )
-                        .when(failed, |this| this.text_color(roles.danger))
-                    })),
-            )
+            .child(recent_table(&shown, now, offset, roles))
             .when(shown.len() > RECENT_LIMIT, |this| {
                 this.child(
-                    div()
-                        .mt(px(8.))
-                        .text_size(px(12.))
-                        .text_color(roles.faint)
-                        .child(format!(
+                    ui::meta(
+                        format!(
                             "The newest {RECENT_LIMIT} of {} calls. Every call is in {}.",
                             shown.len(),
                             self.services.log.path().display()
-                        )),
+                        ),
+                        roles,
+                    )
+                    .mt(px(8.)),
                 )
             })
     }
@@ -462,15 +444,11 @@ impl Render for SpendView {
                 div()
                     .flex_1()
                     .min_w_0()
-                    .child(
-                        div()
-                            .text_size(px(20.))
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .child("AI spend"),
-                    )
-                    .child(div().mt(px(4.)).text_size(px(13.)).child(
+                    .child(ui::title("AI spend", roles))
+                    .child(ui::detail(
                         "What the AI cost on this machine, from its call records. OpenRouter prices each call after it ends.",
-                    )),
+                        roles,
+                    ).mt(px(4.))),
             )
             .child(
                 ui::sized_button(
@@ -495,7 +473,7 @@ impl Render for SpendView {
             .size_full()
             .overflow_y_scroll()
             .track_scroll(&self.scroll)
-            .text_size(px(14.))
+            .type_body()
             .text_color(roles.ink)
             .child(
                 div().w_full().flex().justify_center().child(

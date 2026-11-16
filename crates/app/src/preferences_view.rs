@@ -298,14 +298,11 @@ impl PreferencesPanel {
         roles: Roles,
         cx: &mut Context<Self>,
     ) -> Div {
-        div()
-            .mt(px(16.))
-            .child(ui::label(label, roles))
-            .children(
-                options
-                    .iter()
-                    .map(|option| self.render_theme_row(option, selected, roles, cx)),
-            )
+        div().mt(px(16.)).child(ui::label(label, roles)).children(
+            options
+                .iter()
+                .map(|option| self.render_theme_row(option, selected, roles, cx)),
+        )
     }
 
     fn render_setting_row(
@@ -359,14 +356,12 @@ impl PreferencesPanel {
             .flex()
             .flex_col()
             .child(ui::label("Name", roles))
-            .child(
-                div().key_context("QuickActionName").child(ui::field(
-                    Input::new(&draft.label).appearance(false),
-                    label_focused,
-                    draft.errors.label.is_some(),
-                    roles,
-                )),
-            )
+            .child(div().key_context("QuickActionName").child(ui::field(
+                Input::new(&draft.label).appearance(false),
+                label_focused,
+                draft.errors.label.is_some(),
+                roles,
+            )))
             .when_some(draft.errors.label.clone(), |this, error| {
                 this.child(ui::problem_list(vec![error], roles))
             })
@@ -581,9 +576,8 @@ impl PreferencesPanel {
     fn render_theme_section(&self, roles: Roles, cx: &mut Context<Self>) -> Div {
         let state = theme::state(cx).clone();
         let selected = state.selected();
-        let of_mode = |mode| -> Vec<ThemeOption> {
-            themes_of_mode(mode).into_iter().cloned().collect()
-        };
+        let of_mode =
+            |mode| -> Vec<ThemeOption> { themes_of_mode(mode).into_iter().cloned().collect() };
         div()
             .child(ui::title("Theme", roles).pt(px(16.)))
             .when_some(state.omarchy_option(), |this, option| {

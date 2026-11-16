@@ -377,4 +377,94 @@ mod tests {
         save_theme_choice(Some(&file), id);
         assert_eq!(load_theme_choice(Some(&file)), "desafinado");
     }
+
+    const TEXT: f64 = 4.5;
+    const MARK: f64 = 3.;
+
+    /// Every text and mark color the shared components draw, on the
+    /// surface they draw it on. The minimum is WCAG AA: 4.5 for text,
+    /// 3 for the focus ring and data marks. Disabled text is exempt.
+    fn used_pairs(
+        r: &desafinado_features::theme::tokens::ThemeRoles,
+    ) -> Vec<(&'static str, String, String, f64)> {
+        let accent_hover = mix_hex(&r.accent, &r.ink, HOVER_SHARE);
+        let ai_hover = mix_hex(&r.ai, &r.ink, HOVER_SHARE);
+        let mut pairs = Vec::new();
+        for (surface, background) in [
+            ("canvas", &r.canvas),
+            ("raised", &r.raised),
+            ("overlay", &r.overlay),
+            ("fill", &r.fill),
+            ("fill_hover", &r.fill_hover),
+        ] {
+            for (name, text) in [
+                ("ink", &r.ink),
+                ("heading", &r.heading),
+                ("muted", &r.muted),
+            ] {
+                pairs.push((name, text.clone(), format!("{surface}:{background}"), TEXT));
+            }
+            if surface != "fill_hover" {
+                pairs.push((
+                    "danger",
+                    r.danger.clone(),
+                    format!("{surface}:{background}"),
+                    TEXT,
+                ));
+            }
+            pairs.push((
+                "accent ring",
+                r.accent.clone(),
+                format!("{surface}:{background}"),
+                MARK,
+            ));
+        }
+        for (name, text, surface, background) in [
+            ("heading", &r.heading, "selection", &r.selection),
+            ("ink", &r.ink, "selection", &r.selection),
+            ("accent link", &r.accent, "canvas", &r.canvas),
+            ("ai", &r.ai, "ai_fill", &r.ai_fill),
+            ("ink", &r.ink, "ai_fill", &r.ai_fill),
+            ("danger", &r.danger, "danger_fill", &r.danger_fill),
+            ("ink", &r.ink, "danger_fill", &r.danger_fill),
+            ("success", &r.success, "success_fill", &r.success_fill),
+            ("canvas", &r.canvas, "accent", &r.accent),
+            ("canvas", &r.canvas, "accent_hover", &accent_hover),
+            ("canvas", &r.canvas, "ai", &r.ai),
+            ("canvas", &r.canvas, "ai_hover", &ai_hover),
+            ("canvas", &r.canvas, "danger", &r.danger),
+        ] {
+            pairs.push((name, text.clone(), format!("{surface}:{background}"), TEXT));
+        }
+        pairs
+    }
+
+    #[test]
+    fn every_used_pair_meets_aa_in_every_theme() {
+        use desafinado_features::theme::{catalog::theme_options, color::contrast};
+        let failures: Vec<String> = theme_options()
+            .iter()
+            .flat_map(|option| {
+                used_pairs(&option.tokens.roles)
+                    .into_iter()
+                    .filter_map(|(name, text, surface, minimum)| {
+                        let background = surface.split(':').nth(1).unwrap_or("");
+                        let ratio = contrast(&text, background);
+                        (ratio < minimum).then(|| {
+                            format!(
+                                "{}: {name} on {surface} is {ratio:.2}, needs {minimum}",
+                                option.id
+                            )
+                        })
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+        assert!(
+            failures.is_empty(),
+            "C5 {} pair(s) below AA:\n{}",
+            failures.len(),
+            failures.join("\n")
+        );
+    }
 }

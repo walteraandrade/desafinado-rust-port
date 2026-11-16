@@ -1,6 +1,9 @@
 use gpui_kit::*;
 
-use crate::theme;
+use crate::{
+    theme,
+    ui::{self, Type as _},
+};
 
 const FALLBACK_MESSAGE: &str = "Unknown error";
 
@@ -32,7 +35,8 @@ impl Render for StartError {
             .flex_col()
             .bg(roles.canvas)
             .text_color(roles.ink)
-            .font_family("Inter")
+            .type_ui()
+            .type_body()
             .child(component::TitleBar::new())
             .child(
                 div().w_full().flex().justify_center().child(
@@ -41,26 +45,13 @@ impl Render for StartError {
                         .max_w_full()
                         .px(px(24.))
                         .pt(px(40.))
-                        .child(
-                            div()
-                                .font_family("League Spartan")
-                                .font_weight(FontWeight::SEMIBOLD)
-                                .text_size(px(24.))
-                                .child("Desafinado could not start"),
-                        )
-                        .child(
-                            div()
-                                .pt(px(12.))
-                                .text_size(px(14.))
-                                .text_color(roles.danger)
-                                .child(self.message.clone()),
-                        )
-                        .child(
-                            div()
-                                .pt(px(12.))
-                                .text_size(px(14.))
-                                .child("Close the window and start the app again."),
-                        ),
+                        .child(ui::wordmark(roles))
+                        .child(ui::title("Desafinado could not start", roles).mt(px(16.)))
+                        .child(ui::error_text(self.message.clone(), roles).mt(px(12.)))
+                        .child(ui::detail(
+                            "Close the window and start the app again.",
+                            roles,
+                        )),
                 ),
             )
     }

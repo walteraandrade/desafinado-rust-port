@@ -648,11 +648,11 @@ impl LibraryPanel {
                     .w_full()
                     .justify_between()
                     .gap(px(8.))
-                    .child(div().min_w_0().child(marked(
-                        &result.label,
-                        result.label_match,
-                        roles,
-                    )))
+                    .child(
+                        div()
+                            .min_w_0()
+                            .child(marked(&result.label, result.label_match, roles)),
+                    )
                     .when(result.kind == SearchKind::Skill, |this| {
                         this.child(ui::meta("Skill", roles).flex_none())
                     }),
@@ -737,7 +737,11 @@ impl LibraryPanel {
         } else {
             div()
                 .type_small()
-                .text_color(if holds_open { roles.accent } else { roles.muted })
+                .text_color(if holds_open {
+                    roles.accent
+                } else {
+                    roles.muted
+                })
                 .child(match (item.expandable, item.expanded) {
                     (false, _) => "",
                     (true, true) => "▾",
@@ -886,9 +890,11 @@ fn row_note(index: usize, node: &TreeNode, roles: Roles) -> Div {
                 })
                 .child(description.clone())
         }))
-        .children(node.problem.as_ref().map(|problem| {
-            ui::error_text(format!("Frontmatter: {}", problem.message), roles)
-        }))
+        .children(
+            node.problem
+                .as_ref()
+                .map(|problem| ui::error_text(format!("Frontmatter: {}", problem.message), roles)),
+        )
 }
 
 struct RowContext {

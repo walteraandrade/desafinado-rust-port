@@ -118,13 +118,7 @@ impl Render for ModelDialog {
                     roles,
                 )))
                 .when_some(self.error.clone(), |this, error| {
-                    this.child(
-                        div()
-                            .mt(px(8.))
-                            .text_size(px(14.))
-                            .text_color(roles.danger)
-                            .child(error),
-                    )
+                    this.child(ui::error_text(error, roles).mt(px(8.)))
                 })
                 .child(
                     ui::actions_row()
@@ -133,7 +127,7 @@ impl Render for ModelDialog {
                                 .on_click(cx.listener(|_, _, _, cx| cx.emit(ModelEvent::Close))),
                         )
                         .child(
-                            ui::button("model-save", "Save model", ButtonKind::Default, roles)
+                            ui::button("model-save", "Save model", ButtonKind::Strong, roles)
                                 .on_click(cx.listener(|this, _, window, cx| {
                                     this.submit(&SubmitModel, window, cx)
                                 })),

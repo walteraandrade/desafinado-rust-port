@@ -13,6 +13,7 @@ pub const TEXT_SMALL: Pixels = px(12.);
 pub const TEXT_BODY: Pixels = px(14.);
 /// The Document's own text, in the editor and wherever a Version is read.
 pub const TEXT_DOCUMENT: Pixels = px(17.);
+pub const UI_FAMILY: &str = "Inter";
 pub const MONO_FAMILY: &str = "DejaVu Sans Mono";
 const WORDMARK_FAMILY: &str = "League Spartan";
 
@@ -43,6 +44,10 @@ pub trait Type: Styled + Sized {
 
     fn weight_bold(self) -> Self {
         self.font_weight(FontWeight::BOLD)
+    }
+
+    fn type_ui(self) -> Self {
+        self.font_family(UI_FAMILY)
     }
 
     fn type_mono(self) -> Self {
@@ -478,7 +483,6 @@ pub fn actions_row() -> Div {
 pub enum Tone {
     Ai,
     Danger,
-    Accent,
 }
 
 pub fn badge(text: impl Into<SharedString>, tone: Tone, roles: Roles) -> Div {
@@ -491,11 +495,25 @@ pub fn badge(text: impl Into<SharedString>, tone: Tone, roles: Roles) -> Div {
         .bg(match tone {
             Tone::Ai => roles.ai,
             Tone::Danger => roles.danger,
-            Tone::Accent => roles.accent,
         })
         .text_color(roles.canvas)
         .type_small()
         .weight_strong()
+        .child(text.into())
+}
+
+/// A small label on a fill, such as an Eval flag.
+pub fn tag(text: impl Into<SharedString>, danger: bool, roles: Roles) -> Div {
+    div()
+        .flex_none()
+        .px(px(8.))
+        .type_small()
+        .bg(if danger {
+            roles.danger_fill
+        } else {
+            roles.fill
+        })
+        .text_color(if danger { roles.danger } else { roles.ink })
         .child(text.into())
 }
 
@@ -531,11 +549,16 @@ pub fn pip(kind: Pip, roles: Roles) -> Div {
         Pip::Pass => base.bg(roles.success),
         Pip::Fail => base.border_1().border_color(roles.danger),
         Pip::Empty => base.border_1().border_dashed().border_color(roles.muted),
-        Pip::Ai => base.rounded_full().bg(roles.accent),
+        Pip::Ai => base.rounded_full().bg(roles.ai),
         Pip::You => base.rounded_full().bg(roles.ink),
         Pip::File => base.border_1().border_color(roles.muted),
         Pip::Restore => base.rounded_full().border_1().border_color(roles.ink),
     }
+}
+
+/// A column of a chart that shows its tooltip on hover.
+pub fn chart_slot(id: impl Into<ElementId>, roles: Roles) -> Stateful<Div> {
+    div().id(id).hover(move |this| this.bg(roles.fill))
 }
 
 /// The line the History timeline's dots sit on.
@@ -564,6 +587,33 @@ pub fn field(input: impl IntoElement, focused: bool, invalid: bool, roles: Roles
         .type_body()
         .text_color(roles.ink)
         .child(input)
+}
+
+/// The closed state of a picker: a field that unfolds its options on click.
+pub fn select_field(
+    id: impl Into<ElementId>,
+    open: bool,
+    disabled: bool,
+    roles: Roles,
+) -> Stateful<Div> {
+    let base = div()
+        .id(id)
+        .w_full()
+        .h(px(32.))
+        .px(px(8.))
+        .flex()
+        .items_center()
+        .gap(px(8.))
+        .bg(if open { roles.fill_hover } else { roles.fill })
+        .border_1()
+        .border_color(if open { roles.accent } else { roles.fill })
+        .type_body();
+    if disabled {
+        return base.text_color(roles.faint);
+    }
+    base.text_color(roles.ink)
+        .cursor_pointer()
+        .hover(|this| this.bg(roles.fill_hover))
 }
 
 pub fn problem_list(problems: Vec<String>, roles: Roles) -> Div {

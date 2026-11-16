@@ -244,7 +244,12 @@ impl Workspace {
         .into_any_element()
     }
 
-    fn render_track(&self, mode: HistoryMode, roles: Roles, cx: &mut Context<Self>) -> Stateful<Div> {
+    fn render_track(
+        &self,
+        mode: HistoryMode,
+        roles: Roles,
+        cx: &mut Context<Self>,
+    ) -> Stateful<Div> {
         let versions = self.history.snapshot().clone();
         let selected = match mode {
             HistoryMode::Version { id } => Some(id),
@@ -440,9 +445,9 @@ impl Workspace {
                 roles,
             )
             .when(!edge, |this| {
-                this.on_click(cx.listener(move |this, _, window, cx| {
-                    this.step_version(delta, window, cx)
-                }))
+                this.on_click(
+                    cx.listener(move |this, _, window, cx| this.step_version(delta, window, cx)),
+                )
             })
         };
         ui::row()
@@ -620,8 +625,7 @@ impl Workspace {
             .when_some(diff, |this, diff| {
                 this.child(div().mt(px(16.)).child(match diff {
                     Some(changes) => line_diff(&changes, true, DiffSize::Body, roles),
-                    None => ui::meta("This Version could not be loaded.", roles)
-                        .into_any_element(),
+                    None => ui::meta("This Version could not be loaded.", roles).into_any_element(),
                 }))
             })
             .child(ui::row().mt(px(12.)).h(px(32.)).when(hovered, |this| {
@@ -632,9 +636,9 @@ impl Workspace {
                         ButtonKind::Default,
                         roles,
                     )
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        this.view_version(id, window, cx)
-                    })),
+                    .on_click(
+                        cx.listener(move |this, _, window, cx| this.view_version(id, window, cx)),
+                    ),
                 )
             }));
         centered(

@@ -38,6 +38,9 @@ const FONTS: [&[u8]; 5] = [
     include_bytes!("../assets/fonts/LeagueSpartan.ttf"),
 ];
 
+/// Every dialog, panel and popover fits inside this size.
+const MIN_WINDOW: Size<Pixels> = size(px(720.), px(540.));
+
 fn window_options(cx: &mut App) -> WindowOptions {
     let mut options = component::TitleBar::window_options();
     options.window_bounds = Some(WindowBounds::Windowed(Bounds::centered(
@@ -45,6 +48,7 @@ fn window_options(cx: &mut App) -> WindowOptions {
         size(px(1280.), px(860.)),
         cx,
     )));
+    options.window_min_size = Some(MIN_WINDOW);
     options.app_id = Some("desafinado-native".into());
     options
 }

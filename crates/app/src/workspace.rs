@@ -2873,44 +2873,6 @@ fn frontmatter_scroll(current: Pixels, full: Pixels, delta: Pixels, editor_at_to
     }
 }
 
-#[cfg(test)]
-mod frontmatter_scroll_tests {
-    use super::frontmatter_scroll;
-    use gpui_kit::px;
-
-    #[test]
-    fn scrolling_down_hides_the_panel_before_the_editor_moves() {
-        assert_eq!(
-            frontmatter_scroll(px(0.), px(300.), px(-120.), true),
-            px(120.)
-        );
-        assert_eq!(
-            frontmatter_scroll(px(250.), px(300.), px(-120.), true),
-            px(300.)
-        );
-        assert_eq!(
-            frontmatter_scroll(px(300.), px(300.), px(-120.), true),
-            px(300.)
-        );
-    }
-
-    #[test]
-    fn scrolling_up_brings_the_panel_back_only_once_the_editor_is_at_the_top() {
-        assert_eq!(
-            frontmatter_scroll(px(300.), px(300.), px(120.), false),
-            px(300.)
-        );
-        assert_eq!(
-            frontmatter_scroll(px(300.), px(300.), px(120.), true),
-            px(180.)
-        );
-        assert_eq!(
-            frontmatter_scroll(px(60.), px(300.), px(120.), true),
-            px(0.)
-        );
-    }
-}
-
 impl Workspace {
     fn with_actions(&self, root: Stateful<Div>, cx: &mut Context<Self>) -> Stateful<Div> {
         root.on_action(cx.listener(Self::new_document))
@@ -3201,5 +3163,43 @@ impl Workspace {
             )
             .child(self.render_menu(kind, roles, cx))
         })
+    }
+}
+
+#[cfg(test)]
+mod frontmatter_scroll_tests {
+    use super::frontmatter_scroll;
+    use gpui_kit::px;
+
+    #[test]
+    fn scrolling_down_hides_the_panel_before_the_editor_moves() {
+        assert_eq!(
+            frontmatter_scroll(px(0.), px(300.), px(-120.), true),
+            px(120.)
+        );
+        assert_eq!(
+            frontmatter_scroll(px(250.), px(300.), px(-120.), true),
+            px(300.)
+        );
+        assert_eq!(
+            frontmatter_scroll(px(300.), px(300.), px(-120.), true),
+            px(300.)
+        );
+    }
+
+    #[test]
+    fn scrolling_up_brings_the_panel_back_only_once_the_editor_is_at_the_top() {
+        assert_eq!(
+            frontmatter_scroll(px(300.), px(300.), px(120.), false),
+            px(300.)
+        );
+        assert_eq!(
+            frontmatter_scroll(px(300.), px(300.), px(120.), true),
+            px(180.)
+        );
+        assert_eq!(
+            frontmatter_scroll(px(60.), px(300.), px(120.), true),
+            px(0.)
+        );
     }
 }

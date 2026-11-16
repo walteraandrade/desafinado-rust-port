@@ -118,7 +118,7 @@ fn type_comes_from_the_type_scale() {
 }
 
 #[test]
-fn the_type_scale_has_two_sizes_and_the_wordmark() {
+fn the_type_scale_has_two_ui_sizes_the_document_and_the_wordmark() {
     let ui = sources()
         .into_iter()
         .find(|file| file.name == "ui.rs")
@@ -139,7 +139,7 @@ fn the_type_scale_has_two_sizes_and_the_wordmark() {
     sizes.sort();
     sizes.dedup();
     assert!(
-        sizes.len() <= 3,
+        sizes.len() <= 4,
         "C3 the type scale has {} sizes: {sizes:?}",
         sizes.len()
     );
