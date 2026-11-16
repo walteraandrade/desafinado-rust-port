@@ -17,7 +17,7 @@ use gpui_kit::{
 
 use crate::{
     theme::{self, Roles},
-    ui::{self, ButtonKind, ButtonSize},
+    ui::{self, ButtonKind, ButtonSize, Type as _},
 };
 
 pub enum FrontmatterEvent {
@@ -228,6 +228,85 @@ impl FrontmatterView {
         }
     }
 
+    fn render_proposal(
+        &self,
+        description: &str,
+        rationale: &str,
+        roles: Roles,
+        cx: &mut Context<Self>,
+    ) -> Stateful<Div> {
+        let accepted = description.to_string();
+        div()
+            .id("description-proposal")
+            .bg(roles.ai_fill)
+            .px(px(12.))
+            .py(px(8.))
+            .flex()
+            .flex_col()
+            .gap(px(4.))
+            .child(
+                div()
+                    .type_body()
+                    .text_color(roles.ink)
+                    .child(description.to_string()),
+            )
+            .child(div().text_color(roles.ink).child(rationale.to_string()))
+            .child(div().text_color(roles.muted).child(format!(
+                "{} / {DESCRIPTION_MAX_LENGTH} characters",
+                description.encode_utf16().count()
+            )))
+            .child(
+                ui::row()
+                    .mt(px(4.))
+                    .gap(px(8.))
+                    .child(
+                        ui::button("description-accept", "Accept", ButtonKind::Strong, roles)
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                cx.emit(FrontmatterEvent::Edit(
+                                    SkillField::Description,
+                                    accepted.clone(),
+                                ));
+                                this.dismiss(cx);
+                            })),
+                    )
+                    .child(
+                        ui::button("description-retry", "Try again", ButtonKind::Default, roles)
+                            .on_click(cx.listener(|this, _, _, cx| this.ask(cx))),
+                    )
+                    .child(
+                        ui::button("description-reject", "Reject", ButtonKind::Default, roles)
+                            .on_click(cx.listener(|this, _, _, cx| this.dismiss(cx))),
+                    ),
+            )
+    }
+
+    fn render_improve(
+        &self,
+        working: bool,
+        empty: bool,
+        roles: Roles,
+        cx: &mut Context<Self>,
+    ) -> Div {
+        let disabled = empty || working;
+        ui::row().child(
+            ui::sized_button(
+                "improve-description",
+                if working {
+                    "Improving…"
+                } else {
+                    "Improve description"
+                },
+                ButtonKind::Default,
+                ButtonSize::Regular,
+                ui::Control::disabled(disabled),
+                roles,
+            )
+            .when(!disabled, |this| {
+                this.on_click(cx.listener(|this, _, _, cx| this.ask(cx)))
+            }),
+        )
+    }
+
     fn render_assist(
         &self,
         name: &str,
@@ -238,106 +317,76 @@ impl FrontmatterView {
         let state = self.visible_assist(name, description);
         let empty = description.trim().is_empty();
         div()
-            .text_size(px(12.))
+            .type_small()
             .map(|this| match &state {
                 DescriptionAi::Ready {
                     description,
                     rationale,
                     ..
-                } => {
-                    let accepted = description.clone();
-                    this.child(
-                        div()
-                            .id("description-proposal")
-                            .border_1()
-                            .border_color(roles.hairline)
-                            .bg(roles.raised)
-                            .px(px(12.))
-                            .py(px(8.))
-                            .flex()
-                            .flex_col()
-                            .gap(px(4.))
-                            .child(div().text_color(roles.ink).child(description.clone()))
-                            .child(div().text_color(roles.ink).child(rationale.clone()))
-                            .child(div().text_color(roles.faint).child(format!(
-                                "{} / {DESCRIPTION_MAX_LENGTH} characters",
-                                description.encode_utf16().count()
-                            )))
-                            .child(
-                                ui::row()
-                                    .mt(px(4.))
-                                    .gap(px(8.))
-                                    .child(
-                                        ui::button(
-                                            "description-accept",
-                                            "Accept",
-                                            ButtonKind::Default,
-                                            roles,
-                                        )
-                                        .on_click(
-                                            cx.listener(move |this, _, _, cx| {
-                                                cx.emit(FrontmatterEvent::Edit(
-                                                    SkillField::Description,
-                                                    accepted.clone(),
-                                                ));
-                                                this.dismiss(cx);
-                                            }),
-                                        ),
-                                    )
-                                    .child(
-                                        ui::button(
-                                            "description-retry",
-                                            "Try again",
-                                            ButtonKind::Default,
-                                            roles,
-                                        )
-                                        .on_click(cx.listener(|this, _, _, cx| this.ask(cx))),
-                                    )
-                                    .child(
-                                        ui::button(
-                                            "description-reject",
-                                            "Reject",
-                                            ButtonKind::Default,
-                                            roles,
-                                        )
-                                        .on_click(cx.listener(|this, _, _, cx| this.dismiss(cx))),
-                                    ),
-                            ),
-                    )
-                }
-                other => {
-                    let working = matches!(other, DescriptionAi::Working { .. });
-                    let disabled = empty || working;
-                    this.child(
-                        ui::row().child(
-                            ui::sized_button(
-                                "improve-description",
-                                if working {
-                                    "Improving…"
-                                } else {
-                                    "Improve description"
-                                },
-                                ButtonKind::Default,
-                                ButtonSize::Regular,
-                                disabled,
-                                roles,
-                            )
-                            .when(!disabled, |this| {
-                                this.on_click(cx.listener(|this, _, _, cx| this.ask(cx)))
-                            }),
-                        ),
-                    )
-                }
+                } => this.child(self.render_proposal(description, rationale, roles, cx)),
+                other => this.child(self.render_improve(
+                    matches!(other, DescriptionAi::Working { .. }),
+                    empty,
+                    roles,
+                    cx,
+                )),
             })
             .when_some(
                 match &state {
                     DescriptionAi::Failed { message, .. } => Some(message.clone()),
                     _ => None,
                 },
-                |this, message| {
-                    this.child(div().mt(px(4.)).text_color(roles.danger).child(message))
-                },
+                |this, message| this.child(ui::error_text(message, roles).mt(px(4.))),
             )
+    }
+
+    fn render_fields(
+        &self,
+        name_focused: bool,
+        description_focused: bool,
+        name: &str,
+        description: &str,
+        roles: Roles,
+        cx: &mut Context<Self>,
+    ) -> Div {
+        let name_problems = messages(problems_of_field(&self.report, CheckedField::Name));
+        let description_problems =
+            messages(problems_of_field(&self.report, CheckedField::Description));
+        let others = messages(other_problems(&self.report));
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(12.))
+            .child(
+                div()
+                    .child(ui::label("name", roles))
+                    .child(ui::field(
+                        Input::new(&self.name).appearance(false),
+                        name_focused,
+                        !name_problems.is_empty(),
+                        roles,
+                    ))
+                    .when(!name_problems.is_empty(), |this| {
+                        this.child(ui::problem_list(name_problems, roles))
+                    }),
+            )
+            .child(
+                div()
+                    .child(ui::label("description", roles))
+                    .child(ui::field(
+                        Textarea::new(&self.description).appearance(false),
+                        description_focused,
+                        !description_problems.is_empty(),
+                        roles,
+                    ))
+                    .when(!description_problems.is_empty(), |this| {
+                        this.child(ui::problem_list(description_problems, roles))
+                    }),
+            )
+            .child(self.render_assist(name, description, roles, cx))
+            .when(!others.is_empty(), |this| {
+                this.child(ui::problem_list(others, roles))
+            })
     }
 }
 
@@ -359,36 +408,31 @@ impl Render for FrontmatterView {
             .py(px(12.))
             .bg(roles.raised)
             .text_color(roles.ink)
+            .type_body()
             .flex()
             .flex_col();
-        let title = div()
-            .text_size(px(12.))
-            .font_weight(FontWeight::MEDIUM)
-            .child("Frontmatter");
+        let title = ui::title("Frontmatter", roles);
         match self.report.clone() {
             FrontmatterReport::None => div().into_any_element(),
-            FrontmatterReport::Unreadable { skill, problems } => {
-                panel
-                    .text_size(px(14.))
-                    .child(title)
-                    .child(ui::problem_list(messages(problems), roles).text_size(px(14.)))
-                    .when(skill, |this| {
-                        this.child(div().mt(px(4.)).text_size(px(12.)).child(
+            FrontmatterReport::Unreadable { skill, problems } => panel
+                .child(title)
+                .child(ui::problem_list(messages(problems), roles))
+                .when(skill, |this| {
+                    this.child(
+                        ui::meta(
                             "The fields come back when the frontmatter is fixed in the editor.",
-                        ))
-                    })
-                    .into_any_element()
-            }
+                            roles,
+                        )
+                        .mt(px(4.)),
+                    )
+                })
+                .into_any_element(),
             FrontmatterReport::Skill {
                 name,
                 description,
                 present,
                 ..
             } => {
-                let name_problems = messages(problems_of_field(&self.report, CheckedField::Name));
-                let description_problems =
-                    messages(problems_of_field(&self.report, CheckedField::Description));
-                let others = messages(other_problems(&self.report));
                 let name_focused = self.name.read(cx).focus_handle(cx).is_focused(window);
                 let description_focused = self
                     .description
@@ -402,50 +446,23 @@ impl Render for FrontmatterView {
                             .justify_between()
                             .gap(px(12.))
                             .child(title)
-                            .child(div().text_size(px(12.)).text_color(roles.faint).child(
+                            .child(ui::meta(
                                 if present {
                                     "Edits change only name and description in the YAML"
                                 } else {
                                     "Typing adds the frontmatter to the top of the file"
                                 },
+                                roles,
                             )),
                     )
-                    .child(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .gap(px(12.))
-                            .child(
-                                div()
-                                    .child(ui::label("name", roles))
-                                    .child(ui::field(
-                                        Input::new(&self.name).appearance(false),
-                                        name_focused,
-                                        !name_problems.is_empty(),
-                                        roles,
-                                    ))
-                                    .when(!name_problems.is_empty(), |this| {
-                                        this.child(ui::problem_list(name_problems, roles))
-                                    }),
-                            )
-                            .child(
-                                div()
-                                    .child(ui::label("description", roles))
-                                    .child(ui::field(
-                                        Textarea::new(&self.description).appearance(false),
-                                        description_focused,
-                                        !description_problems.is_empty(),
-                                        roles,
-                                    ))
-                                    .when(!description_problems.is_empty(), |this| {
-                                        this.child(ui::problem_list(description_problems, roles))
-                                    }),
-                            )
-                            .child(self.render_assist(&name, &description, roles, cx))
-                            .when(!others.is_empty(), |this| {
-                                this.child(ui::problem_list(others, roles))
-                            }),
-                    )
+                    .child(self.render_fields(
+                        name_focused,
+                        description_focused,
+                        &name,
+                        &description,
+                        roles,
+                        cx,
+                    ))
                     .into_any_element()
             }
         }

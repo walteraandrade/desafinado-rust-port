@@ -1,6 +1,6 @@
 # 0001. Native app on Rust and GPUI
 
-- Status: Proposed (2026-11-14)
+- Status: Accepted (2026-11-14)
 - Source: maintainer request: a lighter, faster native app without Electron, and curiosity about GPUI. Spike in [`spikes/gpui-editor/`](../../spikes/gpui-editor/). Links named "desafinado NNNN" point to [the ADRs of the Electron and Web app](https://github.com/walteraandrade/desafinado/blob/main/docs/adr/).
 
 ## Context
@@ -35,7 +35,7 @@ Run on Linux under Xvfb with X11 and llvmpipe (software Vulkan), release build, 
 | Clean release build | about 6 minutes on 4 cores, 806 crates. |
 | Not checked | Wayland, IME, a real GPU, HiDPI. They need the maintainer's machine. |
 
-## Decision (proposed)
+## Decision
 
 - **Where it lives:** its own repository, `desafinado-rust-port`, a Cargo workspace. It follows Desafinado's GLOSSARY, PRODUCT and DESIGN, and copies the prompts and test fixtures it needs. The Electron and Web builds in `desafinado` are not touched.
 - **Editor:** gpui-kit's code editor, pinned to an exact version (`=0.9.1`), with GPUI only through gpui-kit, so a GPUI bump is one line and a re-run of the checks above.

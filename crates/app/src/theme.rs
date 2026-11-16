@@ -2,6 +2,7 @@ use std::path::{Path, PathBuf};
 
 use desafinado_features::theme::{
     catalog::{ThemeOption, omarchy_option},
+    color::mix_hex,
     omarchy_source::{default_omarchy_state_dir, read_omarchy_theme},
     preference::{
         KeyValueStorage, OMARCHY_CHOICE, THEME_STORAGE_KEY, active_theme, load_theme_choice,
@@ -19,11 +20,20 @@ use gpui_kit::{
 pub struct Roles {
     pub canvas: Hsla,
     pub raised: Hsla,
+    pub overlay: Hsla,
+    pub heading: Hsla,
     pub ink: Hsla,
+    pub muted: Hsla,
     pub faint: Hsla,
     pub accent: Hsla,
+    pub accent_hover: Hsla,
     pub ai: Hsla,
+    pub ai_hover: Hsla,
+    pub ai_fill: Hsla,
     pub danger: Hsla,
+    pub danger_fill: Hsla,
+    pub success: Hsla,
+    pub success_fill: Hsla,
     pub selection: Hsla,
     pub fill: Hsla,
     pub fill_hover: Hsla,
@@ -45,16 +55,27 @@ pub fn hex(code: &str) -> Hsla {
     .into()
 }
 
+const HOVER_SHARE: f64 = 0.2;
+
 pub fn roles_of(tokens: &ThemeTokens) -> Roles {
     let r = &tokens.roles;
     Roles {
         canvas: hex(&r.canvas),
         raised: hex(&r.raised),
+        overlay: hex(&r.overlay),
+        heading: hex(&r.heading),
         ink: hex(&r.ink),
+        muted: hex(&r.muted),
         faint: hex(&r.faint),
         accent: hex(&r.accent),
+        accent_hover: hex(&mix_hex(&r.accent, &r.ink, HOVER_SHARE)),
         ai: hex(&r.ai),
+        ai_hover: hex(&mix_hex(&r.ai, &r.ink, HOVER_SHARE)),
+        ai_fill: hex(&r.ai_fill),
         danger: hex(&r.danger),
+        danger_fill: hex(&r.danger_fill),
+        success: hex(&r.success),
+        success_fill: hex(&r.success_fill),
         selection: hex(&r.selection),
         fill: hex(&r.fill),
         fill_hover: hex(&r.fill_hover),
@@ -151,6 +172,10 @@ pub fn choose(choice: &str, cx: &mut App) {
     cx.refresh_windows();
 }
 
+pub fn swatches(option: &ThemeOption) -> Vec<Hsla> {
+    option.colors.iter().map(|color| hex(&color.hex)).collect()
+}
+
 pub fn roles(cx: &App) -> Roles {
     *cx.global::<Roles>()
 }
@@ -171,13 +196,13 @@ pub fn apply(roles: Roles, cx: &mut App) {
         c.background = roles.canvas;
         c.foreground = roles.ink;
         c.muted = roles.fill;
-        c.muted_foreground = roles.faint;
+        c.muted_foreground = roles.muted;
         c.border = roles.hairline;
         c.input = roles.hairline;
         c.ring = roles.accent;
         c.caret = roles.ink;
         c.selection = roles.selection;
-        c.popover = roles.raised;
+        c.popover = roles.overlay;
         c.popover_foreground = roles.ink;
         c.accent = roles.fill_hover;
         c.accent_foreground = roles.ink;
@@ -191,6 +216,8 @@ pub fn apply(roles: Roles, cx: &mut App) {
         c.secondary_active = roles.fill_hover;
         c.danger = roles.danger;
         c.danger_foreground = roles.canvas;
+        c.success = roles.success;
+        c.success_foreground = roles.canvas;
         c.link = roles.accent;
         c.link_hover = roles.accent;
         c.link_active = roles.accent;
@@ -198,14 +225,14 @@ pub fn apply(roles: Roles, cx: &mut App) {
         c.scrollbar_thumb = roles.scrollbar;
         c.scrollbar_thumb_hover = roles.ink;
         c.title_bar = roles.raised;
-        c.title_bar_border = roles.hairline;
+        c.title_bar_border = roles.raised;
         c.list = roles.raised;
         c.list_hover = roles.canvas;
         c.list_active = roles.canvas;
         c.list_active_border = roles.accent;
         c.sidebar = roles.raised;
         c.sidebar_foreground = roles.ink;
-        c.sidebar_border = roles.hairline;
+        c.sidebar_border = roles.raised;
         c.window_border = roles.hairline;
         c.overlay = roles.canvas;
         c.button = roles.fill;
@@ -218,7 +245,7 @@ pub fn apply(roles: Roles, cx: &mut App) {
         c.button_primary_active = roles.ai;
         theme.font_family = "Inter".into();
         theme.mono_font_family = "Inter".into();
-        theme.mono_font_size = gpui_kit::px(17.);
+        theme.mono_font_size = crate::ui::TEXT_DOCUMENT;
         theme.highlight_theme = std::sync::Arc::new(highlight_theme(&roles));
         theme.radius = gpui_kit::px(0.);
     });
@@ -238,6 +265,8 @@ fn highlight_theme(roles: &Roles) -> HighlightTheme {
     let ink = css(roles.ink);
     let faint = css(roles.faint);
     let accent = css(roles.accent);
+    let heading = css(roles.heading);
+    let muted = css(roles.muted);
     let canvas = css(roles.canvas);
     let plain = |color: &str| serde_json::json!({ "color": color });
     let weighted =
@@ -287,7 +316,10 @@ fn highlight_theme(roles: &Roles) -> HighlightTheme {
     ] {
         syntax.insert(key.into(), plain(&faint));
     }
-    syntax.insert("title".into(), weighted(&ink, 700));
+    for key in ["text.literal", "text.code.span", "string", "embedded"] {
+        syntax.insert(key.into(), plain(&muted));
+    }
+    syntax.insert("title".into(), weighted(&heading, 700));
     syntax.insert(
         "emphasis".into(),
         serde_json::json!({ "color": ink, "font_style": "italic" }),
@@ -327,10 +359,13 @@ mod tests {
 
     #[test]
     fn maps_the_default_theme_to_mood_indigo() {
-        let roles = roles_of(&default_theme().tokens);
+        let tokens = &default_theme().tokens;
+        let roles = roles_of(tokens);
         assert!(roles.dark);
-        assert_eq!(roles.canvas, hex("#051230"));
-        assert_eq!(roles.ink, hex("#ffdd00"));
+        assert_eq!(tokens.name, "mood-indigo");
+        assert_eq!(roles.canvas, hex(&tokens.roles.canvas));
+        assert_eq!(roles.heading, hex(&tokens.roles.heading));
+        assert_eq!(roles.success, hex(&tokens.roles.success));
     }
 
     #[test]
@@ -341,5 +376,96 @@ mod tests {
         let id = &theme_by_id("desafinado").unwrap().id;
         save_theme_choice(Some(&file), id);
         assert_eq!(load_theme_choice(Some(&file)), "desafinado");
+    }
+
+    const TEXT: f64 = 4.5;
+    const MARK: f64 = 3.;
+
+    /// Every text and mark color the shared components draw, on the
+    /// surface they draw it on. The minimum is WCAG AA: 4.5 for text,
+    /// 3 for the focus ring and data marks. Disabled text is exempt.
+    fn used_pairs(
+        r: &desafinado_features::theme::tokens::ThemeRoles,
+    ) -> Vec<(&'static str, String, String, f64)> {
+        let accent_hover = mix_hex(&r.accent, &r.ink, HOVER_SHARE);
+        let ai_hover = mix_hex(&r.ai, &r.ink, HOVER_SHARE);
+        let mut pairs = Vec::new();
+        for (surface, background) in [
+            ("canvas", &r.canvas),
+            ("raised", &r.raised),
+            ("overlay", &r.overlay),
+            ("fill", &r.fill),
+            ("fill_hover", &r.fill_hover),
+        ] {
+            for (name, text) in [
+                ("ink", &r.ink),
+                ("heading", &r.heading),
+                ("muted", &r.muted),
+            ] {
+                pairs.push((name, text.clone(), format!("{surface}:{background}"), TEXT));
+            }
+            if surface != "fill_hover" {
+                pairs.push((
+                    "danger",
+                    r.danger.clone(),
+                    format!("{surface}:{background}"),
+                    TEXT,
+                ));
+            }
+            pairs.push((
+                "accent ring",
+                r.accent.clone(),
+                format!("{surface}:{background}"),
+                MARK,
+            ));
+        }
+        for (name, text, surface, background) in [
+            ("heading", &r.heading, "selection", &r.selection),
+            ("ink", &r.ink, "selection", &r.selection),
+            ("accent link", &r.accent, "canvas", &r.canvas),
+            ("ai", &r.ai, "ai_fill", &r.ai_fill),
+            ("ai", &r.ai, "canvas", &r.canvas),
+            ("ink", &r.ink, "ai_fill", &r.ai_fill),
+            ("danger", &r.danger, "danger_fill", &r.danger_fill),
+            ("ink", &r.ink, "danger_fill", &r.danger_fill),
+            ("success", &r.success, "success_fill", &r.success_fill),
+            ("canvas", &r.canvas, "accent", &r.accent),
+            ("canvas", &r.canvas, "accent_hover", &accent_hover),
+            ("canvas", &r.canvas, "ai", &r.ai),
+            ("canvas", &r.canvas, "ai_hover", &ai_hover),
+            ("canvas", &r.canvas, "danger", &r.danger),
+        ] {
+            pairs.push((name, text.clone(), format!("{surface}:{background}"), TEXT));
+        }
+        pairs
+    }
+
+    #[test]
+    fn every_used_pair_meets_aa_in_every_theme() {
+        use desafinado_features::theme::{catalog::theme_options, color::contrast};
+        let failures: Vec<String> = theme_options()
+            .iter()
+            .flat_map(|option| {
+                used_pairs(&option.tokens.roles)
+                    .into_iter()
+                    .filter_map(|(name, text, surface, minimum)| {
+                        let background = surface.split(':').nth(1).unwrap_or("");
+                        let ratio = contrast(&text, background);
+                        (ratio < minimum).then(|| {
+                            format!(
+                                "{}: {name} on {surface} is {ratio:.2}, needs {minimum}",
+                                option.id
+                            )
+                        })
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+        assert!(
+            failures.is_empty(),
+            "C5 {} pair(s) below AA:\n{}",
+            failures.len(),
+            failures.join("\n")
+        );
     }
 }

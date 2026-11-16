@@ -8,7 +8,7 @@ use std::{
 use desafinado_features::{
     evals::{
         baseline::{RunBaseline, SummaryBaseline},
-        baseline_view::summary_view,
+        baseline_view::{SummaryView, summary_view},
         dialog_state::{EvalDialogState, PickEffect, settle_ask, settle_pick, start_pick},
         ended::failure_reason,
         first_eval::first_eval_example,
@@ -43,12 +43,11 @@ use crate::{
     eval_run_dialog::{EvalRunDialog, EvalRunEvent},
     library_panel,
     theme::{self, Roles},
-    ui::{self, ButtonKind, ButtonSize},
+    ui::{self, ButtonKind, ButtonSize, Pip, Type as _},
     workspace::{column_row, now_ms},
 };
 
 const POLL: Duration = Duration::from_millis(1500);
-const MONO: &str = "DejaVu Sans Mono";
 
 pub fn service(user_data: PathBuf, history: Arc<dyn HistoryStore>) -> Arc<EvalService> {
     let home = std::env::var("HOME").unwrap_or_default();
@@ -198,23 +197,6 @@ pub fn local_date_time(iso: &str, offset_minutes: i64) -> String {
         .unwrap_or_else(|_| "Invalid Date".to_string())
 }
 
-fn faint_text(text: impl Into<SharedString>, roles: Roles) -> Div {
-    div()
-        .text_size(px(12.))
-        .text_color(roles.faint)
-        .child(text.into())
-}
-
-fn text_action(id: &'static str, label: &'static str, roles: Roles) -> Stateful<Div> {
-    div()
-        .id(id)
-        .text_color(roles.ink)
-        .underline()
-        .cursor_pointer()
-        .hover(|this| this.text_color(roles.accent))
-        .child(label)
-}
-
 fn meter(label: &str, tally: &Tally, roles: Roles) -> Div {
     let share = meter_share(tally) as f32;
     div()
@@ -224,48 +206,42 @@ fn meter(label: &str, tally: &Tally, roles: Roles) -> Div {
                 .justify_between()
                 .items_end()
                 .gap(px(8.))
+                .child(ui::meta(label.to_string(), roles))
                 .child(
                     div()
-                        .text_size(px(12.))
-                        .text_color(roles.ink)
-                        .child(label.to_string()),
-                )
-                .child(
-                    div()
-                        .font_family("League Spartan")
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .text_size(px(20.))
-                        .text_color(roles.ink)
+                        .weight_strong()
+                        .text_color(roles.heading)
                         .child(count_label(tally)),
                 ),
         )
         .child(
             div()
                 .mt(px(4.))
-                .h(px(6.))
-                .border_1()
-                .border_color(roles.hairline)
-                .child(div().h_full().w(relative(share)).bg(roles.ink)),
+                .h(px(8.))
+                .bg(roles.fill)
+                .child(div().h_full().w(relative(share)).bg(roles.success)),
         )
 }
 
 fn pips(marks: Vec<Mark>, tally: Option<Tally>, roles: Roles) -> Div {
     let Some(tally) = tally else {
-        return div().text_color(roles.faint).child("–");
+        return div().text_color(roles.muted).child("–");
     };
     ui::row()
         .flex_wrap()
         .gap(px(8.))
         .child(
             ui::row()
-                .gap(px(2.))
+                .gap(px(4.))
                 .children(marks.into_iter().map(|mark| {
-                    let pip = div().size(px(10.)).border_1();
-                    match mark {
-                        Mark::Pass => pip.border_color(roles.ink).bg(roles.ink),
-                        Mark::Fail => pip.border_color(roles.faint),
-                        Mark::None => pip.border_color(roles.faint).border_dashed(),
-                    }
+                    ui::pip(
+                        match mark {
+                            Mark::Pass => Pip::Pass,
+                            Mark::Fail => Pip::Fail,
+                            Mark::None => Pip::Empty,
+                        },
+                        roles,
+                    )
                 })),
         )
         .child(div().text_color(roles.ink).child(count_label(&tally)))
@@ -275,15 +251,6 @@ fn flags(row: usize, signal: &CaseSignals, labels: &ArmLabels, roles: Roles) -> 
     if signal.suspicious.is_empty() && signal.errored == 0 {
         return None;
     }
-    let tag = |text: String, danger: bool| {
-        div()
-            .px(px(6.))
-            .text_size(px(12.))
-            .border_1()
-            .border_color(if danger { roles.danger } else { roles.hairline })
-            .text_color(if danger { roles.danger } else { roles.ink })
-            .child(text)
-    };
     Some(
         ui::row()
             .mt(px(4.))
@@ -291,18 +258,18 @@ fn flags(row: usize, signal: &CaseSignals, labels: &ArmLabels, roles: Roles) -> 
             .gap(px(4.))
             .children(signal.suspicious.iter().enumerate().map(|(index, kind)| {
                 let tip: SharedString = suspicious_text(*kind, labels).into();
-                tag(
-                    short_flag(*kind).to_string(),
+                ui::tag(
+                    short_flag(*kind),
                     *kind == SuspiciousKind::FailsInBoth,
+                    roles,
                 )
                 .id(("eval-flag", row * 8 + index))
-                .cursor(CursorStyle::Arrow)
                 .tooltip(move |window, cx| {
                     component::tooltip::Tooltip::new(tip.clone()).build(window, cx)
                 })
             }))
             .when(signal.errored != 0, |this| {
-                this.child(tag(errored_text(signal.errored), true))
+                this.child(ui::tag(errored_text(signal.errored), true, roles))
             }),
     )
 }
@@ -310,13 +277,11 @@ fn flags(row: usize, signal: &CaseSignals, labels: &ArmLabels, roles: Roles) -> 
 fn code_block(text: &str, roles: Roles) -> Div {
     div()
         .mt(px(4.))
-        .border_1()
-        .border_color(roles.hairline)
         .bg(roles.raised)
         .px(px(12.))
         .py(px(8.))
-        .font_family(MONO)
-        .text_size(px(12.))
+        .type_mono()
+        .type_small()
         .line_height(relative(1.6))
         .children(
             text.strip_suffix('\n')
@@ -731,7 +696,7 @@ impl EvalsView {
         let paragraph = |text: &'static str| div().mt(px(16.)).child(text);
         div()
             .mt(px(24.))
-            .child(ui::heading("This Skill has no Evals yet", roles))
+            .child(ui::title("This Skill has no Evals yet", roles))
             .child(div().mt(px(8.)).child(
                 "An Eval is a folder you write by hand under the Skill's evals/. An Eval run sends its prompt.md to the agent in two Arms, with the Skill and without it, and the files in graders/ score each answer.",
             ))
@@ -741,8 +706,8 @@ impl EvalsView {
                     .mt(px(16.))
                     .child(
                         div()
-                            .font_family(MONO)
-                            .text_size(px(12.))
+                            .type_mono()
+                            .type_small()
                             .text_color(roles.ink)
                             .child(file.path.clone()),
                     )
@@ -770,199 +735,52 @@ impl EvalsView {
         let view = summary_view(&last.baseline, |at| format_clock(at, now, offset));
         let signals: Vec<CaseSignals> = last.cases.iter().map(case_signals).collect();
         let suspicious = signals.iter().any(|signal| !signal.suspicious.is_empty());
-        let fired = fired_overall(&last.cases, FiredSide::First);
-        let fired_second = if view.fired_sides == 1 {
-            None
-        } else {
-            fired_overall(&last.cases, FiredSide::Second)
-        };
-        let helped = helped_overall(&last.cases);
-        let card = |title: &'static str| {
-            div()
-                .flex_1()
-                .min_w_0()
-                .border_1()
-                .border_color(roles.hairline)
-                .p(px(16.))
-                .child(div().text_size(px(12.)).text_color(roles.ink).child(title))
-        };
-        let fired_card = card("Did the Skill fire?").map(|this| match fired {
-            None => this.child(
-                div()
-                    .mt(px(8.))
-                    .text_color(roles.faint)
-                    .child(view.fired_text(None, None)),
-            ),
-            Some(fired) => this
-                .child(meter(view.columns.first, &fired, roles))
-                .when_some(fired_second, |this, second| {
-                    this.child(meter(view.columns.second, &second, roles))
-                })
-                .child(
-                    faint_text(view.fired_text(Some(&fired), fired_second.as_ref()), roles)
-                        .mt(px(12.)),
-                ),
-        });
-        let helped_card = card("Did it help?").map(|this| match helped {
-            None => this.child(
-                div()
-                    .mt(px(8.))
-                    .text_color(roles.faint)
-                    .child(view.helped_text(None)),
-            ),
-            Some(helped) => this
-                .child(meter(view.columns.first, &helped.with, roles))
-                .child(meter(view.columns.second, &helped.without, roles))
-                .child(
-                    div()
-                        .mt(px(12.))
-                        .text_size(px(12.))
-                        .text_color(roles.ink)
-                        .child(verdict(
-                            &helped.with,
-                            &helped.without,
-                            &view.labels,
-                            view.fired_sides == 2,
-                        )),
-                )
-                .when(helped.left_out != 0, |this| {
-                    this.child(
-                        faint_text(format!("{}.", view.left_out(helped.left_out)), roles)
-                            .mt(px(4.)),
-                    )
-                }),
-        });
-        let header_cell = |text: String| div().py(px(8.)).pr(px(12.)).child(text);
-        let first_column =
-            |content: Div| div().w(relative(0.34)).flex_none().min_w_0().child(content);
-        let rest_column = |content: Div| div().flex_1().min_w_0().child(content);
-        let header = ui::row()
-            .items_start()
-            .border_t_1()
-            .border_color(roles.hairline)
-            .text_size(px(12.))
-            .text_color(roles.faint)
-            .child(first_column(header_cell("Eval".into())))
-            .child(rest_column(header_cell("Fired".into())))
-            .child(rest_column(header_cell(view.columns.first.into())))
-            .child(rest_column(header_cell(view.columns.second.into())));
-        let rows = last
-            .cases
-            .iter()
-            .zip(&signals)
-            .enumerate()
-            .map(|(index, (case, signal))| {
-                let cell = |content: Div| div().py(px(12.)).pr(px(12.)).child(content);
-                ui::row()
-                    .items_start()
-                    .border_t_1()
-                    .border_color(roles.hairline)
-                    .child(first_column(cell(
-                        div()
-                            .child(div().text_color(roles.ink).child(case.name.clone()))
-                            .children(flags(index, signal, &view.labels, roles)),
-                    )))
-                    .child(rest_column(cell(pips(
-                        case.runs.with.iter().map(fired_mark).collect(),
-                        signal.fired,
-                        roles,
-                    ))))
-                    .child(rest_column(cell(pips(
-                        case.runs.with.iter().map(pass_mark).collect(),
-                        (case.with.total != 0).then_some(case.with),
-                        roles,
-                    ))))
-                    .child(rest_column(cell(pips(
-                        case.runs.without.iter().flatten().map(pass_mark).collect(),
-                        case.without,
-                        roles,
-                    ))))
-            });
         div()
             .mt(px(24.))
             .when_some(view.compared_note.clone(), |this, note| {
-                this.child(faint_text(note, roles).mb(px(12.)))
+                this.child(ui::meta(note, roles).mb(px(12.)))
             })
             .child(
                 ui::row()
                     .items_start()
                     .gap(px(12.))
-                    .child(fired_card)
-                    .child(helped_card),
+                    .child(fired_card(last, &view, roles))
+                    .child(helped_card(last, &view, roles)),
             )
             .child(
                 div()
                     .mt(px(32.))
-                    .child(
-                        div()
-                            .text_size(px(12.))
-                            .text_color(roles.ink)
-                            .child(format!("EACH EVAL · {}", last.cases.len())),
-                    )
-                    .child(div().mt(px(8.)).child(header).children(rows))
+                    .child(ui::title(
+                        format!("Each Eval · {}", last.cases.len()),
+                        roles,
+                    ))
+                    .child(eval_table(last, &signals, &view, roles))
                     .when(suspicious, |this| {
                         this.child(
-                            faint_text("Flagged Evals still count in the totals.", roles)
-                                .mt(px(8.)),
+                            ui::meta("Flagged Evals still count in the totals.", roles).mt(px(8.)),
                         )
                     }),
             )
     }
-}
 
-impl Render for EvalsView {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let roles = theme::roles(cx);
-        let Some(skill) = self.skill.clone() else {
-            return div().into_any_element();
-        };
-        let running = self.running();
-        let busy_with = self.busy_with().is_some();
-        let last = match &self.state {
-            PanelState::Ready { last, .. } => last.clone(),
-            _ => None,
-        };
-        let no_evals = matches!(self.state, PanelState::Ready { case_count: 0, .. });
-        let no_run_yet = last.is_none() && !no_evals;
-        let cancelling = running
-            && matches!(
-                self.state,
-                PanelState::Ready {
-                    cancelling: true,
-                    ..
-                }
-            );
-        let notice = unsaved_notice(&self.unsaved);
-        let now = now_ms();
+    fn render_header(&self, skill: &EvalSkill, last: Option<&EvalSummary>, roles: Roles) -> Div {
         let offset = self.utc_offset;
-        let view = summary_view(
-            &last
-                .as_ref()
-                .map_or(SummaryBaseline::None, |last| last.baseline),
-            |at| format_clock(at, now, offset),
-        );
-        let header = div()
+        div()
             .pt(px(16.))
-            .child(
-                div()
-                    .font_family("League Spartan")
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .text_size(px(30.))
-                    .text_color(roles.ink)
-                    .child("How this Skill performs"),
-            )
+            .child(ui::title("How this Skill performs", roles))
             .child(
                 ui::row()
-                    .mt(px(12.))
+                    .mt(px(8.))
                     .flex_wrap()
                     .gap(px(8.))
-                    .text_color(roles.ink)
+                    .text_color(roles.muted)
                     .child(
                         div()
-                            .font_weight(FontWeight::MEDIUM)
+                            .weight_medium()
+                            .text_color(roles.ink)
                             .child(skill.name.clone()),
                     )
-                    .when_some(last.as_ref(), |this, last| {
+                    .when_some(last, |this, last| {
                         this.child("·")
                             .child(format!(
                                 "Last run {}",
@@ -979,10 +797,16 @@ impl Render for EvalsView {
                                     }),
                             )
                     }),
-            );
-        let line = |text: String, color: Hsla| div().mt(px(12.)).text_color(color).child(text);
-        let state_line: Option<AnyElement> = match &self.state {
-            PanelState::Loading => Some(line("Looking for the Claude CLI…".into(), roles.faint).into_any_element()),
+            )
+    }
+
+    fn render_state_line(&self, roles: Roles, cx: &mut Context<Self>) -> Option<AnyElement> {
+        match &self.state {
+            PanelState::Loading => Some(
+                ui::meta("Looking for the Claude CLI…", roles)
+                    .mt(px(12.))
+                    .into_any_element(),
+            ),
             PanelState::NoCli => Some(
                 ui::row()
                     .mt(px(12.))
@@ -990,7 +814,7 @@ impl Render for EvalsView {
                     .gap(px(4.))
                     .child("The Claude CLI was not found on PATH or in ~/.local/bin. Install it and log in to run Evals.")
                     .child(
-                        text_action("eval-check-again", "Check again", roles)
+                        ui::link("eval-check-again", "Check again", roles)
                             .on_click(cx.listener(|this, _, _, cx| this.refresh(cx))),
                     )
                     .into_any_element(),
@@ -999,130 +823,290 @@ impl Render for EvalsView {
                 ui::row()
                     .mt(px(12.))
                     .gap(px(4.))
-                    .child(div().text_color(roles.danger).child(format!("{reason}.")))
+                    .child(ui::error_text(format!("{reason}."), roles))
                     .child(
-                        text_action("eval-try-again", "Try again", roles)
+                        ui::link("eval-try-again", "Try again", roles)
                             .on_click(cx.listener(|this, _, _, cx| this.refresh(cx))),
                     )
                     .into_any_element(),
             ),
             PanelState::Ready { .. } => None,
-        };
-        let ready = match &self.state {
-            PanelState::Ready { stopped, .. } => {
-                let run_disabled = running
-                    || busy_with
-                    || self.checking
-                    || self.dialog == EvalDialogState::Preparing;
-                let buttons = ui::row()
-                    .mt(px(20.))
-                    .flex_wrap()
-                    .gap(px(8.))
-                    .when(!no_evals, |this| {
-                        this.child(
-                            ui::sized_button(
-                                "eval-run",
-                                if running { "Running…" } else { "Run Evals" },
-                                ButtonKind::Strong,
-                                ButtonSize::Regular,
-                                run_disabled,
-                                roles,
-                            )
-                            .when(!run_disabled, |this| {
-                                this.on_click(cx.listener(|_, _, _, cx| cx.emit(EvalsEvent::Ask)))
-                            }),
-                        )
-                    })
-                    .when(running, |this| {
-                        this.child(
-                            ui::sized_button(
-                                "eval-cancel",
-                                if cancelling {
-                                    "Cancelling…"
-                                } else {
-                                    "Cancel"
-                                },
-                                ButtonKind::Default,
-                                ButtonSize::Regular,
-                                cancelling,
-                                roles,
-                            )
-                            .when(!cancelling, |this| {
-                                this.on_click(cx.listener(|this, _, _, cx| this.cancel(cx)))
-                            }),
-                        )
-                    })
-                    .when(last.is_some(), |this| {
-                        this.children(view.reports.iter().map(|report| {
-                            let part = report.part;
-                            ui::button(
-                                ("eval-report", part as usize),
-                                report.label,
-                                ButtonKind::Default,
-                                roles,
-                            )
-                            .on_click(cx.listener(move |this, _, _, cx| this.open_report(part, cx)))
-                        }))
-                    });
-                Some(
-                    div()
-                        .when_some(stopped.clone(), |this, stopped| {
-                            this.child(line(stopped_text(&stopped.message, stopped.cost_usd), roles.ink))
-                        })
-                        .when(no_evals, |this| this.child(self.render_guide(&skill, roles, cx)))
-                        .child(buttons)
-                        .when_some(notice, |this, notice| this.child(line(notice, roles.ink)))
-                        .when(no_run_yet, |this| {
-                            this.child(
-                                div()
-                                    .mt(px(24.))
-                                    .border_1()
-                                    .border_color(roles.hairline)
-                                    .px(px(16.))
-                                    .py(px(24.))
-                                    .flex()
-                                    .justify_center()
-                                    .text_color(roles.faint)
-                                    .child("No complete run yet. Run Evals to see how this Skill does."),
-                            )
-                        })
-                        .when_some(last.as_ref(), |this, last| this.child(self.render_summary(last, roles))),
+        }
+    }
+
+    fn render_buttons(
+        &self,
+        last: Option<&EvalSummary>,
+        view: &SummaryView,
+        roles: Roles,
+        cx: &mut Context<Self>,
+    ) -> Div {
+        let running = self.running();
+        let no_evals = matches!(self.state, PanelState::Ready { case_count: 0, .. });
+        let cancelling = running
+            && matches!(
+                self.state,
+                PanelState::Ready {
+                    cancelling: true,
+                    ..
+                }
+            );
+        let run_disabled = running
+            || self.busy_with().is_some()
+            || self.checking
+            || self.dialog == EvalDialogState::Preparing;
+        ui::row()
+            .mt(px(20.))
+            .flex_wrap()
+            .gap(px(8.))
+            .when(!no_evals, |this| {
+                this.child(
+                    ui::sized_button(
+                        "eval-run",
+                        if running { "Running…" } else { "Run Evals" },
+                        ButtonKind::Strong,
+                        ButtonSize::Regular,
+                        ui::Control::disabled(run_disabled),
+                        roles,
+                    )
+                    .when(!run_disabled, |this| {
+                        this.on_click(cx.listener(|_, _, _, cx| cx.emit(EvalsEvent::Ask)))
+                    }),
                 )
-            }
+            })
+            .when(running, |this| {
+                this.child(
+                    ui::sized_button(
+                        "eval-cancel",
+                        if cancelling {
+                            "Cancelling…"
+                        } else {
+                            "Cancel"
+                        },
+                        ButtonKind::Default,
+                        ButtonSize::Regular,
+                        ui::Control::disabled(cancelling),
+                        roles,
+                    )
+                    .when(!cancelling, |this| {
+                        this.on_click(cx.listener(|this, _, _, cx| this.cancel(cx)))
+                    }),
+                )
+            })
+            .when(last.is_some(), |this| {
+                this.children(view.reports.iter().map(|report| {
+                    let part = report.part;
+                    ui::button(
+                        ("eval-report", part as usize),
+                        report.label,
+                        ButtonKind::Default,
+                        roles,
+                    )
+                    .on_click(cx.listener(move |this, _, _, cx| this.open_report(part, cx)))
+                }))
+            })
+    }
+
+    fn render_ready(&self, skill: &EvalSkill, roles: Roles, cx: &mut Context<Self>) -> Option<Div> {
+        let PanelState::Ready { stopped, .. } = &self.state else {
+            return None;
+        };
+        let last = match &self.state {
+            PanelState::Ready { last, .. } => last.clone(),
             _ => None,
         };
+        let no_evals = matches!(self.state, PanelState::Ready { case_count: 0, .. });
+        let no_run_yet = last.is_none() && !no_evals;
+        let now = now_ms();
+        let offset = self.utc_offset;
+        let view = summary_view(
+            &last
+                .as_ref()
+                .map_or(SummaryBaseline::None, |last| last.baseline),
+            |at| format_clock(at, now, offset),
+        );
+        Some(
+            div()
+                .when_some(stopped.clone(), |this, stopped| {
+                    this.child(
+                        div()
+                            .mt(px(12.))
+                            .child(stopped_text(&stopped.message, stopped.cost_usd)),
+                    )
+                })
+                .when(no_evals, |this| {
+                    this.child(self.render_guide(skill, roles, cx))
+                })
+                .child(self.render_buttons(last.as_ref(), &view, roles, cx))
+                .when_some(unsaved_notice(&self.unsaved), |this, notice| {
+                    this.child(div().mt(px(12.)).child(notice))
+                })
+                .when(no_run_yet, |this| {
+                    this.child(
+                        div()
+                            .mt(px(24.))
+                            .bg(roles.raised)
+                            .px(px(16.))
+                            .py(px(24.))
+                            .flex()
+                            .justify_center()
+                            .text_color(roles.muted)
+                            .child("No complete run yet. Run Evals to see how this Skill does."),
+                    )
+                })
+                .when_some(last.as_ref(), |this, last| {
+                    this.child(self.render_summary(last, roles))
+                }),
+        )
+    }
+}
+
+fn summary_card(title: &'static str, roles: Roles) -> Div {
+    div()
+        .flex_1()
+        .min_w_0()
+        .bg(roles.raised)
+        .p(px(16.))
+        .child(ui::title(title, roles))
+}
+
+fn fired_card(last: &EvalSummary, view: &SummaryView, roles: Roles) -> Div {
+    let fired = fired_overall(&last.cases, FiredSide::First);
+    let fired_second = if view.fired_sides == 1 {
+        None
+    } else {
+        fired_overall(&last.cases, FiredSide::Second)
+    };
+    summary_card("Did the Skill fire?", roles).map(|this| match fired {
+        None => this.child(ui::meta(view.fired_text(None, None), roles).mt(px(8.))),
+        Some(fired) => this
+            .child(meter(view.columns.first, &fired, roles))
+            .when_some(fired_second, |this, second| {
+                this.child(meter(view.columns.second, &second, roles))
+            })
+            .child(
+                ui::meta(view.fired_text(Some(&fired), fired_second.as_ref()), roles).mt(px(12.)),
+            ),
+    })
+}
+
+fn helped_card(last: &EvalSummary, view: &SummaryView, roles: Roles) -> Div {
+    summary_card("Did it help?", roles).map(|this| match helped_overall(&last.cases) {
+        None => this.child(ui::meta(view.helped_text(None), roles).mt(px(8.))),
+        Some(helped) => this
+            .child(meter(view.columns.first, &helped.with, roles))
+            .child(meter(view.columns.second, &helped.without, roles))
+            .child(div().mt(px(12.)).text_color(roles.ink).child(verdict(
+                &helped.with,
+                &helped.without,
+                &view.labels,
+                view.fired_sides == 2,
+            )))
+            .when(helped.left_out != 0, |this| {
+                this.child(
+                    ui::meta(format!("{}.", view.left_out(helped.left_out)), roles).mt(px(4.)),
+                )
+            }),
+    })
+}
+
+fn eval_table(
+    last: &EvalSummary,
+    signals: &[CaseSignals],
+    view: &SummaryView,
+    roles: Roles,
+) -> Div {
+    let header_cell = |text: String| div().py(px(8.)).pr(px(12.)).child(text);
+    let first_column = |content: Div| div().w(relative(0.34)).flex_none().min_w_0().child(content);
+    let rest_column = |content: Div| div().flex_1().min_w_0().child(content);
+    let header = ui::row()
+        .items_start()
+        .px(px(12.))
+        .type_small()
+        .text_color(roles.muted)
+        .child(first_column(header_cell("Eval".into())))
+        .child(rest_column(header_cell("Fired".into())))
+        .child(rest_column(header_cell(view.columns.first.into())))
+        .child(rest_column(header_cell(view.columns.second.into())));
+    let rows = last
+        .cases
+        .iter()
+        .zip(signals)
+        .enumerate()
+        .map(|(index, (case, signal))| {
+            let cell = |content: Div| div().py(px(12.)).pr(px(12.)).child(content);
+            ui::row()
+                .items_start()
+                .px(px(12.))
+                .bg(roles.raised)
+                .child(first_column(cell(
+                    div()
+                        .child(div().text_color(roles.ink).child(case.name.clone()))
+                        .children(flags(index, signal, &view.labels, roles)),
+                )))
+                .child(rest_column(cell(pips(
+                    case.runs.with.iter().map(fired_mark).collect(),
+                    signal.fired,
+                    roles,
+                ))))
+                .child(rest_column(cell(pips(
+                    case.runs.with.iter().map(pass_mark).collect(),
+                    (case.with.total != 0).then_some(case.with),
+                    roles,
+                ))))
+                .child(rest_column(cell(pips(
+                    case.runs.without.iter().flatten().map(pass_mark).collect(),
+                    case.without,
+                    roles,
+                ))))
+        });
+    div()
+        .mt(px(8.))
+        .flex()
+        .flex_col()
+        .gap(px(4.))
+        .child(header)
+        .children(rows)
+}
+
+impl Render for EvalsView {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let roles = theme::roles(cx);
+        let Some(skill) = self.skill.clone() else {
+            return div().into_any_element();
+        };
+        let running = self.running();
+        let busy_with = self.busy_with().is_some();
+        let last = match &self.state {
+            PanelState::Ready { last, .. } => last.clone(),
+            _ => None,
+        };
+        let line = |text: String| div().mt(px(12.)).child(text);
         let busy_line = (busy_with && !running).then(|| {
-            line(
-                format!(
-                    "Evals are running for {}. One run at a time.",
-                    self.busy_name
-                        .clone()
-                        .unwrap_or_else(|| "another Skill".into())
-                ),
-                roles.ink,
-            )
+            line(format!(
+                "Evals are running for {}. One run at a time.",
+                self.busy_name
+                    .clone()
+                    .unwrap_or_else(|| "another Skill".into())
+            ))
         });
-        let running_line = running.then(|| {
-            line(
-                "Running Evals. This can take a few minutes.".into(),
-                roles.faint,
-            )
-        });
+        let running_line = running
+            .then(|| ui::meta("Running Evals. This can take a few minutes.", roles).mt(px(12.)));
         div()
             .id("evals-page")
             .size_full()
             .overflow_y_scroll()
             .track_scroll(&self.scroll)
-            .text_size(px(14.))
+            .type_body()
             .child(
                 column_row(
                     div()
-                        .child(header)
-                        .children(state_line)
+                        .child(self.render_header(&skill, last.as_ref(), roles))
+                        .children(self.render_state_line(roles, cx))
                         .when_some(self.message.clone(), |this, message| {
-                            this.child(line(message, roles.danger))
+                            this.child(ui::error_text(message, roles).mt(px(12.)))
                         })
-                        .children(ready)
+                        .children(self.render_ready(&skill, roles, cx))
                         .children(busy_line)
                         .children(running_line),
                 )

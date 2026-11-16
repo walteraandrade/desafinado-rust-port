@@ -15,7 +15,7 @@ use gpui_kit::{
 
 use crate::{
     theme::{self, Roles},
-    ui::{self, ButtonKind, ButtonSize},
+    ui::{self, ButtonKind, ButtonSize, Type as _},
 };
 
 actions!(
@@ -254,49 +254,40 @@ impl PreferencesPanel {
     ) -> AnyElement {
         let checked = option.id == selected;
         let id = option.id.clone();
-        div()
-            .id(SharedString::from(format!("theme-{}", option.id)))
-            .flex()
-            .flex_row()
-            .items_center()
-            .gap(px(10.))
-            .px(px(8.))
-            .py(px(7.))
-            .cursor_pointer()
-            .when(checked, |this| this.bg(roles.canvas))
-            .hover(|this| this.bg(roles.canvas))
-            .on_click(cx.listener(move |_, _, _, cx| theme::choose(&id, cx)))
-            .child(mark(checked, roles))
-            .child(
-                div()
-                    .min_w_0()
-                    .flex_1()
-                    .flex()
-                    .flex_col()
-                    .child(
-                        div()
-                            .truncate()
-                            .text_size(px(14.))
-                            .text_color(roles.ink)
-                            .child(option.title.clone()),
-                    )
-                    .child(
-                        div()
-                            .truncate()
-                            .text_size(px(12.))
-                            .text_color(roles.ink)
-                            .child(option.origin.clone()),
-                    ),
-            )
-            .child(
-                div().flex().flex_row().flex_none().children(
-                    option
-                        .colors
-                        .iter()
-                        .map(|color| div().w(px(12.)).h(px(20.)).bg(theme::hex(&color.hex))),
+        ui::option_row(
+            SharedString::from(format!("theme-{}", option.id)),
+            false,
+            checked,
+            roles,
+        )
+        .gap(px(12.))
+        .px(px(8.))
+        .py(px(8.))
+        .on_click(cx.listener(move |_, _, _, cx| theme::choose(&id, cx)))
+        .child(ui::check(checked, roles))
+        .child(
+            div()
+                .min_w_0()
+                .flex_1()
+                .flex()
+                .flex_col()
+                .child(div().truncate().child(option.title.clone()))
+                .child(
+                    div()
+                        .truncate()
+                        .type_small()
+                        .text_color(roles.muted)
+                        .child(option.origin.clone()),
                 ),
-            )
-            .into_any_element()
+        )
+        .child(
+            div().flex().flex_row().flex_none().children(
+                theme::swatches(option)
+                    .into_iter()
+                    .map(|color| div().w(px(12.)).h(px(20.)).bg(color)),
+            ),
+        )
+        .into_any_element()
     }
 
     fn render_theme_group(
@@ -307,20 +298,11 @@ impl PreferencesPanel {
         roles: Roles,
         cx: &mut Context<Self>,
     ) -> Div {
-        div()
-            .child(
-                div()
-                    .mt(px(16.))
-                    .mb(px(4.))
-                    .text_size(px(12.))
-                    .text_color(roles.ink)
-                    .child(label.to_uppercase()),
-            )
-            .children(
-                options
-                    .iter()
-                    .map(|option| self.render_theme_row(option, selected, roles, cx)),
-            )
+        div().mt(px(16.)).child(ui::label(label, roles)).children(
+            options
+                .iter()
+                .map(|option| self.render_theme_row(option, selected, roles, cx)),
+        )
     }
 
     fn render_setting_row(
@@ -328,32 +310,24 @@ impl PreferencesPanel {
         id: &'static str,
         title: &'static str,
         detail: &'static str,
-        event: fn() -> PreferencesEvent,
+        action: (&'static str, fn() -> PreferencesEvent),
         roles: Roles,
         cx: &mut Context<Self>,
     ) -> Div {
+        let (label, event) = action;
         ui::row()
             .gap(px(12.))
             .py(px(8.))
-            .border_b_1()
-            .border_color(roles.hairline)
             .child(
                 div()
                     .min_w_0()
                     .flex_1()
-                    .child(div().text_size(px(14.)).child(title))
-                    .child(div().text_size(px(12.)).child(detail)),
+                    .child(title)
+                    .child(ui::meta(detail, roles)),
             )
             .child(
-                ui::sized_button(
-                    id,
-                    "Change",
-                    ButtonKind::Default,
-                    ButtonSize::Small,
-                    false,
-                    roles,
-                )
-                .on_click(cx.listener(move |_, _, _, cx| cx.emit(event()))),
+                ui::small_button(id, label, ButtonKind::Default, roles)
+                    .on_click(cx.listener(move |_, _, _, cx| cx.emit(event()))),
             )
     }
 
@@ -378,56 +352,43 @@ impl PreferencesPanel {
             .key_context("QuickActionForm")
             .my(px(8.))
             .p(px(12.))
-            .border_1()
-            .border_color(roles.hairline)
             .bg(roles.canvas)
             .flex()
             .flex_col()
-            .child(div().text_size(px(12.)).child("Name"))
-            .child(
-                div()
-                    .mt(px(4.))
-                    .key_context("QuickActionName")
-                    .child(ui::field(
-                        Input::new(&draft.label).appearance(false),
-                        label_focused,
-                        draft.errors.label.is_some(),
-                        roles,
-                    )),
-            )
+            .child(ui::label("Name", roles))
+            .child(div().key_context("QuickActionName").child(ui::field(
+                Input::new(&draft.label).appearance(false),
+                label_focused,
+                draft.errors.label.is_some(),
+                roles,
+            )))
             .when_some(draft.errors.label.clone(), |this, error| {
-                this.child(error_line(error, roles))
+                this.child(ui::problem_list(vec![error], roles))
             })
-            .child(div().mt(px(12.)).text_size(px(12.)).child("Instruction"))
-            .child(div().mt(px(4.)).child(ui::field(
+            .child(ui::label("Instruction", roles).mt(px(12.)))
+            .child(ui::field(
                 Textarea::new(&draft.instruction).appearance(false),
                 instruction_focused,
                 draft.errors.instruction.is_some(),
                 roles,
-            )))
+            ))
             .when_some(draft.errors.instruction.clone(), |this, error| {
-                this.child(error_line(error, roles))
+                this.child(ui::problem_list(vec![error], roles))
             })
             .child(
-                div()
-                    .id("quick-action-skill-only")
+                ui::option_row("quick-action-skill-only", false, false, roles)
                     .mt(px(8.))
                     .px(px(8.))
-                    .py(px(7.))
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .gap(px(10.))
-                    .cursor_pointer()
-                    .hover(|this| this.bg(roles.raised))
+                    .py(px(8.))
+                    .gap(px(12.))
                     .on_click(cx.listener(|this, _, _, cx| {
                         if let Some(draft) = this.draft.as_mut() {
                             draft.skill_only = !draft.skill_only;
                             cx.notify();
                         }
                     }))
-                    .child(mark(skill_only, roles))
-                    .child(div().text_size(px(14.)).child("Only in skills")),
+                    .child(ui::check(skill_only, roles))
+                    .child("Only in skills"),
             )
             .child(
                 ui::row()
@@ -441,7 +402,7 @@ impl PreferencesPanel {
                             })),
                     )
                     .child(
-                        ui::button("quick-action-submit", submit, ButtonKind::Default, roles)
+                        ui::button("quick-action-submit", submit, ButtonKind::Strong, roles)
                             .on_click(cx.listener(|this, _, window, cx| {
                                 this.submit_draft(&SubmitQuickActionDraft, window, cx)
                             })),
@@ -462,117 +423,134 @@ impl PreferencesPanel {
         if self.editing == Editing::Edit(id.clone()) {
             return self.render_draft(roles, window, cx);
         }
-        let small = |name: &str, label: &'static str, disabled: bool| {
-            ui::sized_button(
-                SharedString::from(format!("{name}-{index}")),
-                label,
-                ButtonKind::Default,
-                ButtonSize::Small,
-                disabled,
-                roles,
-            )
-        };
-        let row = ui::row()
+        if self.editing == Editing::Delete(id.clone()) {
+            return self.render_delete(index, slot, roles, cx);
+        }
+        let on = slot.on;
+        let toggle_id = id.clone();
+        ui::row()
             .id(("quick-action", index))
             .min_h(px(36.))
             .gap(px(8.))
-            .border_b_1()
-            .border_color(roles.hairline);
-        if self.editing == Editing::Delete(id.clone()) {
-            let keep = id.clone();
-            return row
-                .child(
-                    div()
-                        .min_w_0()
-                        .flex_1()
-                        .truncate()
-                        .pl(px(8.))
-                        .text_size(px(14.))
-                        .child(format!("Delete “{}”?", slot.action.label)),
-                )
-                .child(
-                    ui::row()
-                        .gap(px(4.))
-                        .child(small("keep", "Keep", false).on_click(cx.listener(
-                            move |this, _, _, cx| {
+            .child(
+                ui::option_row(("quick-action-toggle", index), false, false, roles)
+                    .min_w_0()
+                    .flex_1()
+                    .px(px(8.))
+                    .py(px(8.))
+                    .gap(px(12.))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.change(|s| toggle_quick_action(s, &toggle_id, !on), cx)
+                    }))
+                    .child(ui::check(on, roles))
+                    .child(
+                        div()
+                            .min_w_0()
+                            .flex_1()
+                            .truncate()
+                            .child(slot.action.label.clone()),
+                    )
+                    .when(slot.action.skill_only, |this| {
+                        this.child(ui::meta("Skill", roles).flex_none())
+                    }),
+            )
+            .child(self.render_quick_action_buttons(index, slot, roles, cx))
+            .into_any_element()
+    }
+
+    fn render_delete(
+        &self,
+        index: usize,
+        slot: &QuickActionSlot,
+        roles: Roles,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let id = slot.action.id.clone();
+        let keep = id.clone();
+        ui::row()
+            .id(("quick-action", index))
+            .min_h(px(36.))
+            .gap(px(8.))
+            .child(
+                div()
+                    .min_w_0()
+                    .flex_1()
+                    .truncate()
+                    .pl(px(8.))
+                    .child(format!("Delete “{}”?", slot.action.label)),
+            )
+            .child(
+                ui::row()
+                    .gap(px(4.))
+                    .child(
+                        ui::small_button(("keep", index), "Keep", ButtonKind::Default, roles)
+                            .on_click(cx.listener(move |this, _, _, cx| {
                                 if this.editing == Editing::Delete(keep.clone()) {
                                     this.editing = Editing::None;
                                     cx.notify();
                                 }
-                            },
-                        )))
-                        .child(
-                            small("confirm-delete", "Delete", false).on_click(cx.listener(
-                                move |this, _, _, cx| {
-                                    this.editing = Editing::None;
-                                    this.change(|s| remove_user_quick_action(s, &id), cx);
-                                },
-                            )),
-                        ),
-                )
-                .into_any_element();
-        }
-        let on = slot.on;
+                            })),
+                    )
+                    .child(
+                        ui::small_button(
+                            ("confirm-delete", index),
+                            "Delete",
+                            ButtonKind::Danger,
+                            roles,
+                        )
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.editing = Editing::None;
+                            this.change(|s| remove_user_quick_action(s, &id), cx);
+                        })),
+                    ),
+            )
+            .into_any_element()
+    }
+
+    fn render_quick_action_buttons(
+        &self,
+        index: usize,
+        slot: &QuickActionSlot,
+        roles: Roles,
+        cx: &mut Context<Self>,
+    ) -> Div {
+        let id = slot.action.id.clone();
         let last = index + 1 == self.settings.len();
         let busy = matches!(self.editing, Editing::New | Editing::Edit(_));
         let mine = is_user_quick_action(&slot.action);
-        let toggle_id = id.clone();
         let up_id = id.clone();
         let down_id = id.clone();
         let edit_slot = slot.clone();
-        let delete_id = id.clone();
-        row.child(
-            div()
-                .id(("quick-action-toggle", index))
-                .min_w_0()
-                .flex_1()
-                .px(px(8.))
-                .py(px(7.))
-                .flex()
-                .flex_row()
-                .items_center()
-                .gap(px(10.))
-                .cursor_pointer()
-                .hover(|this| this.bg(roles.canvas))
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    this.change(|s| toggle_quick_action(s, &toggle_id, !on), cx)
-                }))
-                .child(mark(on, roles))
-                .child(
-                    div()
-                        .min_w_0()
-                        .flex_1()
-                        .truncate()
-                        .text_size(px(14.))
-                        .child(slot.action.label.clone()),
-                )
-                .when(slot.action.skill_only, |this| {
-                    this.child(
-                        div()
-                            .flex_none()
-                            .text_size(px(11.))
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .text_color(roles.faint)
-                            .child("SKILL"),
-                    )
-                }),
-        )
-        .child(
-            ui::row()
-                .flex_none()
-                .gap(px(4.))
-                .child(small("up", "↑", index == 0).when(index > 0, |this| {
+        let small = |name: &'static str, label: &'static str, kind: ButtonKind, disabled: bool| {
+            ui::sized_button(
+                SharedString::from(format!("{name}-{index}")),
+                label,
+                kind,
+                ButtonSize::Small,
+                ui::Control::disabled(disabled),
+                roles,
+            )
+        };
+        ui::row()
+            .flex_none()
+            .gap(px(4.))
+            .child(
+                small("up", "↑", ButtonKind::Default, index == 0).when(index > 0, |this| {
                     this.on_click(cx.listener(move |this, _, _, cx| {
                         this.change(|s| move_quick_action(s, &up_id, -1), cx)
                     }))
-                }))
-                .child(small("down", "↓", last).when(!last, |this| {
+                }),
+            )
+            .child(
+                small("down", "↓", ButtonKind::Default, last).when(!last, |this| {
                     this.on_click(cx.listener(move |this, _, _, cx| {
                         this.change(|s| move_quick_action(s, &down_id, 1), cx)
                     }))
-                }))
-                .when(mine, |this| {
-                    this.child(small("edit", "Edit", busy).when(!busy, |this| {
+                }),
+            )
+            .when(mine, |this| {
+                this.child(
+                    small("edit", "Edit", ButtonKind::Default, busy).when(!busy, |this| {
                         this.on_click(cx.listener(move |this, _, window, cx| {
                             this.start_draft(
                                 Editing::Edit(edit_slot.action.id.clone()),
@@ -581,35 +559,134 @@ impl PreferencesPanel {
                                 cx,
                             )
                         }))
-                    }))
-                    .child(small("delete", "Delete", false).on_click(cx.listener(
+                    }),
+                )
+                .child(
+                    small("delete", "Delete", ButtonKind::Danger, false).on_click(cx.listener(
                         move |this, _, _, cx| {
-                            this.editing = Editing::Delete(delete_id.clone());
+                            this.editing = Editing::Delete(id.clone());
                             this.draft = None;
                             cx.notify();
                         },
-                    )))
-                }),
-        )
-        .into_any_element()
+                    )),
+                )
+            })
     }
-}
 
-fn error_line(text: String, roles: Roles) -> Div {
-    div()
-        .mt(px(4.))
-        .text_size(px(12.))
-        .text_color(roles.danger)
-        .child(text)
-}
+    fn render_theme_section(&self, roles: Roles, cx: &mut Context<Self>) -> Div {
+        let state = theme::state(cx).clone();
+        let selected = state.selected();
+        let of_mode =
+            |mode| -> Vec<ThemeOption> { themes_of_mode(mode).into_iter().cloned().collect() };
+        div()
+            .child(ui::title("Theme", roles).pt(px(16.)))
+            .when_some(state.omarchy_option(), |this, option| {
+                this.child(self.render_theme_group(
+                    "This machine",
+                    vec![option],
+                    &selected,
+                    roles,
+                    cx,
+                ))
+            })
+            .child(self.render_theme_group("Dark", of_mode(ThemeMode::Dark), &selected, roles, cx))
+            .child(self.render_theme_group(
+                "Light",
+                of_mode(ThemeMode::Light),
+                &selected,
+                roles,
+                cx,
+            ))
+            .child(ui::meta(
+                "Colors come from A Dictionary of Color Combinations by Sanzo Wada (Seigensha), with data by Matt DesLauriers. Each palette joins two of the book's combinations, so the pairing is ours, not Wada's. Names are Duke Ellington compositions.",
+                roles,
+            ).mt(px(20.)))
+    }
 
-pub fn mark(checked: bool, roles: Roles) -> Div {
-    div()
-        .size(px(10.))
-        .flex_none()
-        .border_1()
-        .border_color(if checked { roles.accent } else { roles.faint })
-        .when(checked, |this| this.bg(roles.accent))
+    fn render_ai_section(&self, roles: Roles, cx: &mut Context<Self>) -> Div {
+        div()
+            .child(ui::title("AI", roles).mt(px(24.)))
+            .child(self.render_setting_row(
+                "preferences-model",
+                "Model",
+                "The OpenRouter model that writes Suggestions",
+                ("Change", || PreferencesEvent::OpenModel),
+                roles,
+                cx,
+            ))
+            .child(self.render_setting_row(
+                "preferences-key",
+                "OpenRouter key",
+                "Lets Desafinado call OpenRouter",
+                ("Change", || PreferencesEvent::OpenKey),
+                roles,
+                cx,
+            ))
+            .child(self.render_setting_row(
+                "preferences-spend",
+                "AI spend",
+                "Calls and cost from this machine's records",
+                ("Show", || PreferencesEvent::OpenSpend),
+                roles,
+                cx,
+            ))
+    }
+
+    fn render_quick_actions_section(
+        &self,
+        roles: Roles,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> Div {
+        let settings = self.settings.clone();
+        let editing_any = matches!(self.editing, Editing::Edit(_));
+        let quick_actions = settings
+            .iter()
+            .enumerate()
+            .map(|(index, slot)| self.render_quick_action(index, slot, roles, window, cx))
+            .collect::<Vec<_>>();
+        let new_form =
+            matches!(self.editing, Editing::New).then(|| self.render_draft(roles, window, cx));
+        div()
+            .child(ui::title("Quick actions", roles).pt(px(24.)))
+            .child(
+                ui::meta(
+                    "The ones you turn on show in the Ask AI bubble, in this order.",
+                    roles,
+                )
+                .mt(px(4.)),
+            )
+            .child(div().mt(px(8.)).children(quick_actions))
+            .map(|this| match new_form {
+                Some(form) => this.child(form),
+                None => this.child(
+                    div().mt(px(12.)).flex().child(
+                        ui::sized_button(
+                            "quick-action-new",
+                            "New Quick action",
+                            ButtonKind::Default,
+                            ButtonSize::Regular,
+                            ui::Control::disabled(editing_any),
+                            roles,
+                        )
+                        .when(!editing_any, |this| {
+                            this.on_click(cx.listener(|this, _, window, cx| {
+                                this.start_draft(
+                                    Editing::New,
+                                    QuickActionDraft {
+                                        label: String::new(),
+                                        instruction: String::new(),
+                                        skill_only: false,
+                                    },
+                                    window,
+                                    cx,
+                                )
+                            }))
+                        }),
+                    ),
+                ),
+            })
+    }
 }
 
 impl Focusable for PreferencesPanel {
@@ -621,26 +698,6 @@ impl Focusable for PreferencesPanel {
 impl Render for PreferencesPanel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let roles = theme::roles(cx);
-        let state = theme::state(cx).clone();
-        let selected = state.selected();
-        let dark: Vec<ThemeOption> = themes_of_mode(ThemeMode::Dark)
-            .into_iter()
-            .cloned()
-            .collect();
-        let light: Vec<ThemeOption> = themes_of_mode(ThemeMode::Light)
-            .into_iter()
-            .cloned()
-            .collect();
-        let omarchy = state.omarchy_option();
-        let settings = self.settings.clone();
-        let editing_any = matches!(self.editing, Editing::Edit(_));
-        let quick_actions = settings
-            .iter()
-            .enumerate()
-            .map(|(index, slot)| self.render_quick_action(index, slot, roles, window, cx))
-            .collect::<Vec<_>>();
-        let new_form =
-            matches!(self.editing, Editing::New).then(|| self.render_draft(roles, window, cx));
         div()
             .id("preferences")
             .key_context("Preferences")
@@ -653,8 +710,7 @@ impl Render for PreferencesPanel {
             .flex()
             .flex_col()
             .bg(roles.raised)
-            .border_l_1()
-            .border_color(roles.hairline)
+            .type_body()
             .text_color(roles.ink)
             .child(
                 ui::row()
@@ -662,9 +718,7 @@ impl Render for PreferencesPanel {
                     .gap(px(8.))
                     .px(px(20.))
                     .py(px(16.))
-                    .border_b_1()
-                    .border_color(roles.hairline)
-                    .child(ui::heading("Preferences", roles))
+                    .child(ui::title("Preferences", roles))
                     .child(
                         ui::button("preferences-done", "Done", ButtonKind::Default, roles)
                             .on_click(cx.listener(|_, _, _, cx| cx.emit(PreferencesEvent::Close))),
@@ -679,131 +733,10 @@ impl Render for PreferencesPanel {
                     .track_scroll(&self.scroll)
                     .px(px(20.))
                     .pb(px(20.))
-                    .child(
-                        div()
-                            .pt(px(16.))
-                            .text_size(px(14.))
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .child("Theme"),
-                    )
-                    .when_some(omarchy, |this, option| {
-                        this.child(self.render_theme_group(
-                            "This machine",
-                            vec![option],
-                            &selected,
-                            roles,
-                            cx,
-                        ))
-                    })
-                    .child(self.render_theme_group("Dark", dark, &selected, roles, cx))
-                    .child(self.render_theme_group("Light", light, &selected, roles, cx))
-                    .child(div().mt(px(20.)).text_size(px(12.)).child(
-                        "Colors come from A Dictionary of Color Combinations by Sanzo Wada (Seigensha), with data by Matt DesLauriers. Each palette joins two of the book's combinations, so the pairing is ours, not Wada's. Names are Duke Ellington compositions.",
-                    ))
-                    .child(
-                        div()
-                            .mt(px(24.))
-                            .text_size(px(14.))
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .child("AI"),
-                    )
-                    .child(self.render_setting_row(
-                        "preferences-model",
-                        "Model",
-                        "The OpenRouter model that writes Suggestions",
-                        || PreferencesEvent::OpenModel,
-                        roles,
-                        cx,
-                    ))
-                    .child(self.render_setting_row(
-                        "preferences-key",
-                        "OpenRouter key",
-                        "Lets Desafinado call OpenRouter",
-                        || PreferencesEvent::OpenKey,
-                        roles,
-                        cx,
-                    ))
-                    .child(
-                        ui::row()
-                            .gap(px(12.))
-                            .py(px(8.))
-                            .border_b_1()
-                            .border_color(roles.hairline)
-                            .child(
-                                div()
-                                    .min_w_0()
-                                    .flex_1()
-                                    .child(div().text_size(px(14.)).child("AI spend"))
-                                    .child(
-                                        div()
-                                            .text_size(px(12.))
-                                            .child("Calls and cost from this machine's records"),
-                                    ),
-                            )
-                            .child(
-                                ui::sized_button(
-                                    "preferences-spend",
-                                    "Show",
-                                    ButtonKind::Default,
-                                    ButtonSize::Small,
-                                    false,
-                                    roles,
-                                )
-                                .on_click(
-                                    cx.listener(|_, _, _, cx| cx.emit(PreferencesEvent::OpenSpend)),
-                                ),
-                            ),
-                    )
-                    .child(
-                        div()
-                            .pt(px(24.))
-                            .text_size(px(14.))
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .child("Quick actions"),
-                    )
-                    .child(
-                        div()
-                            .mt(px(4.))
-                            .text_size(px(12.))
-                            .child("The ones you turn on show in the Ask AI bubble, in this order."),
-                    )
-                    .child(div().mt(px(8.)).children(quick_actions))
-                    .map(|this| match new_form {
-                        Some(form) => this.child(form),
-                        None => this.child(
-                            div().mt(px(12.)).flex().child(
-                                ui::sized_button(
-                                    "quick-action-new",
-                                    "New Quick action",
-                                    ButtonKind::Default,
-                                    ButtonSize::Regular,
-                                    editing_any,
-                                    roles,
-                                )
-                                .when(!editing_any, |this| {
-                                    this.on_click(cx.listener(|this, _, window, cx| {
-                                        this.start_draft(
-                                            Editing::New,
-                                            QuickActionDraft {
-                                                label: String::new(),
-                                                instruction: String::new(),
-                                                skill_only: false,
-                                            },
-                                            window,
-                                            cx,
-                                        )
-                                    }))
-                                }),
-                            ),
-                        ),
-                    })
-                    .child(
-                        div()
-                            .mt(px(32.))
-                            .text_size(px(12.))
-                            .text_color(roles.faint)
-                            .child(version_line()),
-                    ),
+                    .child(self.render_theme_section(roles, cx))
+                    .child(self.render_ai_section(roles, cx))
+                    .child(self.render_quick_actions_section(roles, window, cx))
+                    .child(ui::meta(version_line(), roles).mt(px(32.))),
             )
     }
 }

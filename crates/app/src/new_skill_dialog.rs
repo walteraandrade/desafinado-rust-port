@@ -99,51 +99,35 @@ impl NewSkillDialog {
 
     fn render_roots(&self, roles: Roles, cx: &mut Context<Self>) -> AnyElement {
         if self.roots.is_empty() {
-            return div()
-                .text_size(px(14.))
-                .text_color(roles.danger)
-                .child("No folder in the Library can be read. Add one first.")
-                .into_any_element();
+            return ui::error_text(
+                "No folder in the Library can be read. Add one first.",
+                roles,
+            )
+            .into_any_element();
         }
         div()
             .flex()
             .flex_col()
-            .border_1()
-            .border_color(roles.hairline)
             .bg(roles.fill)
             .children(self.roots.iter().enumerate().map(|(index, root)| {
                 let chosen = Some(&root.root) == self.root.as_ref();
                 let value = root.root.clone();
-                div()
-                    .id(("new-skill-root", index))
-                    .h(px(28.))
-                    .px(px(10.))
-                    .flex()
-                    .flex_row()
-                    .items_center()
+                let id = ("new-skill-root", index);
+                let row = if self.busy {
+                    ui::disabled_row(id, roles)
+                } else {
+                    ui::option_row(id, false, chosen, roles).on_click(cx.listener(
+                        move |this, _, _, cx| {
+                            this.root = Some(value.clone());
+                            this.failure = None;
+                            cx.notify();
+                        },
+                    ))
+                };
+                row.h(px(32.))
+                    .px(px(12.))
                     .gap(px(8.))
-                    .text_size(px(14.))
-                    .text_color(roles.ink)
-                    .border_1()
-                    .border_color(if chosen { roles.accent } else { roles.fill })
-                    .when(chosen, |this| this.bg(roles.raised))
-                    .when(!self.busy, |this| {
-                        this.cursor_pointer()
-                            .hover(|this| this.bg(roles.fill_hover))
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.root = Some(value.clone());
-                                this.failure = None;
-                                cx.notify();
-                            }))
-                    })
-                    .child(
-                        div()
-                            .size(px(10.))
-                            .flex_none()
-                            .border_1()
-                            .border_color(roles.accent)
-                            .when(chosen, |this| this.bg(roles.accent)),
-                    )
+                    .child(ui::check(chosen, roles))
                     .child(div().truncate().child(root.label.clone()))
             }))
             .into_any_element()
@@ -168,14 +152,11 @@ impl Render for NewSkillDialog {
                 .key_context("NewSkillDialog")
                 .on_action(cx.listener(Self::submit))
                 .on_action(cx.listener(Self::cancel))
-                .child(ui::heading("New skill", roles))
-                .child(
-                    ui::detail(
-                        "Creates a folder and a SKILL.md from a template, then opens it.",
-                        roles,
-                    )
-                    .text_size(px(14.)),
-                )
+                .child(ui::title("New skill", roles))
+                .child(ui::detail(
+                    "Creates a folder and a SKILL.md from a template, then opens it.",
+                    roles,
+                ))
                 .child(
                     div()
                         .mt(px(16.))
@@ -200,14 +181,14 @@ impl Render for NewSkillDialog {
                                     this.child(ui::problem_list(problems, roles))
                                 })
                                 .child(
-                                    div()
-                                        .mt(px(4.))
-                                        .truncate()
-                                        .text_size(px(12.))
-                                        .text_color(roles.faint)
-                                        .child(draft.location.clone().unwrap_or_else(|| {
+                                    ui::meta(
+                                        draft.location.clone().unwrap_or_else(|| {
                                             "Lowercase letters, digits and hyphens".into()
-                                        })),
+                                        }),
+                                        roles,
+                                    )
+                                    .mt(px(4.))
+                                    .truncate(),
                                 ),
                         ),
                 )
@@ -219,7 +200,7 @@ impl Render for NewSkillDialog {
                                 "Cancel",
                                 ButtonKind::Default,
                                 ButtonSize::Regular,
-                                self.busy,
+                                ui::Control::disabled(self.busy),
                                 roles,
                             )
                             .when(!self.busy, |this| {
@@ -234,7 +215,7 @@ impl Render for NewSkillDialog {
                                 "Create",
                                 ButtonKind::Strong,
                                 ButtonSize::Regular,
-                                !ready,
+                                ui::Control::disabled(!ready),
                                 roles,
                             )
                             .when(ready, |this| {

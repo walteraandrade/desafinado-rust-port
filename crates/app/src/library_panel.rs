@@ -31,7 +31,7 @@ use gpui_kit::{
 
 use crate::{
     theme::{self, Roles},
-    ui::{self, ButtonKind, ButtonSize},
+    ui::{self, ButtonKind, ButtonSize, ToastTone, Type as _},
 };
 
 pub const RAIL_WIDTH: f32 = 40.;
@@ -100,7 +100,7 @@ pub enum LibraryEvent {
     OpenResult { path: String },
     NewSkill,
     Escape,
-    Notify(String),
+    Notify(String, ToastTone),
     RootsChanged,
     SearchLeft,
 }
@@ -449,13 +449,19 @@ impl LibraryPanel {
     }
 
     fn added(&mut self, result: AddRootResult, cx: &mut Context<Self>) {
-        let text = match result {
+        let (text, tone) = match result {
             AddRootResult::Cancelled => return,
-            AddRootResult::Failed { reason } => format!("Could not add the folder: {reason}"),
-            AddRootResult::Added { label } => format!("Added {label}"),
-            AddRootResult::Duplicate { label } => format!("{label} is already in the Library"),
+            AddRootResult::Failed { reason } => (
+                format!("Could not add the folder: {reason}"),
+                ToastTone::Danger,
+            ),
+            AddRootResult::Added { label } => (format!("Added {label}"), ToastTone::Success),
+            AddRootResult::Duplicate { label } => (
+                format!("{label} is already in the Library"),
+                ToastTone::Neutral,
+            ),
         };
-        cx.emit(LibraryEvent::Notify(text));
+        cx.emit(LibraryEvent::Notify(text, tone));
         cx.emit(LibraryEvent::RootsChanged);
         self.refresh(cx);
     }
@@ -474,12 +480,15 @@ impl LibraryPanel {
         });
         let result = with_deps(&self.user_data, |deps| remove_library_root(deps, &path));
         let removed = result == RemoveRootResult::Removed;
-        cx.emit(LibraryEvent::Notify(match result {
-            RemoveRootResult::Removed => format!("Removed {}", node.name),
-            RemoveRootResult::Failed { reason } => {
-                format!("Could not remove {}: {reason}", node.name)
+        cx.emit(match result {
+            RemoveRootResult::Removed => {
+                LibraryEvent::Notify(format!("Removed {}", node.name), ToastTone::Neutral)
             }
-        }));
+            RemoveRootResult::Failed { reason } => LibraryEvent::Notify(
+                format!("Could not remove {}: {reason}", node.name),
+                ToastTone::Danger,
+            ),
+        });
         cx.emit(LibraryEvent::RootsChanged);
         if removed && neighbor.is_some() {
             self.focused_id = neighbor;
@@ -527,28 +536,20 @@ impl LibraryPanel {
     }
 
     fn render_header(&self, roles: Roles) -> impl IntoElement {
-        div()
+        ui::row()
             .px(px(12.))
             .pt(px(24.))
             .pb(px(12.))
-            .flex()
-            .flex_row()
-            .items_baseline()
-            .child(
-                div()
-                    .font_family("League Spartan")
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .text_size(px(18.))
-                    .text_color(roles.ink)
-                    .child("Library"),
-            )
+            .child(ui::title("Library", roles))
             .when(self.is_ready(), |this| {
-                this.child(
-                    div()
-                        .text_size(px(12.))
-                        .text_color(roles.faint)
-                        .child(format!("\u{a0}· {} skills", skill_count(self.roots()))),
-                )
+                let count = skill_count(self.roots());
+                this.child(ui::meta(
+                    format!(
+                        "\u{a0}· {count} {}",
+                        if count == 1 { "skill" } else { "skills" }
+                    ),
+                    roles,
+                ))
             })
     }
 
@@ -559,18 +560,18 @@ impl LibraryPanel {
         let show_list = self.search_focused && !results.is_empty();
         let show_empty = self.search_focused && searching && results.is_empty();
         let max_height = window.viewport_size().height * 0.6;
-        let mut list: Vec<AnyElement> = Vec::new();
-        if show_list {
-            for (index, result) in results.into_iter().enumerate() {
-                if index > 0 {
-                    list.push(div().h(px(1.)).bg(roles.raised).into_any_element());
-                }
-                list.push(
+        let list: Vec<AnyElement> = if show_list {
+            results
+                .into_iter()
+                .enumerate()
+                .map(|(index, result)| {
                     self.render_result(index, index == current, result, roles, cx)
-                        .into_any_element(),
-                );
-            }
-        }
+                        .into_any_element()
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
         div()
             .px(px(12.))
             .pb(px(12.))
@@ -603,27 +604,20 @@ impl LibraryPanel {
                         .mt(px(4.))
                         .max_h(max_height)
                         .overflow_y_scroll()
-                        .border_1()
-                        .border_color(roles.hairline)
-                        .bg(roles.fill)
+                        .bg(roles.overlay)
                         .children(list),
                 )
             })
             .when(show_empty, |this| {
                 this.child(
-                    div()
-                        .mt(px(4.))
-                        .px(px(10.))
-                        .py(px(8.))
-                        .border_1()
-                        .border_color(roles.hairline)
-                        .bg(roles.fill)
-                        .text_size(px(12.))
-                        .text_color(roles.ink)
-                        .child(format!(
-                            "No Skill or file matches “{}”",
-                            self.search_text.trim()
-                        )),
+                    ui::meta(
+                        format!("No Skill or file matches “{}”", self.search_text.trim()),
+                        roles,
+                    )
+                    .mt(px(4.))
+                    .px(px(8.))
+                    .py(px(8.))
+                    .bg(roles.overlay),
                 )
             })
             .into_any_element()
@@ -638,18 +632,11 @@ impl LibraryPanel {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let path = result.path.clone();
-        div()
-            .id(("library-search-item", index))
-            .flex()
+        ui::option_row(("library-search-item", index), selected, false, roles)
             .flex_col()
-            .gap(px(2.))
-            .px(px(10.))
-            .py(px(6.))
-            .text_color(roles.ink)
-            .cursor_pointer()
-            .border_1()
-            .border_color(if selected { roles.accent } else { roles.fill })
-            .when(selected, |this| this.bg(roles.raised))
+            .items_start()
+            .px(px(8.))
+            .py(px(8.))
             .on_mouse_down(MouseButton::Left, |_, window, _| window.prevent_default())
             .on_mouse_move(cx.listener(move |this, _: &MouseMoveEvent, _, cx| {
                 if this.search_active != index {
@@ -661,40 +648,30 @@ impl LibraryPanel {
                 cx.emit(LibraryEvent::OpenResult { path: path.clone() });
             }))
             .child(
-                div()
-                    .flex()
-                    .flex_row()
-                    .items_baseline()
+                ui::row()
+                    .w_full()
                     .justify_between()
                     .gap(px(8.))
-                    .child(div().min_w_0().text_size(px(14.)).child(marked(
-                        &result.label,
-                        result.label_match,
-                        roles,
-                    )))
+                    .child(
+                        div()
+                            .min_w_0()
+                            .child(marked(&result.label, result.label_match, roles)),
+                    )
                     .when(result.kind == SearchKind::Skill, |this| {
-                        this.child(
-                            div()
-                                .flex_none()
-                                .text_size(px(11.))
-                                .font_weight(FontWeight::SEMIBOLD)
-                                .text_color(roles.faint)
-                                .child("Skill"),
-                        )
+                        this.child(ui::meta("Skill", roles).flex_none())
                     }),
             )
-            .children(result.context.as_ref().map(|context| {
-                div()
-                    .text_size(px(12.))
-                    .text_color(roles.faint)
-                    .child(format!("in {context}"))
-            }))
+            .children(
+                result
+                    .context
+                    .as_ref()
+                    .map(|context| ui::meta(format!("in {context}"), roles)),
+            )
             .children(result.detail.as_ref().map(|detail| {
-                div().text_size(px(12.)).line_clamp(2).child(marked(
-                    detail,
-                    result.detail_match,
-                    roles,
-                ))
+                div()
+                    .type_small()
+                    .line_clamp(2)
+                    .child(marked(detail, result.detail_match, roles))
             }))
     }
 
@@ -709,65 +686,15 @@ impl LibraryPanel {
         let node = &item.node;
         let hot = context.tree_focused && self.focused_id.as_ref() == Some(&node.id);
         let is_active = node.kind == TreeKind::File && context.active_id.as_ref() == Some(&node.id);
-        let holds_open = node.kind == TreeKind::Skill && context.holding.contains(&node.id);
         let note_open = item.expanded || (hot && self.keyboard_hot);
-        let faint_file = node.kind == TreeKind::File && node.openable != Some(true);
-        let marker: AnyElement = if node.kind == TreeKind::File {
-            div()
-                .size(px(6.))
-                .when(is_active, |this| this.bg(roles.accent))
-                .into_any_element()
-        } else {
-            div()
-                .text_size(px(12.))
-                .text_color(if holds_open {
-                    roles.accent
-                } else {
-                    roles.faint
-                })
-                .child(match (item.expandable, item.expanded) {
-                    (false, _) => "",
-                    (true, true) => "▾",
-                    (true, false) => "▸",
-                })
-                .into_any_element()
-        };
-        let (label_size, label_color, label_weight) = match node.kind {
-            TreeKind::Root => (px(12.), roles.ink, FontWeight::MEDIUM),
-            TreeKind::Skill => (
-                px(14.),
-                if node.problem.is_some() {
-                    roles.danger
-                } else {
-                    roles.ink
-                },
-                FontWeight::NORMAL,
-            ),
-            _ if faint_file => (px(12.), roles.faint, FontWeight::NORMAL),
-            _ => (
-                px(12.),
-                roles.ink,
-                if is_active {
-                    FontWeight::MEDIUM
-                } else {
-                    FontWeight::NORMAL
-                },
-            ),
-        };
         let row_item = item.clone();
-        let remove_node = node.clone();
-        let row = div()
-            .id(("library-row", index))
-            .flex()
+        let row = ui::focusable_row(("library-row", index), hot, is_active, roles)
             .flex_col()
-            .gap(px(2.))
+            .items_start()
+            .gap(px(4.))
             .py(px(4.))
             .pr(px(12.))
             .pl(px((item.level as f32 - 1.) * INDENT + 12.))
-            .border_1()
-            .border_color(if hot { roles.accent } else { roles.raised })
-            .when(hot || is_active, |this| this.bg(roles.canvas))
-            .hover(|this| this.bg(roles.canvas))
             .on_mouse_down(MouseButton::Left, |_, window, _| window.prevent_default())
             .on_click(cx.listener(move |this, _, window, cx| this.click_row(&row_item, window, cx)))
             .when_some(
@@ -780,104 +707,198 @@ impl LibraryPanel {
                     })
                 },
             )
-            .child(
-                div()
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .gap(px(8.))
-                    .child(
-                        div()
-                            .w(px(8.))
-                            .flex_none()
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .child(marker),
-                    )
-                    .child(
-                        div()
-                            .min_w_0()
-                            .truncate()
-                            .text_size(label_size)
-                            .text_color(label_color)
-                            .font_weight(label_weight)
-                            .child(node.name.clone()),
-                    )
-                    .children(node.detail.as_ref().map(|detail| {
-                        div()
-                            .flex_none()
-                            .text_size(px(12.))
-                            .text_color(roles.faint)
-                            .child(format!("· {detail}"))
-                    }))
-                    .when(
-                        node.kind == TreeKind::Root && node.removable == Some(true),
-                        |this| {
-                            this.child(div().flex_1()).child(
-                                ui::sized_button(
-                                    ("library-remove", index),
-                                    "×",
-                                    ButtonKind::Default,
-                                    ButtonSize::Small,
-                                    false,
-                                    roles,
-                                )
-                                .w(px(24.))
-                                .tooltip(|window, cx| {
-                                    component::tooltip::Tooltip::new(
-                                        "Remove from the Library. The folder stays on disk.",
-                                    )
-                                    .build(window, cx)
-                                })
-                                .on_click(cx.listener(
-                                    move |this, _, window, cx| {
-                                        cx.stop_propagation();
-                                        this.remove_root(&remove_node, window, cx);
-                                    },
-                                )),
-                            )
-                        },
-                    ),
-            )
+            .child(self.render_row_line(index, item, context, roles, cx))
             .when(node.kind == TreeKind::Skill && note_open, |this| {
-                this.child(
-                    div()
-                        .pl(px(16.))
-                        .flex()
-                        .flex_col()
-                        .children(node.description.as_ref().map(|description| {
-                            let full = description.clone();
-                            div()
-                                .id(("library-note", index))
-                                .text_size(px(12.))
-                                .text_color(roles.ink)
-                                .line_clamp(3)
-                                .tooltip(move |window, cx| {
-                                    component::tooltip::Tooltip::new(full.clone()).build(window, cx)
-                                })
-                                .child(description.clone())
-                        }))
-                        .children(node.problem.as_ref().map(|problem| {
-                            div()
-                                .text_size(px(12.))
-                                .text_color(roles.danger)
-                                .child(format!("Frontmatter: {}", problem.message))
-                        })),
-                )
+                this.child(row_note(index, node, roles))
             });
         div()
             .child(row)
-            .children(node.note.as_ref().map(|note| {
-                div()
-                    .px(px(12.))
-                    .py(px(4.))
-                    .text_size(px(12.))
-                    .text_color(roles.faint)
-                    .child(note.clone())
-            }))
+            .children(
+                node.note
+                    .as_ref()
+                    .map(|note| ui::meta(note.clone(), roles).px(px(12.)).py(px(4.))),
+            )
             .into_any_element()
     }
+
+    fn render_row_line(
+        &self,
+        index: usize,
+        item: &TreeItem,
+        context: &RowContext,
+        roles: Roles,
+        cx: &mut Context<Self>,
+    ) -> Div {
+        let node = &item.node;
+        let is_active = node.kind == TreeKind::File && context.active_id.as_ref() == Some(&node.id);
+        let holds_open = node.kind == TreeKind::Skill && context.holding.contains(&node.id);
+        let unopenable = node.kind == TreeKind::File && node.openable != Some(true);
+        let marker: AnyElement = if node.kind == TreeKind::File {
+            div()
+                .size(px(6.))
+                .when(is_active, |this| this.bg(roles.accent))
+                .into_any_element()
+        } else {
+            div()
+                .type_small()
+                .text_color(if holds_open {
+                    roles.accent
+                } else {
+                    roles.muted
+                })
+                .child(match (item.expandable, item.expanded) {
+                    (false, _) => "",
+                    (true, true) => "▾",
+                    (true, false) => "▸",
+                })
+                .into_any_element()
+        };
+        let label = div().min_w_0().truncate().child(node.name.clone());
+        let label = match node.kind {
+            TreeKind::Root => label.type_small().weight_medium().text_color(roles.muted),
+            TreeKind::Skill if node.problem.is_some() => label.text_color(roles.danger),
+            TreeKind::Skill => label,
+            _ if unopenable => label.type_small().text_color(roles.muted),
+            _ if is_active => label.type_small().weight_medium(),
+            _ => label.type_small(),
+        };
+        let remove_node = node.clone();
+        ui::row()
+            .w_full()
+            .gap(px(8.))
+            .child(
+                div()
+                    .w(px(8.))
+                    .flex_none()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(marker),
+            )
+            .child(label)
+            .children(
+                node.detail
+                    .as_ref()
+                    .map(|detail| ui::meta(format!("· {detail}"), roles).flex_none()),
+            )
+            .when(
+                node.kind == TreeKind::Root && node.removable == Some(true),
+                |this| {
+                    this.child(div().flex_1()).child(
+                        ui::small_button(("library-remove", index), "×", ButtonKind::Quiet, roles)
+                            .tooltip(|window, cx| {
+                                component::tooltip::Tooltip::new(
+                                    "Remove from the Library. The folder stays on disk.",
+                                )
+                                .build(window, cx)
+                            })
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                cx.stop_propagation();
+                                this.remove_root(&remove_node, window, cx);
+                            })),
+                    )
+                },
+            )
+    }
+
+    fn render_actions(&self, roles: Roles, cx: &mut Context<Self>) -> Div {
+        let ready = self.is_ready();
+        let tip = |text: &'static str| {
+            move |window: &mut Window, cx: &mut App| {
+                component::tooltip::Tooltip::new(text).build(window, cx)
+            }
+        };
+        ui::row()
+            .px(px(12.))
+            .pb(px(12.))
+            .gap(px(4.))
+            .child(
+                ui::sized_button(
+                    "library-new",
+                    "New",
+                    ButtonKind::Default,
+                    ButtonSize::Regular,
+                    ui::Control::disabled(!ready),
+                    roles,
+                )
+                .tooltip(tip("Create a skill from a template"))
+                .when(ready, |this| {
+                    this.on_click(cx.listener(|_, _, _, cx| cx.emit(LibraryEvent::NewSkill)))
+                }),
+            )
+            .child(
+                ui::button("library-refresh", "Refresh", ButtonKind::Default, roles)
+                    .tooltip(tip("Scan the folders again"))
+                    .on_click(cx.listener(|this, _, _, cx| this.refresh(cx))),
+            )
+            .child(
+                ui::button("library-add", "Add", ButtonKind::Default, roles)
+                    .tooltip(tip(
+                        "Add a project folder of skills, such as .claude/skills",
+                    ))
+                    .on_click(cx.listener(|this, _, window, cx| this.add_root(window, cx))),
+            )
+    }
+
+    fn render_status(&self, roles: Roles, cx: &mut Context<Self>) -> Div {
+        let problem = match &self.state {
+            LibraryState::Ready(snapshot) => snapshot.problem.clone(),
+            _ => None,
+        };
+        div()
+            .flex()
+            .flex_col()
+            .px(px(12.))
+            .type_small()
+            .when(matches!(self.state, LibraryState::Loading), |this| {
+                this.child(ui::meta("Reading the skill folders…", roles).py(px(4.)))
+            })
+            .when(matches!(self.state, LibraryState::Failed), |this| {
+                this.child(
+                    ui::row()
+                        .py(px(4.))
+                        .text_color(roles.danger)
+                        .child("Could not read the skill folders.\u{a0}")
+                        .child(
+                            ui::link("library-try-again", "Try again", roles)
+                                .on_click(cx.listener(|this, _, _, cx| this.refresh(cx))),
+                        ),
+                )
+            })
+            .children(problem.map(|problem| {
+                ui::error_text(
+                    format!(
+                        "{problem}. Project folders are not listed, and Add and Remove are off until it is fixed or deleted in the app's user data folder."
+                    ),
+                    roles,
+                )
+                .py(px(4.))
+            }))
+    }
+}
+
+fn row_note(index: usize, node: &TreeNode, roles: Roles) -> Div {
+    div()
+        .pl(px(16.))
+        .flex()
+        .flex_col()
+        .type_small()
+        .children(node.description.as_ref().map(|description| {
+            let full = description.clone();
+            div()
+                .id(("library-note", index))
+                .text_color(roles.ink)
+                .line_clamp(3)
+                .tooltip(move |window, cx| {
+                    component::tooltip::Tooltip::new(full.clone()).build(window, cx)
+                })
+                .child(description.clone())
+        }))
+        .children(
+            node.problem
+                .as_ref()
+                .map(|problem| ui::error_text(format!("Frontmatter: {}", problem.message), roles)),
+        )
 }
 
 struct RowContext {
@@ -924,11 +945,6 @@ impl Render for LibraryPanel {
             active_id: self.active_id(),
             holding: self.holding(&tree),
         };
-        let ready = self.is_ready();
-        let problem = match &self.state {
-            LibraryState::Ready(snapshot) => snapshot.problem.clone(),
-            _ => None,
-        };
         let rows: Vec<AnyElement> = items
             .iter()
             .enumerate()
@@ -942,72 +958,12 @@ impl Render for LibraryPanel {
             .flex()
             .flex_col()
             .bg(roles.raised)
+            .type_body()
             .text_color(roles.ink)
             .child(self.render_header(roles))
             .child(search)
-            .child(
-                ui::row()
-                    .px(px(12.))
-                    .pb(px(12.))
-                    .gap(px(4.))
-                    .child(
-                        ui::sized_button("library-new", "New", ButtonKind::Default, ButtonSize::Regular, !ready, roles)
-                            .tooltip(|window, cx| component::tooltip::Tooltip::new("Create a skill from a template").build(window, cx))
-                            .when(ready, |this| this.on_click(cx.listener(|_, _, _, cx| cx.emit(LibraryEvent::NewSkill)))),
-                    )
-                    .child(
-                        ui::button("library-refresh", "Refresh", ButtonKind::Default, roles)
-                            .tooltip(|window, cx| component::tooltip::Tooltip::new("Scan the folders again").build(window, cx))
-                            .on_click(cx.listener(|this, _, _, cx| this.refresh(cx))),
-                    )
-                    .child(
-                        ui::button("library-add", "Add", ButtonKind::Default, roles)
-                            .tooltip(|window, cx| {
-                                component::tooltip::Tooltip::new("Add a project folder of skills, such as .claude/skills")
-                                    .build(window, cx)
-                            })
-                            .on_click(cx.listener(|this, _, window, cx| this.add_root(window, cx))),
-                    ),
-            )
-            .child(div().flex().flex_col()                    .when(matches!(self.state, LibraryState::Loading), |this| {
-                        this.child(
-                            div()
-                                .px(px(12.))
-                                .py(px(4.))
-                                .text_size(px(12.))
-                                .text_color(roles.faint)
-                                .child("Reading the skill folders…"),
-                        )
-                    })
-                    .when(matches!(self.state, LibraryState::Failed), |this| {
-                        this.child(
-                            ui::row()
-                                .px(px(12.))
-                                .py(px(4.))
-                                .text_size(px(12.))
-                                .text_color(roles.danger)
-                                .child("Could not read the skill folders.\u{a0}")
-                                .child(
-                                    div()
-                                        .id("library-try-again")
-                                        .underline()
-                                        .cursor_pointer()
-                                        .child("Try again")
-                                        .on_click(cx.listener(|this, _, _, cx| this.refresh(cx))),
-                                ),
-                        )
-                    })
-                    .children(problem.map(|problem| {
-                        div()
-                            .px(px(12.))
-                            .py(px(4.))
-                            .text_size(px(12.))
-                            .text_color(roles.danger)
-                            .child(format!(
-                                "{problem}. Project folders are not listed, and Add and Remove are off until it is fixed or deleted in the app's user data folder."
-                            ))
-                    }))
-)
+            .child(self.render_actions(roles, cx))
+            .child(self.render_status(roles, cx))
             .child(
                 div()
                     .id("library-tree")

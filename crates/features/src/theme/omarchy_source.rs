@@ -54,6 +54,21 @@ pub fn omarchy_tokens(colors: &Colors, name: &str) -> Option<ThemeTokens> {
     let ink = hex_of(colors, "foreground")?;
     let accent = hex_of(colors, "accent")?;
     let mode = mode_of(colors, &bg);
+    let light = mode == ThemeMode::Light;
+    let named = |keys: &[&str], fallback: &str| {
+        keys.iter()
+            .find_map(|key| hex_of(colors, key))
+            .unwrap_or_else(|| fallback.to_string())
+    };
+    let danger = named(
+        &["red", "color1"],
+        if light { "#b42318" } else { "#f87171" },
+    );
+    let success = named(
+        &["green", "color2"],
+        if light { "#15803d" } else { "#4ade80" },
+    );
+    let heading = named(&["magenta", "color5"], &mix_hex(&ink, &accent, 0.5));
     Some(ThemeTokens {
         name: name.to_string(),
         mode,
@@ -61,18 +76,18 @@ pub fn omarchy_tokens(colors: &Colors, name: &str) -> Option<ThemeTokens> {
             canvas: bg.clone(),
             raised: hex_of(colors, "lighter_background")
                 .unwrap_or_else(|| mix_hex(&bg, &ink, 0.09)),
+            overlay: mix_hex(&bg, &ink, 0.13),
+            heading,
             ink: ink.clone(),
-            faint: mix_hex(&bg, &ink, 0.7),
+            muted: mix_hex(&bg, &ink, 0.8),
+            faint: mix_hex(&bg, &ink, 0.6),
             accent: accent.clone(),
             ai: accent.clone(),
-            danger: hex_of(colors, "red").unwrap_or_else(|| {
-                if mode == ThemeMode::Light {
-                    "#b42318"
-                } else {
-                    "#f87171"
-                }
-                .to_string()
-            }),
+            ai_fill: mix_hex(&bg, &accent, 0.18),
+            danger_fill: mix_hex(&bg, &danger, 0.15),
+            danger,
+            success_fill: mix_hex(&bg, &success, 0.15),
+            success,
             selection: hex_of(colors, "selection").unwrap_or_else(|| mix_hex(&bg, &accent, 0.28)),
             fill: mix_hex(&bg, &ink, 0.06),
             fill_hover: mix_hex(&bg, &ink, 0.11),
@@ -103,7 +118,7 @@ pub fn default_omarchy_state_dir(home: &Path) -> std::path::PathBuf {
 mod tests {
     use super::*;
 
-    const TOKYO_NIGHT: &str = "mode = \"dark\"\n\naccent = \"#7aa2f7\"\nselection = \"#292e42\"\nmuted = \"#414868\"\n\nbackground = \"#1a1b26\"\nlighter_background = \"#24283b\"\n\nforeground = \"#a9b1d6\"\nbright_foreground = \"#c0caf5\"\n\nred = \"#f7768e\"\n";
+    const TOKYO_NIGHT: &str = "mode = \"dark\"\n\naccent = \"#7aa2f7\"\nselection = \"#292e42\"\nmuted = \"#414868\"\n\nbackground = \"#1a1b26\"\nlighter_background = \"#24283b\"\n\nforeground = \"#a9b1d6\"\nbright_foreground = \"#c0caf5\"\n\nred = \"#f7768e\"\ngreen = \"#9ece6a\"\nmagenta = \"#bb9af7\"\n";
 
     fn colors(pairs: &[(&str, &str)]) -> Colors {
         pairs
@@ -147,11 +162,18 @@ mod tests {
                 roles: ThemeRoles {
                     canvas: "#1a1b26".into(),
                     raised: "#24283b".into(),
+                    overlay: mix_hex("#1a1b26", "#a9b1d6", 0.13),
+                    heading: "#bb9af7".into(),
                     ink: "#a9b1d6".into(),
-                    faint: mix_hex("#1a1b26", "#a9b1d6", 0.7),
+                    muted: mix_hex("#1a1b26", "#a9b1d6", 0.8),
+                    faint: mix_hex("#1a1b26", "#a9b1d6", 0.6),
                     accent: "#7aa2f7".into(),
                     ai: "#7aa2f7".into(),
+                    ai_fill: mix_hex("#1a1b26", "#7aa2f7", 0.18),
                     danger: "#f7768e".into(),
+                    danger_fill: mix_hex("#1a1b26", "#f7768e", 0.15),
+                    success: "#9ece6a".into(),
+                    success_fill: mix_hex("#1a1b26", "#9ece6a", 0.15),
                     selection: "#292e42".into(),
                     fill: mix_hex("#1a1b26", "#a9b1d6", 0.06),
                     fill_hover: mix_hex("#1a1b26", "#a9b1d6", 0.11),
@@ -198,6 +220,8 @@ mod tests {
         assert_eq!(tokens.mode, ThemeMode::Light);
         assert_eq!(tokens.roles.raised, mix_hex("#eff1f5", "#4c4f69", 0.09));
         assert_eq!(tokens.roles.danger, "#b42318");
+        assert_eq!(tokens.roles.success, "#15803d");
+        assert_eq!(tokens.roles.heading, mix_hex("#4c4f69", "#1e66f5", 0.5));
         assert_eq!(tokens.roles.selection, mix_hex("#eff1f5", "#1e66f5", 0.28));
     }
 
@@ -213,6 +237,31 @@ mod tests {
         )
         .unwrap();
         assert_eq!(tokens.roles.danger, "#f87171");
+        assert_eq!(tokens.roles.success, "#4ade80");
+    }
+
+    #[test]
+    fn reads_terminal_colors_when_named_ones_are_missing() {
+        let tokens = omarchy_tokens(
+            &colors(&[
+                ("background", "#101010"),
+                ("foreground", "#eeeeee"),
+                ("accent", "#ff0000"),
+                ("color1", "#cc0000"),
+                ("color2", "#00cc00"),
+                ("color5", "#cc00cc"),
+            ]),
+            "x",
+        )
+        .unwrap();
+        assert_eq!(
+            (
+                tokens.roles.danger,
+                tokens.roles.success,
+                tokens.roles.heading
+            ),
+            ("#cc0000".into(), "#00cc00".into(), "#cc00cc".into())
+        );
     }
 
     #[test]

@@ -192,6 +192,85 @@ impl KeyDialog {
     }
 }
 
+impl KeyDialog {
+    fn render_plain_text_offer(&self, roles: theme::Roles, cx: &mut Context<Self>) -> Div {
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(8.))
+            .p(px(12.))
+            .bg(roles.raised)
+            .child(
+                "No system keyring is available. Storing the key as plain text keeps it across restarts, but anyone who can read your files can read it, like .env today.",
+            )
+            .child(
+                div().flex().child(
+                    ui::sized_button(
+                        "key-plain-text",
+                        "Store as plain text",
+                        ButtonKind::Default,
+                        ButtonSize::Regular,
+                        ui::Control::disabled(self.busy),
+                        roles,
+                    )
+                    .when(!self.busy, |this| {
+                        this.on_click(cx.listener(|this, _, window, cx| {
+                            this.run(KeyCommand::PlainText, window, cx)
+                        }))
+                    }),
+                ),
+            )
+    }
+
+    fn render_buttons(
+        &self,
+        can_remove: bool,
+        empty: bool,
+        roles: theme::Roles,
+        cx: &mut Context<Self>,
+    ) -> Div {
+        ui::row()
+            .gap(px(8.))
+            .when(can_remove, |this| {
+                this.child(
+                    ui::sized_button(
+                        "key-remove",
+                        "Remove key",
+                        ButtonKind::Danger,
+                        ButtonSize::Regular,
+                        ui::Control::disabled(self.busy),
+                        roles,
+                    )
+                    .when(!self.busy, |this| {
+                        this.on_click(cx.listener(|this, _, window, cx| {
+                            this.run(KeyCommand::Clear, window, cx)
+                        }))
+                    }),
+                )
+            })
+            .child(div().flex_1())
+            .child(
+                ui::button("key-close", "Close", ButtonKind::Default, roles)
+                    .on_click(cx.listener(|_, _, _, cx| cx.emit(KeyEvent::Close))),
+            )
+            .child(
+                ui::sized_button(
+                    "key-save",
+                    "Save key",
+                    ButtonKind::Strong,
+                    ButtonSize::Regular,
+                    ui::Control::disabled(self.busy || empty),
+                    roles,
+                )
+                .when(!self.busy && !empty, |this| {
+                    this.on_click(
+                        cx.listener(|this, _, window, cx| this.run(KeyCommand::Save, window, cx)),
+                    )
+                }),
+            )
+    }
+}
+
 impl Render for KeyDialog {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let roles = theme::roles(cx);
@@ -199,7 +278,6 @@ impl Render for KeyDialog {
         let empty = self.value(cx).trim().is_empty();
         let focused = self.input.read(cx).focus_handle(cx).is_focused(window);
         let can_remove = state.present || state.unreadable;
-        let note = remove_note(&state);
         ui::modal_backdrop(
             "key-backdrop",
             roles,
@@ -208,31 +286,22 @@ impl Render for KeyDialog {
                 .on_action(cx.listener(Self::submit))
                 .on_action(cx.listener(Self::close))
                 .gap(px(16.))
+                .child(ui::title("OpenRouter key", roles))
                 .child(
                     div()
-                        .font_family("League Spartan")
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .text_size(px(20.))
-                        .text_color(roles.ink)
-                        .child("OpenRouter key"),
-                )
-                .child(
-                    div()
-                        .text_size(px(14.))
                         .text_color(roles.ink)
                         .child(describe_key_state(&state)),
                 )
                 .child(
                     div()
-                        .flex()
-                        .flex_col()
-                        .gap(px(8.))
-                        .text_size(px(14.))
-                        .child(div().text_color(roles.ink).child(if state.present {
-                            "Replace the key"
-                        } else {
-                            "Key"
-                        }))
+                        .child(ui::label(
+                            if state.present {
+                                "Replace the key"
+                            } else {
+                                "Key"
+                            },
+                            roles,
+                        ))
                         .child(ui::field(
                             Input::new(&self.input).appearance(false),
                             focused,
@@ -241,91 +310,15 @@ impl Render for KeyDialog {
                         )),
                 )
                 .when(offers_plain_text(&state), |this| {
-                    this.child(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .gap(px(8.))
-                            .p(px(12.))
-                            .border_1()
-                            .border_color(roles.hairline)
-                            .bg(roles.raised)
-                            .text_size(px(14.))
-                            .child(
-                                "No system keyring is available. Storing the key as plain text keeps it across restarts, but anyone who can read your files can read it, like .env today.",
-                            )
-                            .child(
-                                div().flex().child(
-                                    ui::sized_button(
-                                        "key-plain-text",
-                                        "Store as plain text",
-                                        ButtonKind::Default,
-                                        ButtonSize::Regular,
-                                        self.busy,
-                                        roles,
-                                    )
-                                    .when(!self.busy, |this| {
-                                        this.on_click(cx.listener(|this, _, window, cx| {
-                                            this.run(KeyCommand::PlainText, window, cx)
-                                        }))
-                                    }),
-                                ),
-                            ),
-                    )
+                    this.child(self.render_plain_text_offer(roles, cx))
                 })
                 .when_some(self.error.clone(), |this, error| {
-                    this.child(
-                        div()
-                            .text_size(px(14.))
-                            .text_color(roles.danger)
-                            .child(error),
-                    )
+                    this.child(ui::error_text(error, roles))
                 })
-                .when_some(note, |this, note| {
-                    this.child(div().text_size(px(14.)).text_color(roles.ink).child(note))
+                .when_some(remove_note(&state), |this, note| {
+                    this.child(div().text_color(roles.ink).child(note))
                 })
-                .child(
-                    ui::row()
-                        .gap(px(8.))
-                        .when(can_remove, |this| {
-                            this.child(
-                                ui::sized_button(
-                                    "key-remove",
-                                    "Remove key",
-                                    ButtonKind::Default,
-                                    ButtonSize::Regular,
-                                    self.busy,
-                                    roles,
-                                )
-                                .when(!self.busy, |this| {
-                                    this.on_click(cx.listener(|this, _, window, cx| {
-                                        this.run(KeyCommand::Clear, window, cx)
-                                    }))
-                                }),
-                            )
-                        })
-                        .child(div().flex_1())
-                        .child(
-                            ui::button("key-close", "Close", ButtonKind::Default, roles).on_click(
-                                cx.listener(|_, _, _, cx| cx.emit(KeyEvent::Close)),
-                            ),
-                        )
-                        .child(
-                            ui::sized_button(
-                                "key-save",
-                                "Save key",
-                                ButtonKind::Default,
-                                ButtonSize::Regular,
-                                self.busy || empty,
-                                roles,
-                            )
-                            .when(!self.busy && !empty, |this| {
-                                this.on_click(cx.listener(|this, _, window, cx| {
-                                    this.run(KeyCommand::Save, window, cx)
-                                }))
-                            }),
-                        ),
-                ),
+                .child(self.render_buttons(can_remove, empty, roles, cx)),
         )
     }
 }

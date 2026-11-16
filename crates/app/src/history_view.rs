@@ -15,7 +15,7 @@ use gpui_kit::{prelude::FluentBuilder as _, *};
 
 use crate::{
     theme::Roles,
-    ui::{self, ButtonKind, ButtonSize},
+    ui::{self, ButtonKind, ButtonSize, Pip, Type as _},
     workspace::{Workspace, column_row, now_ms},
 };
 
@@ -31,17 +31,15 @@ fn shows_diff(version: &VersionSummary) -> bool {
 }
 
 fn mark(cause: &VersionCause, roles: Roles) -> Div {
-    let base = div().flex_none();
-    match mark_of(cause) {
-        VersionMark::Ai => base.size(px(10.)).rounded_full().bg(roles.accent),
-        VersionMark::You => base.size(px(8.)).rounded_full().bg(roles.ink),
-        VersionMark::File => base.size(px(10.)).border_1().border_color(roles.faint),
-        VersionMark::Restore => base
-            .size(px(10.))
-            .rounded_full()
-            .border_1()
-            .border_color(roles.ink),
-    }
+    ui::pip(
+        match mark_of(cause) {
+            VersionMark::Ai => Pip::Ai,
+            VersionMark::You => Pip::You,
+            VersionMark::File => Pip::File,
+            VersionMark::Restore => Pip::Restore,
+        },
+        roles,
+    )
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -50,67 +48,16 @@ pub(crate) struct EvalsButton {
     pub busy: bool,
 }
 
-fn gauge_icon(busy: bool, roles: Roles) -> AnyElement {
-    let bar = |height: f32| div().w(px(1.5)).h(px(height)).bg(roles.ink);
-    let icon = div()
-        .size(px(14.))
-        .flex()
-        .flex_row()
-        .items_end()
-        .justify_center()
-        .gap(px(2.))
-        .pb(px(1.5))
-        .child(bar(5.))
-        .child(bar(9.))
-        .child(bar(6.5))
-        .child(bar(11.5));
-    if busy {
-        icon.with_animation(
-            "evals-breathe",
-            Animation::new(std::time::Duration::from_millis(3600))
-                .repeat()
-                .with_easing(bounce(ease_in_out)),
-            |icon, delta| icon.opacity(1. - 0.75 * delta),
-        )
-        .into_any_element()
-    } else {
-        icon.into_any_element()
-    }
-}
-
-fn list_icon(roles: Roles) -> Div {
-    let line = || {
-        ui::row()
-            .gap(px(2.))
-            .child(div().size(px(2.)).bg(roles.ink))
-            .child(div().w(px(8.)).h(px(1.5)).bg(roles.ink))
-    };
-    div()
-        .size(px(14.))
-        .flex()
-        .flex_col()
-        .justify_center()
-        .gap(px(2.5))
-        .child(line())
-        .child(line())
-        .child(line())
-}
-
-fn heading_scale(line: &str) -> Option<(f32, FontWeight)> {
+fn is_heading(line: &str) -> bool {
     let level = line.chars().take_while(|c| *c == '#').count();
-    let spaced = line[level..].starts_with(char::is_whitespace);
-    match (level, spaced) {
-        (1, true) => Some((1.85, FontWeight::BOLD)),
-        (2, true) => Some((1.5, FontWeight::SEMIBOLD)),
-        (3, true) => Some((1.25, FontWeight::SEMIBOLD)),
-        _ => None,
-    }
+    (1..=6).contains(&level) && line[level..].starts_with(char::is_whitespace)
 }
 
-fn styled_line(line: &str, base: Pixels) -> Div {
-    match heading_scale(line) {
-        Some((scale, weight)) => div().text_size(base * scale).font_weight(weight),
-        None => div(),
+fn styled_line(line: &str, roles: Roles) -> Div {
+    if is_heading(line) {
+        div().weight_bold().text_color(roles.heading)
+    } else {
+        div()
     }
 }
 
@@ -123,10 +70,10 @@ fn hunk_text(hunks: &[DiffHunk], roles: Roles) -> StyledText {
             DiffHunk::Deleted { text, .. } => (
                 text,
                 Some(HighlightStyle {
-                    color: Some(roles.ink),
+                    color: Some(roles.muted),
                     strikethrough: Some(StrikethroughStyle {
                         thickness: px(1.),
-                        color: Some(roles.ink),
+                        color: Some(roles.muted),
                     }),
                     ..Default::default()
                 }),
@@ -135,7 +82,7 @@ fn hunk_text(hunks: &[DiffHunk], roles: Roles) -> StyledText {
                 text,
                 Some(HighlightStyle {
                     color: Some(roles.ai),
-                    background_color: Some(roles.raised),
+                    background_color: Some(roles.ai_fill),
                     ..Default::default()
                 }),
             ),
@@ -161,10 +108,16 @@ fn first_hunk_text(hunks: &[DiffHunk]) -> &str {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum DiffSize {
+    Document,
+    Body,
+}
+
 pub(crate) fn line_diff(
     changes: &[LineChange],
     only_changed: bool,
-    base: Pixels,
+    size: DiffSize,
     roles: Roles,
 ) -> AnyElement {
     let mut rows: Vec<AnyElement> = Vec::new();
@@ -172,7 +125,7 @@ pub(crate) fn line_diff(
         match change {
             LineChange::Same { lines } if !only_changed => {
                 rows.extend(lines.iter().map(|line| {
-                    styled_line(line, base)
+                    styled_line(line, roles)
                         .child(if line.is_empty() {
                             BLANK_LINE.to_string()
                         } else {
@@ -183,12 +136,10 @@ pub(crate) fn line_diff(
             }
             LineChange::Same { .. } => {}
             LineChange::Changed { hunks } => rows.push(
-                styled_line(first_hunk_text(hunks), base)
+                styled_line(first_hunk_text(hunks), roles)
                     .ml(px(-12.))
                     .mr(px(-12.))
                     .px(px(12.))
-                    .border_l_2()
-                    .border_color(roles.accent)
                     .bg(roles.fill)
                     .child(hunk_text(hunks, roles))
                     .into_any_element(),
@@ -196,41 +147,20 @@ pub(crate) fn line_diff(
         }
     }
     if rows.is_empty() {
-        return div()
-            .text_size(px(14.))
-            .text_color(roles.faint)
-            .child("No text changes.")
-            .into_any_element();
+        return ui::meta("No text changes.", roles).into_any_element();
     }
     div()
         .flex()
         .flex_col()
-        .text_size(base)
+        .map(|this| match size {
+            DiffSize::Document => this.type_document(),
+            DiffSize::Body => this.type_body(),
+        })
         .line_height(relative(1.75))
         .text_color(roles.ink)
         .when(only_changed, |this| this.gap(px(12.)))
         .children(rows)
         .into_any_element()
-}
-
-fn quiet_toggle(
-    id: &'static str,
-    label: &'static str,
-    disabled: bool,
-    pressed: bool,
-    roles: Roles,
-) -> Stateful<Div> {
-    ui::sized_button(
-        id,
-        "",
-        ButtonKind::Quiet,
-        ButtonSize::Small,
-        disabled,
-        roles,
-    )
-    .gap(px(6.))
-    .when(pressed, |this| this.bg(roles.fill).border_color(roles.ink))
-    .child(label)
 }
 
 fn centered(content: impl IntoElement) -> Div {
@@ -259,84 +189,100 @@ impl Workspace {
     ) -> AnyElement {
         let evals_pressed = evals.is_some_and(|evals| evals.pressed);
         let editing = mode == HistoryMode::Editing && !evals_pressed;
+        let track = self.render_track(mode, roles, cx);
+        column_row(
+            ui::row()
+                .gap(px(8.))
+                .child(track)
+                .child(
+                    ui::toggle_button(
+                        "timeline-now",
+                        "Now",
+                        false,
+                        ui::Control::disabled(editing),
+                        roles,
+                    )
+                    .tooltip(|window, cx| {
+                        component::tooltip::Tooltip::new("Back to the current text (Esc)")
+                            .build(window, cx)
+                    })
+                    .when(!editing, |this| {
+                        this.on_click(
+                            cx.listener(|this, _, window, cx| this.close_history(window, cx)),
+                        )
+                    }),
+                )
+                .child(
+                    ui::toggle_button(
+                        "timeline-full",
+                        "Full history",
+                        mode == HistoryMode::Full,
+                        ui::Control::default(),
+                        roles,
+                    )
+                    .child(ui::list_icon(roles))
+                    .on_click(cx.listener(|this, _, window, cx| this.toggle_full(window, cx))),
+                )
+                .when_some(evals, |this, evals| {
+                    this.child(
+                        ui::toggle_button(
+                            "timeline-evals",
+                            "Evals",
+                            evals.pressed,
+                            ui::Control::default(),
+                            roles,
+                        )
+                        .tooltip(|window, cx| {
+                            component::tooltip::Tooltip::new("How this Skill performs")
+                                .build(window, cx)
+                        })
+                        .child(ui::gauge_icon(evals.busy, roles))
+                        .on_click(cx.listener(|this, _, window, cx| this.toggle_evals(window, cx))),
+                    )
+                }),
+        )
+        .into_any_element()
+    }
+
+    fn render_track(
+        &self,
+        mode: HistoryMode,
+        roles: Roles,
+        cx: &mut Context<Self>,
+    ) -> Stateful<Div> {
         let versions = self.history.snapshot().clone();
-        let now = now_ms();
-        let offset = self.utc_offset;
-        let clock_of = move |at: i64| format_clock(at, now, offset);
         let selected = match mode {
             HistoryMode::Version { id } => Some(id),
             _ => None,
         };
         let gaps = versions.len().saturating_sub(1).max(1) as f32;
-        let width = self.timeline_width.get();
-        let dot_width = px(DOT_SIZE).min(width / gaps);
+        let dot_width = px(DOT_SIZE).min(self.timeline_width.get() / gaps);
         let measured = self.timeline_width.clone();
-        let dots = versions.iter().enumerate().map(|(index, version)| {
-            let id = version.id;
-            let share = index as f32 / gaps;
-            let description = describe_version(&versions, version, clock_of);
-            let clock = clock_of(version.at);
-            let is_selected = selected == Some(id);
-            let highlighted = self.hovered == Some(id);
-            let tooltip = (self.dot_hovered == Some(id)).then(|| {
-                let side = div().absolute().top(px(36.)).w(px(TOOLTIP_WIDTH));
-                let side = if share < 0.25 {
-                    side.left(-dot_width / 2.)
-                } else if share > 0.75 {
-                    side.right(-dot_width / 2.)
-                } else {
-                    side.left(px(-TOOLTIP_WIDTH / 2.))
-                };
-                deferred(
-                    side.border_1()
-                        .border_color(roles.hairline)
-                        .bg(roles.raised)
-                        .p(px(12.))
-                        .text_size(px(12.))
-                        .line_height(relative(1.4))
-                        .text_color(roles.ink)
-                        .child(
-                            div()
-                                .font_weight(FontWeight::MEDIUM)
-                                .child(format!("{} · {clock}", description.label)),
+        let dots: Vec<Div> = versions
+            .iter()
+            .enumerate()
+            .map(|(index, version)| {
+                let id = version.id;
+                let share = index as f32 / gaps;
+                let tooltip = (self.dot_hovered == Some(id))
+                    .then(|| self.render_dot_tooltip(&versions, version, share, dot_width, roles));
+                div()
+                    .absolute()
+                    .top_0()
+                    .h_full()
+                    .left(relative(share))
+                    .w(px(0.))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(
+                        ui::dot_button(
+                            ("timeline-dot", id as u64),
+                            dot_width,
+                            selected == Some(id),
+                            self.hovered == Some(id),
+                            roles,
                         )
-                        .child(div().mt(px(4.)).child(description.headline.clone()))
-                        .when_some(version.saved.clone(), |this, saved| {
-                            this.child(
-                                div()
-                                    .mt(px(4.))
-                                    .text_color(roles.faint)
-                                    .child(format!("Saved to {saved}")),
-                            )
-                        }),
-                )
-                .with_priority(2)
-            });
-            div()
-                .absolute()
-                .top_0()
-                .h_full()
-                .left(relative(share))
-                .w(px(0.))
-                .flex()
-                .items_center()
-                .justify_center()
-                .child(
-                    div()
-                        .id(("timeline-dot", id as u64))
-                        .flex_none()
-                        .w(dot_width)
-                        .h(px(DOT_SIZE))
-                        .rounded_full()
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .cursor_pointer()
-                        .when(is_selected, |this| {
-                            this.bg(roles.raised).border_1().border_color(roles.accent)
-                        })
-                        .when(highlighted && !is_selected, |this| this.bg(roles.raised))
-                        .hover(|this| this.bg(roles.raised))
                         .child(mark(&version.cause, roles))
                         .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
                             if *hovered {
@@ -349,10 +295,11 @@ impl Workspace {
                         .on_click(
                             cx.listener(move |this, _, window, cx| this.on_dot(id, window, cx)),
                         ),
-                )
-                .children(tooltip)
-        });
-        let track = div()
+                    )
+                    .children(tooltip)
+            })
+            .collect();
+        div()
             .id("timeline")
             .relative()
             .h(px(32.))
@@ -366,74 +313,48 @@ impl Workspace {
                 .absolute()
                 .size_full(),
             )
-            .child(
-                div()
-                    .absolute()
-                    .left_0()
-                    .right_0()
-                    .top(px(16.))
-                    .h(px(1.))
-                    .bg(roles.hairline),
-            )
-            .children(dots);
-        column_row(
-            ui::row()
-                .gap(px(8.))
-                .child(track)
+            .child(ui::axis(roles).absolute().left_0().right_0().top(px(16.)))
+            .children(dots)
+    }
+
+    fn render_dot_tooltip(
+        &self,
+        versions: &[VersionSummary],
+        version: &VersionSummary,
+        share: f32,
+        dot_width: Pixels,
+        roles: Roles,
+    ) -> Deferred {
+        let now = now_ms();
+        let offset = self.utc_offset;
+        let clock_of = move |at: i64| format_clock(at, now, offset);
+        let description = describe_version(versions, version, clock_of);
+        let side = div().absolute().top(px(36.)).w(px(TOOLTIP_WIDTH));
+        let side = if share < 0.25 {
+            side.left(-dot_width / 2.)
+        } else if share > 0.75 {
+            side.right(-dot_width / 2.)
+        } else {
+            side.left(px(-TOOLTIP_WIDTH / 2.))
+        };
+        deferred(
+            side.bg(roles.overlay)
+                .p(px(12.))
+                .type_small()
+                .line_height(relative(1.4))
+                .text_color(roles.ink)
                 .child(
-                    quiet_toggle("timeline-now", "NOW", editing, false, roles)
-                        .tooltip(|window, cx| {
-                            component::tooltip::Tooltip::new("Back to the current text (Esc)")
-                                .build(window, cx)
-                        })
-                        .when(!editing, |this| {
-                            this.on_click(
-                                cx.listener(|this, _, window, cx| this.close_history(window, cx)),
-                            )
-                        }),
+                    div()
+                        .weight_medium()
+                        .text_color(roles.heading)
+                        .child(format!("{} · {}", description.label, clock_of(version.at))),
                 )
-                .child(
-                    ui::sized_button(
-                        "timeline-full",
-                        "",
-                        ButtonKind::Quiet,
-                        ButtonSize::Small,
-                        false,
-                        roles,
-                    )
-                    .gap(px(6.))
-                    .when(mode == HistoryMode::Full, |this| {
-                        this.bg(roles.fill).border_color(roles.ink)
-                    })
-                    .child(list_icon(roles))
-                    .child("FULL HISTORY")
-                    .on_click(cx.listener(|this, _, window, cx| this.toggle_full(window, cx))),
-                )
-                .when_some(evals, |this, evals| {
-                    this.child(
-                        ui::sized_button(
-                            "timeline-evals",
-                            "",
-                            ButtonKind::Quiet,
-                            ButtonSize::Small,
-                            false,
-                            roles,
-                        )
-                        .gap(px(6.))
-                        .when(evals.pressed, |this| {
-                            this.bg(roles.fill).border_color(roles.ink)
-                        })
-                        .tooltip(|window, cx| {
-                            component::tooltip::Tooltip::new("How this Skill performs")
-                                .build(window, cx)
-                        })
-                        .child(gauge_icon(evals.busy, roles))
-                        .child("EVALS")
-                        .on_click(cx.listener(|this, _, window, cx| this.toggle_evals(window, cx))),
-                    )
+                .child(div().mt(px(4.)).child(description.headline.clone()))
+                .when_some(version.saved.clone(), |this, saved| {
+                    this.child(ui::meta(format!("Saved to {saved}"), roles).mt(px(4.)))
                 }),
         )
-        .into_any_element()
+        .with_priority(2)
     }
 
     pub(crate) fn render_version_bar(
@@ -460,8 +381,25 @@ impl Workspace {
         };
         let first = versions.first().map(|v| v.id) == Some(id);
         let last = versions.last().map(|v| v.id) == Some(id);
-        let restorable = text.clone().filter(|_| !same);
+        let restorable = text.filter(|_| !same);
         let at = version.at;
+        let summary = div()
+            .min_w_0()
+            .flex_1()
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .flex_wrap()
+                    .child(
+                        div()
+                            .weight_medium()
+                            .text_color(roles.heading)
+                            .child(format!("{} · {}", self.clock(at, now), description.label)),
+                    )
+                    .child(format!("\u{a0}· {}", description.headline)),
+            )
+            .child(ui::meta(note, roles));
         Some(
             column_row(
                 div()
@@ -476,96 +414,67 @@ impl Workspace {
                     .gap_y(px(8.))
                     .bg(roles.raised)
                     .px(px(16.))
-                    .py(px(10.))
-                    .text_size(px(14.))
+                    .py(px(12.))
+                    .type_body()
                     .text_color(roles.ink)
-                    .child(
-                        div()
-                            .min_w_0()
-                            .flex_1()
-                            .child(
-                                div()
-                                    .flex()
-                                    .flex_row()
-                                    .flex_wrap()
-                                    .child(div().font_weight(FontWeight::MEDIUM).child(format!(
-                                        "{} · {}",
-                                        self.clock(at, now),
-                                        description.label
-                                    )))
-                                    .child(format!("\u{a0}· {}", description.headline)),
-                            )
-                            .child(div().text_size(px(12.)).child(note)),
-                    )
-                    .child(
-                        ui::row()
-                            .flex_wrap()
-                            .gap(px(8.))
-                            .child(
-                                ui::sized_button(
-                                    "version-older",
-                                    "‹ Older",
-                                    ButtonKind::Default,
-                                    ButtonSize::Regular,
-                                    first,
-                                    roles,
-                                )
-                                .when(!first, |this| {
-                                    this.on_click(cx.listener(|this, _, window, cx| {
-                                        this.step_version(-1, window, cx)
-                                    }))
-                                }),
-                            )
-                            .child(
-                                ui::sized_button(
-                                    "version-newer",
-                                    "Newer ›",
-                                    ButtonKind::Default,
-                                    ButtonSize::Regular,
-                                    last,
-                                    roles,
-                                )
-                                .when(!last, |this| {
-                                    this.on_click(cx.listener(|this, _, window, cx| {
-                                        this.step_version(1, window, cx)
-                                    }))
-                                }),
-                            )
-                            .child(
-                                ui::sized_button(
-                                    "version-restore",
-                                    "Restore",
-                                    ButtonKind::Default,
-                                    ButtonSize::Regular,
-                                    restorable.is_none(),
-                                    roles,
-                                )
-                                .when_some(
-                                    restorable,
-                                    |this, text| {
-                                        this.on_click(cx.listener(move |this, _, window, cx| {
-                                            this.restore(id, at, text.clone(), window, cx)
-                                        }))
-                                    },
-                                ),
-                            )
-                            .child(
-                                ui::button("version-back", "Back", ButtonKind::Default, roles)
-                                    .child(
-                                        div()
-                                            .ml(px(8.))
-                                            .text_size(px(12.))
-                                            .font_weight(FontWeight::NORMAL)
-                                            .child("Esc"),
-                                    )
-                                    .on_click(cx.listener(|this, _, window, cx| {
-                                        this.close_history(window, cx)
-                                    })),
-                            ),
-                    ),
+                    .child(summary)
+                    .child(self.render_version_actions(id, at, first, last, restorable, roles, cx)),
             )
             .into_any_element(),
         )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn render_version_actions(
+        &self,
+        id: VersionId,
+        at: i64,
+        first: bool,
+        last: bool,
+        restorable: Option<String>,
+        roles: Roles,
+        cx: &mut Context<Self>,
+    ) -> Div {
+        let step = |button_id: &'static str, label: &'static str, edge: bool, delta: i64| {
+            ui::sized_button(
+                button_id,
+                label,
+                ButtonKind::Default,
+                ButtonSize::Regular,
+                ui::Control::disabled(edge),
+                roles,
+            )
+            .when(!edge, |this| {
+                this.on_click(
+                    cx.listener(move |this, _, window, cx| this.step_version(delta, window, cx)),
+                )
+            })
+        };
+        ui::row()
+            .flex_wrap()
+            .gap(px(8.))
+            .child(step("version-older", "‹ Older", first, -1))
+            .child(step("version-newer", "Newer ›", last, 1))
+            .child(
+                ui::sized_button(
+                    "version-restore",
+                    "Restore",
+                    ButtonKind::Strong,
+                    ButtonSize::Regular,
+                    ui::Control::disabled(restorable.is_none()),
+                    roles,
+                )
+                .when_some(restorable, |this, text| {
+                    this.on_click(cx.listener(move |this, _, window, cx| {
+                        this.restore(id, at, text.clone(), window, cx)
+                    }))
+                }),
+            )
+            .child(
+                ui::button("version-back", "Back", ButtonKind::Default, roles)
+                    .child(ui::shortcut_hint("Esc", false, roles))
+                    .on_click(cx.listener(|this, _, window, cx| this.close_history(window, cx))),
+            )
     }
 
     fn step_version(&mut self, delta: i64, window: &mut Window, cx: &mut Context<Self>) {
@@ -597,7 +506,7 @@ impl Workspace {
             .as_ref()
             .and_then(|(_, _, changes)| changes.as_ref())
         {
-            Some(changes) => line_diff(changes, false, px(17.), roles),
+            Some(changes) => line_diff(changes, false, DiffSize::Document, roles),
             None => div().into_any_element(),
         };
         div()
@@ -638,15 +547,8 @@ impl Workspace {
             div()
                 .pt(px(16.))
                 .pb(px(40.))
-                .child(
-                    div()
-                        .font_family("League Spartan")
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .text_size(px(30.))
-                        .text_color(roles.ink)
-                        .child("How this Document changed"),
-                )
-                .child(div().mt(px(8.)).text_size(px(14.)).child(format!(
+                .child(ui::title("How this Document changed", roles))
+                .child(div().mt(px(8.)).text_color(roles.muted).child(format!(
                     "{}{since} · {} from AI · {} by you",
                     plural(summary.versions, "Version"),
                     summary.from_ai,
@@ -665,6 +567,7 @@ impl Workspace {
             .collect();
         div()
             .id("full-history")
+            .type_body()
             .size_full()
             .overflow_y_scroll()
             .track_scroll(&self.history_scroll)
@@ -695,17 +598,48 @@ impl Workspace {
             .map(|previous| self.entry_diff(previous.id, id));
         let flashing = self.flash.as_ref().is_some_and(|(flash, _)| *flash == id);
         let hovered = self.hovered == Some(id);
-        let label = format!(
-            "{}{}",
-            description.label,
-            version
-                .saved
-                .as_ref()
-                .map(|saved| format!(" · Saved to {saved}"))
-                .unwrap_or_default()
-        )
-        .to_uppercase();
+        let saved = version
+            .saved
+            .as_ref()
+            .map(|saved| format!(" · Saved to {saved}"))
+            .unwrap_or_default();
         let ai = matches!(description.author, VersionMark::Ai);
+        let body = div()
+            .flex_1()
+            .min_w_0()
+            .child(
+                ui::meta(format!("{}{saved}", description.label), roles)
+                    .weight_medium()
+                    .when(ai, |this| this.text_color(roles.ai)),
+            )
+            .child(
+                div()
+                    .mt(px(4.))
+                    .text_color(roles.ink)
+                    .child(description.headline.clone()),
+            )
+            .when(changes.len() > 1, |this| {
+                this.child(entry_changes(&changes, roles))
+            })
+            .when_some(diff, |this, diff| {
+                this.child(div().mt(px(16.)).child(match diff {
+                    Some(changes) => line_diff(&changes, true, DiffSize::Body, roles),
+                    None => ui::meta("This Version could not be loaded.", roles).into_any_element(),
+                }))
+            })
+            .child(ui::row().mt(px(12.)).h(px(32.)).when(hovered, |this| {
+                this.child(
+                    ui::button(
+                        ("view-in-timeline", id as u64),
+                        "View in Timeline",
+                        ButtonKind::Default,
+                        roles,
+                    )
+                    .on_click(
+                        cx.listener(move |this, _, window, cx| this.view_version(id, window, cx)),
+                    ),
+                )
+            }));
         centered(
             div()
                 .id(("history-entry", id as u64))
@@ -716,7 +650,7 @@ impl Workspace {
                 .py(px(12.))
                 .flex()
                 .flex_row()
-                .gap(px(20.))
+                .gap(px(24.))
                 .when(flashing, |this| this.bg(roles.fill))
                 .on_hover(cx.listener(move |this, over: &bool, _, cx| {
                     if *over {
@@ -730,82 +664,37 @@ impl Workspace {
                     div()
                         .w(px(80.))
                         .flex_none()
-                        .pt(px(2.))
-                        .text_size(px(12.))
-                        .text_color(roles.faint)
+                        .type_small()
+                        .text_color(roles.muted)
                         .child(format_clock(version.at, now, offset))
                         .child(format_ago(version.at, now)),
                 )
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .border_l_2()
-                        .border_color(if ai { roles.accent } else { roles.fill_hover })
-                        .pl(px(24.))
-                        .child(
-                            div()
-                                .text_size(px(12.))
-                                .text_color(roles.faint)
-                                .child(label),
-                        )
-                        .child(
-                            div()
-                                .mt(px(6.))
-                                .text_size(px(18.))
-                                .text_color(roles.ink)
-                                .child(description.headline.clone()),
-                        )
-                        .when(changes.len() > 1, |this| {
-                            let mixed = mixed_labels(&changes);
-                            this.child(
-                                div()
-                                    .mt(px(8.))
-                                    .flex()
-                                    .flex_col()
-                                    .gap(px(4.))
-                                    .text_size(px(14.))
-                                    .children(list_changes(&changes).into_iter().map(|listed| {
-                                        ui::row()
-                                            .flex_wrap()
-                                            .when(mixed, |this| {
-                                                this.child(
-                                                    div()
-                                                        .text_color(roles.faint)
-                                                        .child(format!("{}:\u{a0}", listed.label)),
-                                                )
-                                            })
-                                            .child(listed.rationale)
-                                    })),
-                            )
-                        })
-                        .when_some(diff, |this, diff| {
-                            this.child(
-                                div().mt(px(16.)).child(match diff {
-                                    Some(changes) => line_diff(&changes, true, px(15.2), roles),
-                                    None => div()
-                                        .text_size(px(14.))
-                                        .text_color(roles.faint)
-                                        .child("This Version could not be loaded.")
-                                        .into_any_element(),
-                                }),
-                            )
-                        })
-                        .child(ui::row().mt(px(12.)).h(px(30.)).when(hovered, |this| {
-                            this.child(
-                                ui::button(
-                                    ("view-in-timeline", id as u64),
-                                    "View in Timeline",
-                                    ButtonKind::Default,
-                                    roles,
-                                )
-                                .on_click(cx.listener(
-                                    move |this, _, window, cx| this.view_version(id, window, cx),
-                                )),
-                            )
-                        })),
-                ),
+                .child(body),
         )
         .into_any_element()
     }
+}
+
+fn entry_changes(
+    changes: &[desafinado_features::history::types::AcceptedChange],
+    roles: Roles,
+) -> Div {
+    let mixed = mixed_labels(changes);
+    div()
+        .mt(px(8.))
+        .flex()
+        .flex_col()
+        .gap(px(4.))
+        .children(list_changes(changes).into_iter().map(|listed| {
+            ui::row()
+                .flex_wrap()
+                .when(mixed, |this| {
+                    this.child(
+                        div()
+                            .text_color(roles.muted)
+                            .child(format!("{}:\u{a0}", listed.label)),
+                    )
+                })
+                .child(listed.rationale)
+        }))
 }

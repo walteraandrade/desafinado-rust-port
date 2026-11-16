@@ -18,6 +18,9 @@ use desafinado_ai::{
         ask_menu::{self, AskMenu, AskRow},
         card_placement::{CardPlacement, MARGIN_CARD_WIDTH, placement_for},
         focus_cycle::cycle_index,
+        geometry::{Rect, Viewport},
+        popover_place::{PopoverInput, Side, place_popover, span_anchor},
+        shown_cards::{CardKind, CardStatus, shown_cards},
     },
     edits::{MAX_REVIEW_EDITS, ReviewValidationContext},
     prompts::{
@@ -62,7 +65,7 @@ use desafinado_runtime::ai_backend::{AiBackend, ReviewCall, ReviewEvent, TargetC
 
 use crate::{
     theme::{self, Roles},
-    ui::{self, ButtonKind, ButtonSize},
+    ui::{self, ButtonKind, ButtonSize, ToastTone, Type as _},
 };
 
 actions!(
@@ -96,6 +99,8 @@ actions!(
 const COLUMN_WIDTH: f32 = 768.;
 const COLUMN_PADDING: f32 = 24.;
 const MARGIN_GAP: f32 = 24.;
+const BUBBLE_WIDTH: f32 = 360.;
+const BUBBLE_KEY: &str = "\u{0}bubble";
 
 pub fn init(cx: &mut App) {
     cx.bind_keys([
@@ -156,6 +161,7 @@ pub enum PaneEvent {
     },
     Toast {
         text: String,
+        tone: ToastTone,
         actions: Vec<PaneToastAction>,
     },
 }
@@ -185,6 +191,8 @@ enum Applying {
     Many(Vec<String>, ChangeSet),
 }
 
+type CardRects = Rc<RefCell<Vec<(Bounds<Pixels>, CardKind)>>>;
+
 pub struct EditorPane {
     pub editor: Entity<EditorState>,
     pub suggestions: SuggestionsState,
@@ -210,6 +218,8 @@ pub struct EditorPane {
     ai: Arc<dyn AiBackend>,
     bounds: Rc<Cell<Bounds<Pixels>>>,
     heights: Rc<RefCell<HashMap<String, Pixels>>>,
+    card_rects: CardRects,
+    hovered: Option<String>,
     pub review: Option<ReviewRun>,
     reveal_pending: bool,
     _subscriptions: Vec<Subscription>,
@@ -241,6 +251,12 @@ fn has_room_for_review(blocks: &[Block], occupied: &std::collections::BTreeSet<S
         .any(|block| block.kind != BlockKind::Code && !occupied.contains(&block.id))
 }
 
+struct BubbleAnchor {
+    above: bool,
+    head: usize,
+    span: Range<usize>,
+}
+
 fn shortcut_hint(key: &str) -> String {
     format!("Ctrl+{key}")
 }
@@ -260,59 +276,9 @@ impl EditorPane {
             )
         });
         let edits = cx.subscribe(&editor, |this, editor, event: &InputEditsEvent, cx| {
-            let frontmatter = find_frontmatter(&editor.read(cx).value());
-            let applying = this.applying.take();
-            let mut next = this.suggestions.clone();
-            for (edit, rope) in event.edits() {
-                let after = rope.to_string();
-                let changes = edit_change(
-                    edit.start_byte,
-                    edit.old_end_byte,
-                    edit.new_end_byte,
-                    &after,
-                );
-                if let Some(review) = this.review.as_mut() {
-                    review.changes = review.changes.compose(&changes);
-                }
-                next = match &applying {
-                    Some(Applying::One(id)) => accept_suggestions(
-                        &next,
-                        std::slice::from_ref(id),
-                        &changes,
-                        frontmatter.as_ref(),
-                    ),
-                    Some(Applying::Many(ids, planned)) => {
-                        accept_suggestions(&next, ids, planned, frontmatter.as_ref())
-                    }
-                    None => map_suggestions(&next, &changes, frontmatter.as_ref()),
-                };
-            }
-            this.rejected.clear();
-            this.restored.clear();
-            this.set_suggestions(next, cx);
-            cx.emit(PaneEvent::Changed);
+            this.on_edits(&editor, event, cx)
         });
-        let moves = cx.observe(&editor, |this, editor, cx| {
-            let selection = editor.read(cx).selected_range();
-            if selection != this.last_selection {
-                this.last_selection = selection.clone();
-                this.bubble = next_bubble(
-                    this.bubble,
-                    BubbleChange {
-                        selection: BubbleRange {
-                            from: selection.start,
-                            to: selection.end,
-                        },
-                        moved: true,
-                        opened: false,
-                        closed: false,
-                    },
-                );
-                this.refine = None;
-                this.refresh_decorations(cx);
-                cx.notify();
-            }
-        });
+        let moves = cx.observe(&editor, |this, editor, cx| this.on_moved(&editor, cx));
         let bubble_input =
             cx.new(|cx| InputState::new(window, cx).placeholder("Ask AI, or type an action…"));
         let typing = cx.subscribe(
@@ -349,10 +315,74 @@ impl EditorPane {
             ai,
             bounds: Rc::new(Cell::new(Bounds::default())),
             heights: Rc::new(RefCell::new(HashMap::new())),
+            card_rects: Rc::new(RefCell::new(Vec::new())),
+            hovered: None,
             review: None,
             reveal_pending: false,
             _subscriptions: vec![edits, moves, typing],
         }
+    }
+
+    fn on_edits(
+        &mut self,
+        editor: &Entity<EditorState>,
+        event: &InputEditsEvent,
+        cx: &mut Context<Self>,
+    ) {
+        let frontmatter = find_frontmatter(&editor.read(cx).value());
+        let applying = self.applying.take();
+        let mut next = self.suggestions.clone();
+        for (edit, rope) in event.edits() {
+            let after = rope.to_string();
+            let changes = edit_change(
+                edit.start_byte,
+                edit.old_end_byte,
+                edit.new_end_byte,
+                &after,
+            );
+            if let Some(review) = self.review.as_mut() {
+                review.changes = review.changes.compose(&changes);
+            }
+            next = match &applying {
+                Some(Applying::One(id)) => accept_suggestions(
+                    &next,
+                    std::slice::from_ref(id),
+                    &changes,
+                    frontmatter.as_ref(),
+                ),
+                Some(Applying::Many(ids, planned)) => {
+                    accept_suggestions(&next, ids, planned, frontmatter.as_ref())
+                }
+                None => map_suggestions(&next, &changes, frontmatter.as_ref()),
+            };
+        }
+        self.rejected.clear();
+        self.restored.clear();
+        self.set_suggestions(next, cx);
+        cx.emit(PaneEvent::Changed);
+    }
+
+    fn on_moved(&mut self, editor: &Entity<EditorState>, cx: &mut Context<Self>) {
+        let selection = editor.read(cx).selected_range();
+        if selection == self.last_selection {
+            return;
+        }
+        self.last_selection = selection.clone();
+        self.bubble = next_bubble(
+            self.bubble,
+            BubbleChange {
+                selection: BubbleRange {
+                    from: selection.start,
+                    to: selection.end,
+                },
+                moved: true,
+                opened: false,
+                closed: false,
+            },
+        );
+        self.refine = None;
+        self.refresh_decorations(cx);
+        cx.notify();
     }
 
     pub fn text(&self, cx: &App) -> String {
@@ -372,12 +402,14 @@ impl EditorPane {
         if let Some(notice) = notice {
             cx.emit(PaneEvent::Toast {
                 text: notice_message(notice.kind).to_string(),
+                tone: ToastTone::Neutral,
                 actions: Vec::new(),
             });
         }
         for (id, text) in failed {
             cx.emit(PaneEvent::Toast {
                 text,
+                tone: ToastTone::Danger,
                 actions: vec![
                     PaneToastAction::RetrySuggestion(id.clone()),
                     PaneToastAction::ShowSuggestion(id),
@@ -569,7 +601,7 @@ impl EditorPane {
                     } if start < end => Some(TextDecoration::new(
                         from + start..from + end,
                         HighlightStyle {
-                            color: Some(roles.faint),
+                            color: Some(roles.muted),
                             strikethrough: Some(StrikethroughStyle {
                                 thickness: px(1.),
                                 color: Some(roles.ink),
@@ -594,21 +626,21 @@ impl EditorPane {
                         if matches!(ready.refine, RefineState::Failed { .. }) =>
                     {
                         decoration
-                            .with_style(RangeDecorationStyle::Frame)
-                            .with_color(roles.danger)
+                            .with_style(RangeDecorationStyle::Fill)
+                            .with_color(roles.danger_fill)
                     }
                     Suggestion::Ready(_) if active => decoration
                         .with_style(RangeDecorationStyle::Fill)
-                        .with_color(roles.raised),
+                        .with_color(roles.ai_fill),
                     Suggestion::Ready(_) => decoration
                         .with_style(RangeDecorationStyle::Fill)
                         .with_color(roles.fill),
                     Suggestion::Pending(_) => decoration
-                        .with_style(RangeDecorationStyle::Frame)
-                        .with_color(roles.ai),
+                        .with_style(RangeDecorationStyle::Fill)
+                        .with_color(roles.ai_fill),
                     Suggestion::Failed(_) => decoration
-                        .with_style(RangeDecorationStyle::Frame)
-                        .with_color(roles.danger),
+                        .with_style(RangeDecorationStyle::Fill)
+                        .with_color(roles.danger_fill),
                 }
             })
             .collect();
@@ -1083,6 +1115,7 @@ impl EditorPane {
         if review_too_large(text.len()) {
             cx.emit(PaneEvent::Toast {
                 text: review_too_large_text(text.len()),
+                tone: ToastTone::Neutral,
                 actions: Vec::new(),
             });
             return;
@@ -1093,6 +1126,7 @@ impl EditorPane {
         if !has_room_for_review(&blocks, &occupied) {
             cx.emit(PaneEvent::Toast {
                 text: review_summary(0, false),
+                tone: ToastTone::Neutral,
                 actions: Vec::new(),
             });
             return;
@@ -1210,6 +1244,11 @@ impl EditorPane {
         };
         cx.emit(PaneEvent::Toast {
             text: review_notice_text(run.added, failure.as_ref()),
+            tone: if failure.is_some() {
+                ToastTone::Danger
+            } else {
+                ToastTone::Neutral
+            },
             actions,
         });
         self.review_ended(cx);
@@ -1235,6 +1274,7 @@ impl EditorPane {
         run.stop.store(true, Ordering::SeqCst);
         cx.emit(PaneEvent::Toast {
             text: review_summary(run.added, true),
+            tone: ToastTone::Neutral,
             actions: Vec::new(),
         });
         self.review_ended(cx);
@@ -1586,51 +1626,43 @@ impl EditorPane {
         placement_for(right, f32::from(pane.size.width) as f64)
     }
 
-    #[allow(clippy::too_many_arguments)]
-    fn card_button(
-        &self,
-        id: SharedString,
-        label: &str,
-        hint: Option<String>,
-        kind: ButtonKind,
-        disabled: bool,
-        focused: bool,
-        roles: Roles,
-    ) -> Stateful<Div> {
-        let primary = kind == ButtonKind::Primary;
-        ui::sized_button(
-            id,
-            label.to_string(),
-            kind,
-            ButtonSize::Small,
-            disabled,
-            roles,
-        )
-        .when_some(hint, |this, hint| {
-            this.child(
-                div()
-                    .ml(px(6.))
-                    .text_size(px(11.))
-                    .font_weight(FontWeight::NORMAL)
-                    .text_color(if primary { roles.canvas } else { roles.faint })
-                    .child(hint),
-            )
-        })
-        .when(focused, |this| this.border_2().border_color(roles.accent))
-    }
-
     fn render_card(
         &self,
         item: &Suggestion,
-        active: bool,
+        kind: CardKind,
         floor: Pixels,
         card_focused: bool,
         roles: Roles,
         cx: &mut Context<Self>,
     ) -> Option<(AnyElement, Pixels)> {
-        if item.is_pending() {
+        if item.is_pending() || self.above_view(item.to, cx) {
             return None;
         }
+        let (bounds, height) = self.place_card(item, floor, cx)?;
+        self.card_rects.borrow_mut().push((bounds, kind));
+        let origin = self.origin();
+        let frame = self
+            .card_frame(&item.id, bounds.size.width, roles, cx)
+            .left(bounds.origin.x - origin.x)
+            .top(bounds.origin.y - origin.y);
+        let element = match item {
+            Suggestion::Pending(_) => return None,
+            Suggestion::Failed(failed) => self
+                .render_failed_card(frame, &item.id, describe_error(&failed.error), roles, cx)
+                .into_any_element(),
+            Suggestion::Ready(ready) => self
+                .render_ready_card(frame, ready, kind, card_focused, roles, cx)
+                .into_any_element(),
+        };
+        Some((element, bounds.origin.y - origin.y + height + px(8.)))
+    }
+
+    fn place_card(
+        &self,
+        item: &Suggestion,
+        floor: Pixels,
+        cx: &App,
+    ) -> Option<(Bounds<Pixels>, Pixels)> {
         let state = self.editor.read(cx);
         let anchor_at = match item {
             Suggestion::Ready(ready) => {
@@ -1638,399 +1670,510 @@ impl EditorPane {
             }
             _ => item.from,
         };
-        let line = state.range_to_bounds(&(anchor_at..anchor_at))?;
+        let line = state
+            .range_to_bounds(&(anchor_at..anchor_at))
+            .or_else(|| state.range_to_bounds(&(item.from..item.from)))?;
+        let end = state.range_to_bounds(&(item.to..item.to)).unwrap_or(line);
         let pane = self.bounds.get();
+        let origin = pane.origin;
         let width = px(MARGIN_CARD_WIDTH as f32);
-        let (left, top) = match self.card_placement() {
+        let height = self
+            .heights
+            .borrow()
+            .get(&item.id)
+            .copied()
+            .unwrap_or(px(96.));
+        let placement = self.card_placement();
+        let (left, flip, gap, bottom) = match placement {
             CardPlacement::Margin => (
-                self.content_right() + px(MARGIN_GAP) - pane.origin.x,
-                line.top() - pane.origin.y,
+                self.content_right() + px(MARGIN_GAP) - origin.x,
+                false,
+                0.,
+                line.top() - origin.y,
             ),
-            CardPlacement::Floating => {
-                let range = state.range_to_bounds(&(item.to..item.to)).unwrap_or(line);
-                (
-                    (self.content_right() - width - pane.origin.x).max(px(8.)),
-                    range.bottom() + px(8.) - pane.origin.y,
-                )
-            }
+            CardPlacement::Floating => (
+                self.content_right() - width - origin.x,
+                true,
+                8.,
+                end.bottom() - origin.y,
+            ),
         };
-        let top = top.max(floor);
-        let id = item.id.clone();
-        let height = self.heights.borrow().get(&id).copied().unwrap_or(px(96.));
+        let placed = place_popover(&PopoverInput {
+            anchor: Rect {
+                left: to_f64(left),
+                right: to_f64(left),
+                top: to_f64(line.top() - origin.y),
+                bottom: to_f64(bottom),
+            },
+            width: to_f64(width),
+            height: to_f64(height),
+            area: area_of(pane),
+            side: Side::Below,
+            flip,
+            gap,
+        })?;
+        let top = match placement {
+            CardPlacement::Margin => px(placed.top as f32).max(floor),
+            CardPlacement::Floating => px(placed.top as f32),
+        };
+        let left = px(placed.left as f32);
+        Some((
+            Bounds::new(point(origin.x + left, origin.y + top), size(width, height)),
+            height,
+        ))
+    }
+
+    fn card_frame(
+        &self,
+        id: &str,
+        width: Pixels,
+        roles: Roles,
+        cx: &mut Context<Self>,
+    ) -> Stateful<Div> {
         let heights = self.heights.clone();
-        let measured_id = id.clone();
+        let measured_id = id.to_string();
         let entity = cx.entity().downgrade();
-        let card = ui::dialog_frame(SharedString::from(format!("card-{id}")), width, roles)
+        ui::dialog_frame(SharedString::from(format!("card-{id}")), width, roles)
             .absolute()
-            .left(left)
-            .top(top)
-            .child(
-                canvas(
-                    move |bounds, _, cx| {
-                        let previous = heights
-                            .borrow_mut()
-                            .insert(measured_id.clone(), bounds.size.height);
-                        if previous != Some(bounds.size.height)
-                            && let Some(entity) = entity.upgrade()
-                        {
-                            entity.update(cx, |_, cx| cx.notify());
-                        }
-                    },
-                    |_, _, _, _| {},
-                )
-                .absolute()
-                .top_0()
-                .left_0()
-                .size_full(),
-            )
-            .p(px(10.))
+            .child(ui::measure(move |size, cx| {
+                let previous = heights
+                    .borrow_mut()
+                    .insert(measured_id.clone(), size.height);
+                if previous != Some(size.height)
+                    && let Some(entity) = entity.upgrade()
+                {
+                    entity.update(cx, |_, cx| cx.notify());
+                }
+            }))
+            .p(px(12.))
             .gap(px(8.))
-            .text_size(px(13.));
-        let element = match item {
-            Suggestion::Pending(_) => return None,
-            Suggestion::Failed(failed) => {
-                let retry_id = id.clone();
-                let dismiss_id = id.clone();
-                card.border_color(roles.danger)
+    }
+
+    fn render_failed_card(
+        &self,
+        frame: Stateful<Div>,
+        id: &str,
+        error: String,
+        roles: Roles,
+        cx: &mut Context<Self>,
+    ) -> Stateful<Div> {
+        let retry_id = id.to_string();
+        let dismiss_id = id.to_string();
+        frame
+            .bg(roles.danger_fill)
+            .child(ui::error_text(error, roles))
+            .child(
+                ui::row()
+                    .gap(px(8.))
+                    .child(
+                        ui::small_button(
+                            SharedString::from(format!("retry-{id}")),
+                            "Retry",
+                            ButtonKind::Default,
+                            roles,
+                        )
+                        .on_click(
+                            cx.listener(move |this, _, window, cx| {
+                                this.retry(&retry_id, window, cx)
+                            }),
+                        ),
+                    )
+                    .child(
+                        ui::small_button(
+                            SharedString::from(format!("dismiss-{id}")),
+                            "Dismiss",
+                            ButtonKind::Default,
+                            roles,
+                        )
+                        .on_click(cx.listener(
+                            move |this, _, window, cx| {
+                                this.reject(&dismiss_id, cx);
+                                this.focus(window, cx);
+                            },
+                        )),
+                    ),
+            )
+    }
+
+    fn render_ready_card(
+        &self,
+        frame: Stateful<Div>,
+        ready: &ReadySuggestion,
+        kind: CardKind,
+        card_focused: bool,
+        roles: Roles,
+        cx: &mut Context<Self>,
+    ) -> Stateful<Div> {
+        let active = kind == CardKind::Active;
+        let controls = if active {
+            self.card_controls(ready)
+        } else {
+            Vec::new()
+        };
+        let focused = card_focused
+            .then(|| controls.get(self.card_index).copied())
+            .flatten();
+        let id = ready.id.clone();
+        let replacement_cap = (self.bounds.get().size.height * 0.45).max(px(96.));
+        let refine_error = match &ready.refine {
+            RefineState::Failed { error, .. } => Some(describe_error(error)),
+            _ => None,
+        };
+        let refine_open = self
+            .refine
+            .as_ref()
+            .filter(|refine| active && refine.id == ready.id)
+            .map(|refine| refine.input.clone());
+        frame
+            .when(!active, |this| this.bg(roles.raised))
+            .when(active, |this| {
+                this.track_focus(&self.card_focus)
+                    .key_context("SuggestionCard")
+                    .on_action(cx.listener(Self::card_next))
+                    .on_action(cx.listener(Self::card_previous))
+                    .on_action(cx.listener(Self::card_press))
+                    .on_action(cx.listener(Self::card_leave))
+                    .on_action(cx.listener(Self::previous_version))
+                    .on_action(cx.listener(Self::next_version))
+            })
+            .children(
+                active
+                    .then(|| self.render_versions(ready, focused, roles, cx))
+                    .flatten(),
+            )
+            .child(
+                ui::row()
+                    .gap(px(8.))
+                    .items_start()
+                    .child(ui::ai_flag(roles))
                     .child(
                         div()
-                            .text_color(roles.danger)
-                            .child(describe_error(&failed.error)),
-                    )
-                    .child(
-                        ui::row()
-                            .gap(px(6.))
-                            .child(
-                                ui::sized_button(
-                                    SharedString::from(format!("retry-{id}")),
-                                    "Retry",
-                                    ButtonKind::Default,
-                                    ButtonSize::Small,
-                                    false,
-                                    roles,
-                                )
-                                .on_click(cx.listener(
-                                    move |this, _, window, cx| this.retry(&retry_id, window, cx),
-                                )),
-                            )
-                            .child(
-                                ui::sized_button(
-                                    SharedString::from(format!("dismiss-{id}")),
-                                    "Dismiss",
-                                    ButtonKind::Default,
-                                    ButtonSize::Small,
-                                    false,
-                                    roles,
-                                )
-                                .on_click(cx.listener(
-                                    move |this, _, window, cx| {
-                                        this.reject(&dismiss_id, cx);
-                                        this.focus(window, cx);
-                                    },
-                                )),
-                            ),
-                    )
-            }
-            Suggestion::Ready(ready) => {
-                let controls = if active {
-                    self.card_controls(ready)
-                } else {
-                    Vec::new()
-                };
-                let focused_control = card_focused
-                    .then(|| controls.get(self.card_index).copied())
-                    .flatten();
-                let is_focused = |control: CardControl| focused_control == Some(control);
-                let replacement = styled_replacement(&ready.diff.hunks, roles);
-                let working = matches!(ready.refine, RefineState::Working { .. });
-                let refine_error = match &ready.refine {
-                    RefineState::Failed { error, .. } => Some(describe_error(error)),
-                    _ => None,
-                };
-                let version = (active && ready.history.len() >= 2).then(|| {
-                    let step = &ready.history[ready.shown.min(ready.history.len() - 1)];
-                    (
-                        ready.shown,
-                        ready.history.len(),
-                        instruction_label(&step.instruction).to_string(),
-                    )
-                });
-                let changes = (active && shows_changes(ready.from, &ready.original, &ready.diff))
-                    .then(|| {
-                        change_label(&change_ranges(ready.from, &ready.diff), self.cursor(cx))
-                    });
-                let refine_open = self
-                    .refine
-                    .as_ref()
-                    .filter(|refine| active && refine.id == ready.id)
-                    .map(|refine| refine.input.clone());
-                card.when(active, |this| {
-                    this.border_color(roles.ai)
-                        .track_focus(&self.card_focus)
-                        .key_context("SuggestionCard")
+                            .flex_1()
+                            .min_w_0()
+                            .text_color(roles.ink)
+                            .child(ready.rationale.clone()),
+                    ),
+            )
+            .child(
+                div()
+                    .id(SharedString::from(format!("replacement-{id}")))
+                    .max_h(replacement_cap)
+                    .overflow_y_scroll()
+                    .child(styled_replacement(&ready.diff.hunks, roles)),
+            )
+            .children(
+                active
+                    .then(|| self.render_changes(ready, focused, roles, cx))
+                    .flatten(),
+            )
+            .when(active, |this| {
+                this.child(self.render_card_actions(ready, focused, roles, cx))
+            })
+            .when_some(refine_open, |this, input| {
+                this.child(
+                    div()
+                        .key_context("RefineInput")
+                        .on_action(cx.listener(Self::refine_confirm))
+                        .on_action(cx.listener(Self::refine_cancel))
                         .on_action(cx.listener(Self::card_next))
                         .on_action(cx.listener(Self::card_previous))
-                        .on_action(cx.listener(Self::card_press))
-                        .on_action(cx.listener(Self::card_leave))
-                        .on_action(cx.listener(Self::previous_version))
-                        .on_action(cx.listener(Self::next_version))
-                })
-                .when_some(version, |this, (shown, count, instruction)| {
-                    this.child(
-                        ui::row()
-                            .gap(px(4.))
-                            .child(
-                                self.card_button(
-                                    SharedString::from(format!("prev-{id}")),
-                                    "‹",
-                                    None,
-                                    ButtonKind::Quiet,
-                                    working || shown == 0,
-                                    is_focused(CardControl::PreviousVersion),
-                                    roles,
-                                )
-                                .tooltip(|window, cx| {
-                                    component::tooltip::Tooltip::new("Previous version (Ctrl+H)")
-                                        .build(window, cx)
-                                })
-                                .on_click(cx.listener(
-                                    |this, _, window, cx| {
-                                        if let Some(active) = this.active(cx) {
-                                            this.press(
-                                                CardControl::PreviousVersion,
-                                                &active,
-                                                window,
-                                                cx,
-                                            );
-                                        }
-                                    },
-                                )),
-                            )
-                            .child(format!("{} / {}", shown + 1, count))
-                            .child(
-                                self.card_button(
-                                    SharedString::from(format!("next-{id}")),
-                                    "›",
-                                    None,
-                                    ButtonKind::Quiet,
-                                    working || shown + 1 == count,
-                                    is_focused(CardControl::NextVersion),
-                                    roles,
-                                )
-                                .tooltip(|window, cx| {
-                                    component::tooltip::Tooltip::new("Next version (Ctrl+L)")
-                                        .build(window, cx)
-                                })
-                                .on_click(cx.listener(
-                                    |this, _, window, cx| {
-                                        if let Some(active) = this.active(cx) {
-                                            this.press(
-                                                CardControl::NextVersion,
-                                                &active,
-                                                window,
-                                                cx,
-                                            );
-                                        }
-                                    },
-                                )),
-                            )
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .min_w_0()
-                                    .pl(px(3.))
-                                    .overflow_hidden()
-                                    .text_ellipsis()
-                                    .whitespace_nowrap()
-                                    .text_color(roles.faint)
-                                    .child(instruction),
-                            ),
-                    )
-                })
-                .child(
-                    ui::row()
-                        .gap(px(6.))
-                        .items_start()
-                        .child(ui::ai_flag(roles))
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .text_color(roles.ink)
-                                .child(ready.rationale.clone()),
-                        ),
+                        .child(ui::field(
+                            Input::new(&input).appearance(false),
+                            true,
+                            false,
+                            roles,
+                        )),
                 )
-                .child(div().text_size(px(14.)).child(replacement))
-                .when_some(changes, |this, label| {
-                    this.child(
-                        ui::row()
-                            .gap(px(4.))
-                            .child(div().flex_1().text_color(roles.faint).child(label))
-                            .child(
-                                self.card_button(
-                                    SharedString::from(format!("prev-change-{id}")),
-                                    "↑",
-                                    None,
-                                    ButtonKind::Quiet,
-                                    false,
-                                    is_focused(CardControl::PreviousChange),
-                                    roles,
-                                )
-                                .tooltip(|window, cx| {
-                                    component::tooltip::Tooltip::new("Previous change")
-                                        .build(window, cx)
-                                })
-                                .on_click(cx.listener(
-                                    |this, _, window, cx| {
-                                        this.step_change(Direction::Backward, window, cx)
-                                    },
-                                )),
-                            )
-                            .child(
-                                self.card_button(
-                                    SharedString::from(format!("next-change-{id}")),
-                                    "↓",
-                                    None,
-                                    ButtonKind::Quiet,
-                                    false,
-                                    is_focused(CardControl::NextChange),
-                                    roles,
-                                )
-                                .tooltip(|window, cx| {
-                                    component::tooltip::Tooltip::new("Next change")
-                                        .build(window, cx)
-                                })
-                                .on_click(cx.listener(
-                                    |this, _, window, cx| {
-                                        this.step_change(Direction::Forward, window, cx)
-                                    },
-                                )),
-                            ),
-                    )
-                })
-                .when(active, |this| {
-                    let accept_id = id.clone();
-                    let reject_id = id.clone();
-                    let refine_id = id.clone();
-                    this.child(
-                        ui::row()
-                            .gap(px(6.))
-                            .flex_wrap()
-                            .child(
-                                self.card_button(
-                                    SharedString::from(format!("accept-{id}")),
-                                    "Accept",
-                                    Some(shortcut_hint("↵")),
-                                    ButtonKind::Primary,
-                                    false,
-                                    is_focused(CardControl::Accept),
-                                    roles,
-                                )
-                                .on_click(cx.listener(
-                                    move |this, _, window, cx| {
-                                        this.accept(&accept_id, window, cx);
-                                        this.focus(window, cx);
-                                    },
-                                )),
-                            )
-                            .child(
-                                self.card_button(
-                                    SharedString::from(format!("reject-{id}")),
-                                    "Reject",
-                                    Some("Esc".into()),
-                                    ButtonKind::Default,
-                                    false,
-                                    is_focused(CardControl::Reject),
-                                    roles,
-                                )
-                                .on_click(cx.listener(
-                                    move |this, _, window, cx| {
-                                        this.reject(&reject_id, cx);
-                                        this.focus(window, cx);
-                                    },
-                                )),
-                            )
-                            .child(if working {
-                                self.card_button(
-                                    SharedString::from(format!("refine-{id}")),
-                                    "Refining…",
-                                    None,
-                                    ButtonKind::Default,
-                                    true,
-                                    false,
-                                    roles,
-                                )
-                            } else {
-                                self.card_button(
-                                    SharedString::from(format!("refine-{id}")),
-                                    "Refine",
-                                    Some(shortcut_hint("K")),
-                                    ButtonKind::Default,
-                                    false,
-                                    is_focused(CardControl::Refine),
-                                    roles,
-                                )
-                                .on_click(cx.listener(
-                                    move |this, _, window, cx| {
-                                        this.toggle_refine(&refine_id, window, cx)
-                                    },
-                                ))
-                            }),
-                    )
-                })
-                .when_some(refine_open, |this, input| {
-                    this.child(
-                        div()
-                            .key_context("RefineInput")
-                            .on_action(cx.listener(Self::refine_confirm))
-                            .on_action(cx.listener(Self::refine_cancel))
-                            .on_action(cx.listener(Self::card_next))
-                            .on_action(cx.listener(Self::card_previous))
-                            .child(ui::field(
-                                Input::new(&input).appearance(false),
-                                true,
-                                false,
-                                roles,
-                            )),
-                    )
-                })
-                .when_some(refine_error, |this, error| {
-                    let retry_id = id.clone();
-                    this.child(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .gap(px(6.))
-                            .child(div().text_color(roles.danger).child(error))
-                            .when(active, |this| {
-                                this.child(
-                                    ui::row().child(
-                                        self.card_button(
-                                            SharedString::from(format!("retry-refine-{id}")),
-                                            "Retry",
-                                            None,
-                                            ButtonKind::Default,
-                                            false,
-                                            is_focused(CardControl::RetryRefine),
-                                            roles,
-                                        )
-                                        .on_click(
-                                            cx.listener(move |this, _, window, cx| {
-                                                this.retry_refine_of(&retry_id, window, cx)
-                                            }),
-                                        ),
-                                    ),
-                                )
-                            }),
-                    )
-                })
-            }
+            })
+            .when_some(refine_error, |this, error| {
+                this.child(self.render_refine_error(&id, error, active, focused, roles, cx))
+            })
+    }
+
+    fn render_versions(
+        &self,
+        ready: &ReadySuggestion,
+        focused: Option<CardControl>,
+        roles: Roles,
+        cx: &mut Context<Self>,
+    ) -> Option<Div> {
+        let count = ready.history.len();
+        if count < 2 {
+            return None;
+        }
+        let shown = ready.shown.min(count - 1);
+        let instruction = instruction_label(&ready.history[shown].instruction).to_string();
+        let working = matches!(ready.refine, RefineState::Working { .. });
+        let id = &ready.id;
+        let step =
+            |control: CardControl, label: &'static str, disabled: bool, tip: &'static str| {
+                ui::sized_button(
+                    SharedString::from(format!(
+                        "{}-{id}",
+                        if control == CardControl::NextVersion {
+                            "next"
+                        } else {
+                            "prev"
+                        }
+                    )),
+                    label,
+                    ButtonKind::Quiet,
+                    ButtonSize::Small,
+                    ui::Control {
+                        disabled,
+                        focused: focused == Some(control),
+                    },
+                    roles,
+                )
+                .tooltip(move |window, cx| component::tooltip::Tooltip::new(tip).build(window, cx))
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    if let Some(active) = this.active(cx) {
+                        this.press(control, &active, window, cx);
+                    }
+                }))
+            };
+        Some(
+            ui::row()
+                .gap(px(4.))
+                .type_small()
+                .child(step(
+                    CardControl::PreviousVersion,
+                    "‹",
+                    working || shown == 0,
+                    "Previous version (Ctrl+H)",
+                ))
+                .child(format!("{} / {}", shown + 1, count))
+                .child(step(
+                    CardControl::NextVersion,
+                    "›",
+                    working || shown + 1 == count,
+                    "Next version (Ctrl+L)",
+                ))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .pl(px(4.))
+                        .overflow_hidden()
+                        .text_ellipsis()
+                        .whitespace_nowrap()
+                        .text_color(roles.muted)
+                        .child(instruction),
+                ),
+        )
+    }
+
+    fn render_changes(
+        &self,
+        ready: &ReadySuggestion,
+        focused: Option<CardControl>,
+        roles: Roles,
+        cx: &mut Context<Self>,
+    ) -> Option<Div> {
+        if !shows_changes(ready.from, &ready.original, &ready.diff) {
+            return None;
+        }
+        let label = change_label(&change_ranges(ready.from, &ready.diff), self.cursor(cx));
+        let id = &ready.id;
+        let step = |control: CardControl, name: &str, label: &'static str, tip: &'static str| {
+            let direction = if control == CardControl::NextChange {
+                Direction::Forward
+            } else {
+                Direction::Backward
+            };
+            ui::sized_button(
+                SharedString::from(format!("{name}-{id}")),
+                label,
+                ButtonKind::Quiet,
+                ButtonSize::Small,
+                ui::Control::focused(focused == Some(control)),
+                roles,
+            )
+            .tooltip(move |window, cx| component::tooltip::Tooltip::new(tip).build(window, cx))
+            .on_click(
+                cx.listener(move |this, _, window, cx| this.step_change(direction, window, cx)),
+            )
         };
-        Some((element.into_any_element(), top + height + px(8.)))
+        Some(
+            ui::row()
+                .gap(px(4.))
+                .type_small()
+                .child(div().flex_1().text_color(roles.muted).child(label))
+                .child(step(
+                    CardControl::PreviousChange,
+                    "prev-change",
+                    "↑",
+                    "Previous change",
+                ))
+                .child(step(
+                    CardControl::NextChange,
+                    "next-change",
+                    "↓",
+                    "Next change",
+                )),
+        )
+    }
+
+    fn render_card_actions(
+        &self,
+        ready: &ReadySuggestion,
+        focused: Option<CardControl>,
+        roles: Roles,
+        cx: &mut Context<Self>,
+    ) -> Div {
+        let working = matches!(ready.refine, RefineState::Working { .. });
+        let id = ready.id.clone();
+        let accept_id = id.clone();
+        let reject_id = id.clone();
+        let refine_id = id.clone();
+        let is_focused = |control: CardControl| focused == Some(control);
+        ui::row()
+            .gap(px(8.))
+            .flex_wrap()
+            .child(
+                ui::sized_button(
+                    SharedString::from(format!("accept-{id}")),
+                    "Accept",
+                    ButtonKind::Primary,
+                    ButtonSize::Small,
+                    ui::Control::focused(is_focused(CardControl::Accept)),
+                    roles,
+                )
+                .child(ui::shortcut_hint(shortcut_hint("↵"), true, roles))
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    this.accept(&accept_id, window, cx);
+                    this.focus(window, cx);
+                })),
+            )
+            .child(
+                ui::sized_button(
+                    SharedString::from(format!("reject-{id}")),
+                    "Reject",
+                    ButtonKind::Default,
+                    ButtonSize::Small,
+                    ui::Control::focused(is_focused(CardControl::Reject)),
+                    roles,
+                )
+                .child(ui::shortcut_hint("Esc", false, roles))
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    this.reject(&reject_id, cx);
+                    this.focus(window, cx);
+                })),
+            )
+            .child(if working {
+                ui::sized_button(
+                    SharedString::from(format!("refine-{id}")),
+                    "Refining…",
+                    ButtonKind::Default,
+                    ButtonSize::Small,
+                    ui::Control::disabled(true),
+                    roles,
+                )
+            } else {
+                ui::sized_button(
+                    SharedString::from(format!("refine-{id}")),
+                    "Refine",
+                    ButtonKind::Default,
+                    ButtonSize::Small,
+                    ui::Control::focused(is_focused(CardControl::Refine)),
+                    roles,
+                )
+                .child(ui::shortcut_hint(shortcut_hint("K"), false, roles))
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    this.toggle_refine(&refine_id, window, cx)
+                }))
+            })
+    }
+
+    fn render_refine_error(
+        &self,
+        id: &str,
+        error: String,
+        active: bool,
+        focused: Option<CardControl>,
+        roles: Roles,
+        cx: &mut Context<Self>,
+    ) -> Div {
+        let retry_id = id.to_string();
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(8.))
+            .child(ui::error_text(error, roles))
+            .when(active, |this| {
+                this.child(
+                    ui::row().child(
+                        ui::sized_button(
+                            SharedString::from(format!("retry-refine-{id}")),
+                            "Retry",
+                            ButtonKind::Default,
+                            ButtonSize::Small,
+                            ui::Control::focused(focused == Some(CardControl::RetryRefine)),
+                            roles,
+                        )
+                        .on_click(cx.listener(
+                            move |this, _, window, cx| this.retry_refine_of(&retry_id, window, cx),
+                        )),
+                    ),
+                )
+            })
+    }
+
+    fn above_view(&self, offset: usize, cx: &App) -> bool {
+        let state = self.editor.read(cx);
+        state.visible_row_range().is_some_and(|rows| {
+            rows.start > 0
+                && offset < component::RopeExt::line_start_offset(state.text(), rows.start)
+        })
+    }
+
+    fn hovered_at(&self, position: Point<Pixels>, cx: &App) -> Option<String> {
+        if self
+            .card_rects
+            .borrow()
+            .iter()
+            .any(|(rect, kind)| *kind != CardKind::Hover && rect.contains(&position))
+        {
+            return None;
+        }
+        let state = self.editor.read(cx);
+        let pane = self.bounds.get();
+        let column = px(COLUMN_WIDTH).min(pane.size.width);
+        let column_left = pane.origin.x + (pane.size.width - column) / 2. + px(COLUMN_PADDING);
+        let column_right = self.content_right();
+        self.suggestions
+            .items
+            .iter()
+            .filter(|item| matches!(item, Suggestion::Ready(_)))
+            .filter(|item| !self.above_view(item.to, cx))
+            .filter(|item| {
+                let (Some(from), Some(to)) = (
+                    state.range_to_bounds(&(item.from..item.from)),
+                    state.range_to_bounds(&(item.to..item.to)),
+                ) else {
+                    return false;
+                };
+                hits_text_range(position, from, to, column_left..column_right)
+            })
+            .max_by_key(|item| item.sequence)
+            .map(|item| item.id.clone())
+    }
+
+    fn track_hover(&mut self, position: Option<Point<Pixels>>, cx: &mut Context<Self>) {
+        let next = position
+            .filter(|position| self.bounds.get().contains(position))
+            .and_then(|position| self.hovered_at(position, cx));
+        if next != self.hovered {
+            self.hovered = next;
+            cx.notify();
+        }
     }
 
     fn render_caret(&self, roles: Roles, cx: &App) -> Option<AnyElement> {
         let caret = ai_caret_of(&self.suggestions, self.review.is_some())?;
+        if self.above_view(caret.pos, cx) {
+            return None;
+        }
         let bounds = self
             .editor
             .read(cx)
@@ -2038,26 +2181,16 @@ impl EditorPane {
         let origin = self.origin();
         let pane = self.bounds.get();
         let label = format!("{} ···", caret.label);
-        let flag_width = px(14. + 7. * label.chars().count() as f32);
+        let flag_width = px(16. + 7. * label.chars().count() as f32);
         let flipped = bounds.left() + flag_width > pane.origin.x + pane.size.width;
-        let flag = div()
+        let flag = ui::ai_flag(roles)
             .absolute()
-            .top(px(-18.))
+            .top(px(-16.))
             .when(flipped, |this| this.right(px(0.)))
             .when(!flipped, |this| this.left(px(0.)))
-            .flex()
-            .flex_row()
-            .items_center()
             .gap(px(4.))
-            .px(px(4.))
-            .h(px(16.))
-            .bg(roles.ai)
-            .text_color(roles.canvas)
-            .text_size(px(11.))
-            .font_weight(FontWeight::SEMIBOLD)
             .whitespace_nowrap()
-            .child("AI")
-            .child(div().font_weight(FontWeight::NORMAL).child(label));
+            .child(div().weight_regular().child(label));
         Some(
             div()
                 .absolute()
@@ -2071,7 +2204,7 @@ impl EditorPane {
         )
     }
 
-    fn bubble_view(&self, window: &Window, cx: &App) -> Option<(bool, Range<usize>, bool)> {
+    fn bubble_view(&self, window: &Window, cx: &App) -> Option<BubbleAnchor> {
         let selection = self.editor.read(cx).selected_range();
         let focused = self.pane_focused(window, cx);
         let empty = selection.is_empty();
@@ -2092,140 +2225,168 @@ impl EditorPane {
             return None;
         }
         let reversed = self.editor.read(cx).is_selection_reversed();
-        let pos = if empty {
-            target.from
-        } else if reversed {
-            selection.start
+        Some(if empty {
+            BubbleAnchor {
+                above: true,
+                head: target.from,
+                span: target.from..target.to,
+            }
         } else {
-            selection.end
-        };
-        let above = empty || reversed;
-        Some((above, pos..pos, empty))
+            BubbleAnchor {
+                above: reversed,
+                head: if reversed {
+                    selection.start
+                } else {
+                    selection.end
+                },
+                span: selection,
+            }
+        })
     }
 
     fn render_bubble(
         &self,
-        above: bool,
-        anchor: Range<usize>,
+        anchor: BubbleAnchor,
         roles: Roles,
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
-        let line = self.editor.read(cx).range_to_bounds(&anchor)?;
+        let state = self.editor.read(cx);
+        let head = state.range_to_bounds(&(anchor.head..anchor.head))?;
+        let first = if self.above_view(anchor.span.start, cx) {
+            Bounds::new(point(head.left(), px(-1.)), size(px(0.), px(1.)))
+        } else {
+            state
+                .range_to_bounds(&(anchor.span.start..anchor.span.start))
+                .unwrap_or(head)
+        };
+        let last = state
+            .range_to_bounds(&(anchor.span.end..anchor.span.end))
+            .unwrap_or(head);
         let pane = self.bounds.get();
         let origin = pane.origin;
+        let line_rect = |line: Bounds<Pixels>| Rect {
+            left: to_f64(line.left() - origin.x),
+            right: to_f64(line.left() - origin.x),
+            top: to_f64(line.top() - origin.y),
+            bottom: to_f64(line.bottom() - origin.y),
+        };
+        let height = self
+            .heights
+            .borrow()
+            .get(BUBBLE_KEY)
+            .copied()
+            .unwrap_or(px(120.));
+        let placed = place_popover(&PopoverInput {
+            anchor: span_anchor(
+                line_rect(first),
+                line_rect(last),
+                to_f64(head.left() - origin.x - px(12.)),
+            ),
+            width: f64::from(BUBBLE_WIDTH),
+            height: to_f64(height),
+            area: area_of(pane),
+            side: if anchor.above {
+                Side::Above
+            } else {
+                Side::Below
+            },
+            flip: true,
+            gap: 8.,
+        })?;
+        let heights = self.heights.clone();
+        let entity = cx.entity().downgrade();
         let actions = self.visible_actions();
         let rows = ask_menu::menu_rows(&actions, &self.menu);
         let hint = ask_menu::hint_visible(&self.menu)
             .then(|| ask_menu::ask_hint(&actions))
             .flatten();
-        let active = self.menu.active;
-        let left = (line.left() - origin.x - px(12.))
-            .max(px(8.))
-            .min((pane.size.width - px(368.)).max(px(8.)));
         Some(
-            div()
-                .id("bubble")
+            ui::popover_frame("bubble", roles)
                 .key_context("AskBubble")
                 .on_action(cx.listener(Self::bubble_up))
                 .on_action(cx.listener(Self::bubble_down))
                 .on_action(cx.listener(Self::bubble_confirm))
                 .on_action(cx.listener(Self::bubble_cancel))
                 .on_action(cx.listener(|_, _: &Stay, _, _| {}))
-                .occlude()
                 .absolute()
-                .left(left)
-                .when(above, |this| {
-                    this.bottom(pane.size.height - (line.top() - origin.y) + px(6.))
-                })
-                .when(!above, |this| this.top(line.bottom() - origin.y + px(6.)))
-                .w(px(360.))
-                .bg(roles.raised)
-                .border_1()
-                .border_color(roles.hairline)
+                .left(px(placed.left as f32))
+                .top(px(placed.top as f32))
+                .w(px(BUBBLE_WIDTH))
+                .child(ui::measure(move |size, cx| {
+                    let previous = heights
+                        .borrow_mut()
+                        .insert(BUBBLE_KEY.to_string(), size.height);
+                    if previous != Some(size.height)
+                        && let Some(entity) = entity.upgrade()
+                    {
+                        entity.update(cx, |_, cx| cx.notify());
+                    }
+                }))
                 .p(px(8.))
-                .flex()
-                .flex_col()
-                .gap(px(6.))
+                .gap(px(8.))
                 .child(
-                    ui::row().gap(px(6.)).child(ui::ai_flag(roles)).child(
+                    ui::row().gap(px(8.)).child(ui::ai_flag(roles)).child(
                         div()
                             .flex_1()
                             .child(Input::new(&self.bubble_input).appearance(false)),
                     ),
                 )
-                .when_some(hint, |this, hint| {
-                    this.child(
-                        div()
-                            .pl(px(2.))
-                            .text_size(px(12.))
-                            .text_color(roles.faint)
-                            .child(hint),
-                    )
-                })
-                .children(rows.into_iter().enumerate().map(|(index, row)| {
-                    let (label, skill, span) = match &row {
-                        AskRow::Action { action, match_span } => {
-                            (action.label.clone(), action.skill_only, *match_span)
-                        }
-                        AskRow::Free { text } => (format!("Ask AI: “{text}”"), false, None),
-                    };
-                    let highlighted = index == active;
-                    let text = match span {
-                        Some((from, to)) if to <= label.len() => StyledText::new(label.clone())
-                            .with_highlights(vec![(
-                                from..to,
-                                HighlightStyle {
-                                    underline: Some(UnderlineStyle {
-                                        thickness: px(1.),
-                                        color: None,
-                                        wavy: false,
-                                    }),
-                                    ..Default::default()
-                                },
-                            )])
-                            .into_any_element(),
-                        _ => StyledText::new(label.clone()).into_any_element(),
-                    };
-                    div()
-                        .id(("ask-row", index))
-                        .h(px(28.))
-                        .px(px(8.))
-                        .flex()
-                        .items_center()
-                        .justify_between()
-                        .border_1()
-                        .border_color(if highlighted { roles.ai } else { roles.raised })
-                        .bg(if highlighted {
-                            roles.raised
-                        } else {
-                            roles.fill
-                        })
-                        .text_color(if highlighted { roles.ai } else { roles.ink })
-                        .text_size(px(13.))
-                        .cursor_pointer()
-                        .child(text)
-                        .when(skill, |this| {
-                            this.child(
-                                div()
-                                    .text_color(roles.faint)
-                                    .text_size(px(11.))
-                                    .child("Skill"),
-                            )
-                        })
-                        .on_mouse_move(cx.listener(move |this, _, _, cx| {
-                            let next = ask_menu::hover_ask_menu(&this.menu, index);
-                            if next != this.menu {
-                                this.menu = next;
-                                cx.notify();
-                            }
-                        }))
-                        .on_click(cx.listener(move |this, _, window, cx| {
-                            this.menu = ask_menu::hover_ask_menu(&this.menu, index);
-                            this.bubble_confirm(&BubbleConfirm, window, cx);
-                        }))
-                }))
+                .when_some(hint, |this, hint| this.child(ui::meta(hint, roles)))
+                .children(
+                    rows.into_iter()
+                        .enumerate()
+                        .map(|(index, row)| self.render_ask_row(index, row, roles, cx)),
+                )
                 .into_any_element(),
         )
+    }
+
+    fn render_ask_row(
+        &self,
+        index: usize,
+        row: AskRow,
+        roles: Roles,
+        cx: &mut Context<Self>,
+    ) -> Stateful<Div> {
+        let (label, skill, span) = match &row {
+            AskRow::Action { action, match_span } => {
+                (action.label.clone(), action.skill_only, *match_span)
+            }
+            AskRow::Free { text } => (format!("Ask AI: “{text}”"), false, None),
+        };
+        let text = match span {
+            Some((from, to)) if to <= label.len() => StyledText::new(label.clone())
+                .with_highlights(vec![(
+                    from..to,
+                    HighlightStyle {
+                        underline: Some(UnderlineStyle {
+                            thickness: px(1.),
+                            color: None,
+                            wavy: false,
+                        }),
+                        ..Default::default()
+                    },
+                )])
+                .into_any_element(),
+            _ => StyledText::new(label.clone()).into_any_element(),
+        };
+        ui::ai_option_row(("ask-row", index), index == self.menu.active, roles)
+            .h(px(28.))
+            .px(px(8.))
+            .justify_between()
+            .on_mouse_move(cx.listener(move |this, _, _, cx| {
+                let next = ask_menu::hover_ask_menu(&this.menu, index);
+                if next != this.menu {
+                    this.menu = next;
+                    cx.notify();
+                }
+            }))
+            .on_click(cx.listener(move |this, _, window, cx| {
+                this.menu = ask_menu::hover_ask_menu(&this.menu, index);
+                this.bubble_confirm(&BubbleConfirm, window, cx);
+            }))
+            .child(text)
+            .when(skill, |this| this.child(ui::meta("Skill", roles)))
     }
 }
 
@@ -2249,10 +2410,10 @@ fn styled_replacement(hunks: &[DiffHunk], roles: Roles) -> StyledText {
                 highlights.push((
                     start..text.len(),
                     HighlightStyle {
-                        color: Some(roles.faint),
+                        color: Some(roles.muted),
                         strikethrough: Some(StrikethroughStyle {
                             thickness: px(1.),
-                            color: Some(roles.faint),
+                            color: Some(roles.muted),
                         }),
                         ..Default::default()
                     },
@@ -2265,7 +2426,7 @@ fn styled_replacement(hunks: &[DiffHunk], roles: Roles) -> StyledText {
                     start..text.len(),
                     HighlightStyle {
                         color: Some(roles.ai),
-                        background_color: Some(roles.raised),
+                        background_color: Some(roles.ai_fill),
                         ..Default::default()
                     },
                 ));
@@ -2273,6 +2434,80 @@ fn styled_replacement(hunks: &[DiffHunk], roles: Roles) -> StyledText {
         }
     }
     StyledText::new(text).with_highlights(highlights)
+}
+
+impl EditorPane {
+    fn render_cards(
+        &mut self,
+        window: &Window,
+        roles: Roles,
+        cx: &mut Context<Self>,
+    ) -> Vec<AnyElement> {
+        let active_id = self.active(cx).map(|item| item.id.clone());
+        let card_focused = self.card_focus.is_focused(window);
+        let mut items = self.suggestions.items.clone();
+        items.sort_by_key(|item| item.from);
+        let shown: HashMap<String, CardKind> = shown_cards(
+            items
+                .iter()
+                .map(|item| (item.id.as_str(), card_status(item))),
+            active_id.as_deref(),
+            self.hovered.as_deref(),
+        )
+        .into_iter()
+        .map(|(id, kind)| (id.to_string(), kind))
+        .collect();
+        self.card_rects.borrow_mut().clear();
+        let mut cards: Vec<AnyElement> = Vec::new();
+        let mut floor = px(0.);
+        let is_hover = |item: &&Suggestion| shown.get(&item.id) == Some(&CardKind::Hover);
+        let hover_last = items
+            .iter()
+            .filter(|item| !is_hover(item))
+            .chain(items.iter().filter(is_hover));
+        for item in hover_last {
+            let Some(kind) = shown.get(&item.id).copied() else {
+                continue;
+            };
+            if let Some((card, next)) = self.render_card(item, kind, floor, card_focused, roles, cx)
+            {
+                cards.push(card);
+                floor = next;
+            }
+        }
+        cards
+    }
+
+    fn track_bounds(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let bounds = self.bounds.clone();
+        let entity = cx.entity().downgrade();
+        let release = self.pointer_down.clone();
+        let release_entity = entity.clone();
+        canvas(
+            move |next, _, cx| {
+                if bounds.get() != next {
+                    bounds.set(next);
+                    if let Some(entity) = entity.upgrade() {
+                        entity.update(cx, |_, cx| cx.notify());
+                    }
+                }
+            },
+            move |_, _, window, _| {
+                let release = release.clone();
+                let entity = release_entity.clone();
+                window.on_mouse_event(move |_: &MouseUpEvent, phase, _, cx| {
+                    if phase == DispatchPhase::Capture
+                        && release.replace(false)
+                        && let Some(entity) = entity.upgrade()
+                    {
+                        entity.update(cx, |_, cx| cx.notify());
+                    }
+                });
+            },
+        )
+        .absolute()
+        .size_full()
+    }
 }
 
 impl Render for EditorPane {
@@ -2287,28 +2522,9 @@ impl Render for EditorPane {
             self.clear_bubble(window, cx);
         }
         self.bubble_shown = shown;
-        let active_id = self.active(cx).map(|item| item.id.clone());
-        let card_focused = self.card_focus.is_focused(window);
-        let mut items = self.suggestions.items.clone();
-        items.sort_by_key(|item| item.from);
-        let mut cards: Vec<AnyElement> = Vec::new();
-        let mut floor = px(0.);
-        for item in &items {
-            let active = Some(&item.id) == active_id.as_ref();
-            if let Some((card, next)) =
-                self.render_card(item, active, floor, card_focused, roles, cx)
-            {
-                cards.push(card);
-                floor = next;
-            }
-        }
+        let cards = self.render_cards(window, roles, cx);
         let caret = self.render_caret(roles, cx);
-        let bubble =
-            bubble.and_then(|(above, anchor, _)| self.render_bubble(above, anchor, roles, cx));
-        let bounds = self.bounds.clone();
-        let entity = cx.entity().downgrade();
-        let release = self.pointer_down.clone();
-        let release_entity = entity.clone();
+        let bubble = bubble.and_then(|anchor| self.render_bubble(anchor, roles, cx));
         let press = self.pointer_down.clone();
         div()
             .id("editor-pane")
@@ -2324,34 +2540,15 @@ impl Render for EditorPane {
             .on_action(cx.listener(Self::focus_card_back))
             .on_action(cx.listener(Self::pane_undo))
             .on_action(cx.listener(Self::pane_redo))
+            .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _, cx| {
+                this.track_hover(Some(event.position), cx)
+            }))
+            .on_hover(cx.listener(|this, _: &bool, window, cx| {
+                this.track_hover(Some(window.mouse_position()), cx)
+            }))
             .relative()
             .size_full()
-            .child(
-                canvas(
-                    move |next, _, cx| {
-                        if bounds.get() != next {
-                            bounds.set(next);
-                            if let Some(entity) = entity.upgrade() {
-                                entity.update(cx, |_, cx| cx.notify());
-                            }
-                        }
-                    },
-                    move |_, _, window, _| {
-                        let release = release.clone();
-                        let entity = release_entity.clone();
-                        window.on_mouse_event(move |_: &MouseUpEvent, phase, _, cx| {
-                            if phase == DispatchPhase::Capture
-                                && release.replace(false)
-                                && let Some(entity) = entity.upgrade()
-                            {
-                                entity.update(cx, |_, cx| cx.notify());
-                            }
-                        });
-                    },
-                )
-                .absolute()
-                .size_full(),
-            )
+            .child(self.track_bounds(cx))
             .child(
                 div().size_full().flex().justify_center().child(
                     div()
@@ -2368,4 +2565,40 @@ impl Render for EditorPane {
             .children(cards)
             .children(bubble)
     }
+}
+
+fn to_f64(value: Pixels) -> f64 {
+    f64::from(f32::from(value))
+}
+
+fn area_of(pane: Bounds<Pixels>) -> Viewport {
+    Viewport {
+        width: to_f64(pane.size.width),
+        height: to_f64(pane.size.height),
+    }
+}
+
+fn card_status(item: &Suggestion) -> CardStatus {
+    match item {
+        Suggestion::Pending(_) => CardStatus::Pending,
+        Suggestion::Ready(_) => CardStatus::Ready,
+        Suggestion::Failed(_) => CardStatus::Failed,
+    }
+}
+
+fn hits_text_range(
+    position: Point<Pixels>,
+    from: Bounds<Pixels>,
+    to: Bounds<Pixels>,
+    column: Range<Pixels>,
+) -> bool {
+    let (x, y) = (position.x, position.y);
+    if y < from.top() || y >= to.bottom() {
+        return false;
+    }
+    let on_first = y < from.bottom();
+    let on_last = y >= to.top();
+    let start = if on_first { from.left() } else { column.start };
+    let end = if on_last { to.left() } else { column.end };
+    x >= start && x <= end
 }
