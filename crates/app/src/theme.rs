@@ -424,6 +424,7 @@ mod tests {
             ("ink", &r.ink, "selection", &r.selection),
             ("accent link", &r.accent, "canvas", &r.canvas),
             ("ai", &r.ai, "ai_fill", &r.ai_fill),
+            ("ai", &r.ai, "canvas", &r.canvas),
             ("ink", &r.ink, "ai_fill", &r.ai_fill),
             ("danger", &r.danger, "danger_fill", &r.danger_fill),
             ("ink", &r.ink, "danger_fill", &r.danger_fill),

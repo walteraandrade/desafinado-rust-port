@@ -542,8 +542,12 @@ impl LibraryPanel {
             .pb(px(12.))
             .child(ui::title("Library", roles))
             .when(self.is_ready(), |this| {
+                let count = skill_count(self.roots());
                 this.child(ui::meta(
-                    format!("\u{a0}· {} skills", skill_count(self.roots())),
+                    format!(
+                        "\u{a0}· {count} {}",
+                        if count == 1 { "skill" } else { "skills" }
+                    ),
                     roles,
                 ))
             })

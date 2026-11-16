@@ -610,13 +610,12 @@ impl Workspace {
             .child(
                 ui::meta(format!("{}{saved}", description.label), roles)
                     .weight_medium()
-                    .when(ai, |this| this.text_color(roles.accent)),
+                    .when(ai, |this| this.text_color(roles.ai)),
             )
             .child(
                 div()
                     .mt(px(4.))
-                    .weight_medium()
-                    .text_color(roles.heading)
+                    .text_color(roles.ink)
                     .child(description.headline.clone()),
             )
             .when(changes.len() > 1, |this| {
