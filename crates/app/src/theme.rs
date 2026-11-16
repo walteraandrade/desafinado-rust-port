@@ -172,6 +172,10 @@ pub fn choose(choice: &str, cx: &mut App) {
     cx.refresh_windows();
 }
 
+pub fn swatches(option: &ThemeOption) -> Vec<Hsla> {
+    option.colors.iter().map(|color| hex(&color.hex)).collect()
+}
+
 pub fn roles(cx: &App) -> Roles {
     *cx.global::<Roles>()
 }
@@ -241,7 +245,7 @@ pub fn apply(roles: Roles, cx: &mut App) {
         c.button_primary_active = roles.ai;
         theme.font_family = "Inter".into();
         theme.mono_font_family = "Inter".into();
-        theme.mono_font_size = gpui_kit::px(17.);
+        theme.mono_font_size = crate::ui::TEXT_DOCUMENT;
         theme.highlight_theme = std::sync::Arc::new(highlight_theme(&roles));
         theme.radius = gpui_kit::px(0.);
     });

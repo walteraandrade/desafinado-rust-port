@@ -68,8 +68,9 @@ fn report(rule: &str, violations: &[String]) {
 
 #[test]
 fn colors_come_only_from_theme_roles() {
-    let violations = matches(
-        &sources(),
+    let files = sources();
+    let mut violations = matches(
+        &files,
         &["theme.rs"],
         &[
             "hex(",
@@ -80,9 +81,9 @@ fn colors_come_only_from_theme_roles() {
             "white()",
             "transparent_black",
             "transparent_white",
-            "opacity(",
         ],
     );
+    violations.extend(matches(&files, &["ui.rs"], &["opacity("]));
     report("C1 colors outside the theme", &violations);
 }
 

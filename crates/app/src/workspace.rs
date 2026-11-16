@@ -1997,7 +1997,7 @@ impl Workspace {
         let events = cx.subscribe_in(&dialog, window, |this, _, event: &KeyEvent, window, cx| {
             match event {
                 KeyEvent::State(state) => this.key_present = state.present,
-                KeyEvent::Saved(message) => this.notify(message.clone(), cx),
+                KeyEvent::Saved(message) => this.notify_success(message.clone(), cx),
                 KeyEvent::Close => {
                     this.key_dialog = None;
                     this.focus_back(window, cx);
@@ -3169,6 +3169,13 @@ impl Workspace {
                     .bottom_0()
                     .w(px(PREFERENCES_WIDTH))
                     .max_w_full()
+                    .on_mouse_down_out(cx.listener(|this, _, window, cx| {
+                        if !this.modal_open() && this.preferences.is_some() {
+                            this.preferences = None;
+                            this.pane.update(cx, |pane, cx| pane.focus(window, cx));
+                            cx.notify();
+                        }
+                    }))
                     .child(preferences),
             )
         })

@@ -11,12 +11,18 @@ use crate::theme::Roles;
 
 pub const TEXT_SMALL: Pixels = px(12.);
 pub const TEXT_BODY: Pixels = px(14.);
+/// The Document's own text, in the editor and wherever a Version is read.
+pub const TEXT_DOCUMENT: Pixels = px(17.);
 pub const MONO_FAMILY: &str = "DejaVu Sans Mono";
 const WORDMARK_FAMILY: &str = "League Spartan";
 
 pub trait Type: Styled + Sized {
     fn type_body(self) -> Self {
         self.text_size(TEXT_BODY)
+    }
+
+    fn type_document(self) -> Self {
+        self.text_size(TEXT_DOCUMENT)
     }
 
     fn type_small(self) -> Self {
@@ -280,6 +286,16 @@ pub fn disabled_row(id: impl Into<ElementId>, roles: Roles) -> Stateful<Div> {
         .flex_row()
         .items_center()
         .text_color(roles.faint)
+}
+
+/// A checkbox mark. The empty box is an outline, the filled one the accent.
+pub fn check(checked: bool, roles: Roles) -> Div {
+    div()
+        .size(px(12.))
+        .flex_none()
+        .border_1()
+        .border_color(if checked { roles.accent } else { roles.muted })
+        .when(checked, |this| this.bg(roles.accent))
 }
 
 /// A whole surface that acts on click, such as a status chip.
@@ -587,4 +603,51 @@ pub fn measure(on_size: impl Fn(Size<Pixels>, &mut App) + 'static) -> impl IntoE
     .top_0()
     .left_0()
     .size_full()
+}
+
+/// The Evals icon: four bars of a meter. It breathes while a run goes on.
+pub fn gauge_icon(busy: bool, roles: Roles) -> AnyElement {
+    let bar = |height: f32| div().w(px(2.)).h(px(height)).bg(roles.ink);
+    let icon = div()
+        .w(px(12.))
+        .h(px(14.))
+        .flex()
+        .flex_row()
+        .items_end()
+        .justify_between()
+        .child(bar(5.))
+        .child(bar(9.))
+        .child(bar(6.5))
+        .child(bar(11.5));
+    if busy {
+        icon.with_animation(
+            "evals-breathe",
+            Animation::new(std::time::Duration::from_millis(3600))
+                .repeat()
+                .with_easing(bounce(ease_in_out)),
+            |icon, delta| icon.opacity(1. - 0.75 * delta),
+        )
+        .into_any_element()
+    } else {
+        icon.into_any_element()
+    }
+}
+
+pub fn list_icon(roles: Roles) -> Div {
+    let line = || {
+        row()
+            .w(px(12.))
+            .justify_between()
+            .child(div().size(px(2.)).bg(roles.ink))
+            .child(div().w(px(8.)).h(px(2.)).bg(roles.ink))
+    };
+    div()
+        .w(px(14.))
+        .h(px(10.))
+        .flex()
+        .flex_col()
+        .justify_between()
+        .child(line())
+        .child(line())
+        .child(line())
 }
