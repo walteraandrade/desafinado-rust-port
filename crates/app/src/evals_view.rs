@@ -1026,8 +1026,10 @@ impl Render for EvalsView {
                                 "eval-run",
                                 if running { "Running…" } else { "Run Evals" },
                                 ButtonKind::Strong,
-                                ButtonSize::Regular, ui::Control::disabled(run_disabled),
-                                roles,)
+                                ButtonSize::Regular,
+                                ui::Control::disabled(run_disabled),
+                                roles,
+                            )
                             .when(!run_disabled, |this| {
                                 this.on_click(cx.listener(|_, _, _, cx| cx.emit(EvalsEvent::Ask)))
                             }),
@@ -1043,8 +1045,10 @@ impl Render for EvalsView {
                                     "Cancel"
                                 },
                                 ButtonKind::Default,
-                                ButtonSize::Regular, ui::Control::disabled(cancelling),
-                                roles,)
+                                ButtonSize::Regular,
+                                ui::Control::disabled(cancelling),
+                                roles,
+                            )
                             .when(!cancelling, |this| {
                                 this.on_click(cx.listener(|this, _, _, cx| this.cancel(cx)))
                             }),

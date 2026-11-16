@@ -258,6 +258,20 @@ pub fn option_row(
         .hover(move |this| this.bg(if chosen { roles.selection } else { roles.fill }))
 }
 
+/// A row of the ask bubble: the highlight is the AI's color.
+pub fn ai_option_row(id: impl Into<ElementId>, active: bool, roles: Roles) -> Stateful<Div> {
+    div()
+        .id(id)
+        .w_full()
+        .flex()
+        .flex_row()
+        .items_center()
+        .type_body()
+        .bg(if active { roles.ai_fill } else { roles.fill })
+        .text_color(if active { roles.ai } else { roles.ink })
+        .cursor_pointer()
+}
+
 pub fn disabled_row(id: impl Into<ElementId>, roles: Roles) -> Stateful<Div> {
     div()
         .id(id)
@@ -319,7 +333,13 @@ pub fn dot_button(
         .when(selected, |this| this.bg(roles.selection))
         .when(highlighted && !selected, |this| this.bg(roles.fill))
         .cursor_pointer()
-        .hover(move |this| this.bg(if selected { roles.selection } else { roles.fill }))
+        .hover(move |this| {
+            this.bg(if selected {
+                roles.selection
+            } else {
+                roles.fill
+            })
+        })
 }
 
 /// Covers the window to catch the click that closes a menu.

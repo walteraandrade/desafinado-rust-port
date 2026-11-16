@@ -32,7 +32,7 @@ use desafinado_features::{
         recorder::AcceptedInput,
         session::{DocumentHistory, DocumentHistoryOptions},
         store::{HistoryStore, RecordInput},
-        types::{AcceptedChange, SuggestionOrigin, VersionCause, VersionId},
+        types::{AcceptedChange, SuggestionOrigin, VersionCause, VersionId, VersionSummary},
         view_mode::{HistoryMode, HistoryModeAction, next_history_mode, visible_mode},
     },
 };
@@ -389,98 +389,21 @@ impl Workspace {
             launches,
         } = startup;
         let user_data = services.user_data.clone();
-        let db = HistoryDb::open(&user_data.join(HISTORY_FILE))
-            .map_err(|error| eprintln!("History could not open: {error}"))
-            .ok()
-            .map(Arc::new);
-        let store: Arc<dyn HistoryStore> = match &db {
-            Some(db) => Arc::new(DbHistoryStore::new(db.clone(), now_ms)),
-            None => Arc::new(MemoryHistoryStore::new()),
-        };
-        let from_launch = launch
-            .map(|path| reopen(db.as_deref(), &path, "Could not open"))
-            .unwrap_or_default();
-        let launched = from_launch.start.as_ref().map(|start| start.path.clone());
-        if let Some(path) = &launched {
-            save_last_file(&user_data, path);
-        }
-        let last_file = launched.clone().or_else(|| load_last_file(&user_data));
-        let reopened = match (&launched, &last_file) {
-            (Some(_), _) => from_launch.clone(),
-            (None, Some(path)) => reopen(db.as_deref(), path, "Could not reopen"),
-            (None, None) => Reopened::default(),
-        };
-        let notice = from_launch.notice.clone().or(reopened.notice.clone());
-        let initial = reopened
-            .text
-            .clone()
-            .or_else(|| load_unsaved(db.as_deref(), SCRATCH_KEY).map(|unsaved| unsaved.text))
-            .unwrap_or_else(|| SAMPLE_DOCUMENT.to_string());
-        if reopened.gone
-            && let Some(path) = &last_file
-        {
-            clear_last_file(&user_data);
-            let key = history_key(Some(path));
-            if let Some(db) = &db
-                && load_unsaved(Some(db), &key).is_none_or(|unsaved| unsaved.text == initial)
-            {
-                let _ = db.clear_unsaved(&key);
-            }
-        }
-        let start = reopened.start.clone();
-        let start_path = start.as_ref().map(|start| start.path.clone());
-        let start_key = history_key(start_path.as_deref());
-        let _ = store.record(
-            &start_key,
-            RecordInput {
-                at: now_ms(),
-                cause: VersionCause::Edited,
-                text: initial.clone(),
-            },
-        );
-        let first_initial = store.list(&start_key).unwrap_or_default();
-        let history_store = store.clone();
-        let evals_service = evals_view::service(user_data.clone(), store.clone());
-        let history = SwitchableHistory::new(HubOptions {
-            key_of: Box::new(|reference: Option<&PathBuf>| {
-                history_key(reference.map(PathBuf::as_path))
-            }),
-            create: Box::new(move |key, initial| {
-                let mut options =
-                    DocumentHistoryOptions::new(history_store.clone(), key, HISTORY_IDLE_MS);
-                options.initial = initial;
-                options.on_error = Box::new(|error| eprintln!("History write failed: {error}"));
-                DocumentHistory::new(options)
-            }),
-            first: start_path.clone(),
+        let Start {
+            db,
+            store,
+            initial,
+            notice,
+            start,
+            start_path,
+            remembered,
             first_initial,
-        });
-        let pane = cx.new(|cx| {
-            EditorPane::new(
-                desafinado_runtime::ai_backend::backend(services.clone()),
-                window,
-                cx,
-            )
-        });
-        let quick_actions = load_quick_actions(&user_data)
-            .ok()
-            .flatten()
-            .and_then(|text| parse_quick_action_settings(&text))
-            .unwrap_or_else(default_quick_action_settings);
-        pane.update(cx, |pane, cx| {
-            pane.quick_actions = enabled_quick_actions(&quick_actions, true);
-            pane.set_text(&initial, window, cx)
-        });
+        } = open_start(launch, &user_data);
+        let evals_service = evals_view::service(user_data.clone(), store.clone());
+        let history = document_history(store, start_path, first_initial);
+        let (pane, quick_actions) = Self::open_pane(&services, &initial, window, cx);
         let key_present = services.keys.status().present;
-        let events = cx.subscribe(&pane, |this, _, event: &PaneEvent, cx| {
-            this.on_pane_event(event, cx)
-        });
         let library = cx.new(|cx| LibraryPanel::new(user_data.clone(), window, cx));
-        let library_events = cx.subscribe_in(
-            &library,
-            window,
-            |this, _, event: &LibraryEvent, window, cx| this.on_library_event(event, window, cx),
-        );
         let frontmatter = cx.new(|cx| {
             FrontmatterView::new(
                 desafinado_runtime::ai_backend::backend(services.clone()),
@@ -488,54 +411,10 @@ impl Workspace {
                 cx,
             )
         });
-        let frontmatter_events = cx.subscribe_in(
-            &frontmatter,
-            window,
-            |this, _, event: &FrontmatterEvent, window, cx| match event {
-                FrontmatterEvent::Edit(field, value) => {
-                    this.edit_frontmatter(*field, value, window, cx)
-                }
-            },
-        );
-        let library_ready = cx.observe(&library, |this, _, cx| this.sync_library(cx));
         let utc_offset = utc_offset_minutes();
         let evals = cx.new(|_| EvalsView::new(evals_service, utc_offset));
-        let evals_events =
-            cx.subscribe_in(&evals, window, |this, _, event: &EvalsEvent, window, cx| {
-                this.on_evals_event(event, window, cx)
-            });
-        let evals_changed = cx.observe(&evals, |_, _, cx| cx.notify());
-        let evals_quit = cx.on_app_quit({
-            let service = evals.read(cx).service();
-            move |_, _| {
-                let service = service.clone();
-                async move { service.shutdown() }
-            }
-        });
-        let release = cx.on_release(|this, _| this.flush_all());
-        let quit = cx.on_app_quit(|this, _| {
-            this.flush_all();
-            this.services.flush_records();
-            async {}
-        });
-        let session = start.as_ref().map(|start| FileSession {
-            name: start.name.clone(),
-            path: Some(start.path.clone()),
-            saved_text: start.saved_text.clone(),
-            dirty: initial != start.saved_text,
-        });
-        let conflict = start
-            .as_ref()
-            .filter(|start| start.disk_changed)
-            .map(|start| Conflict {
-                name: start.name.clone(),
-                path: start.path.clone(),
-            });
-        let remembered = if reopened.gone {
-            None
-        } else {
-            start_path.clone().or(last_file)
-        };
+        let subscriptions = Self::subscribe(&pane, &library, &frontmatter, &evals, window, cx);
+        let (session, conflict) = session_of(start.as_ref(), &initial);
         let mut workspace = Self {
             pane,
             services,
@@ -595,25 +474,97 @@ impl Workspace {
             model_dialog: None,
             spend: None,
             _dialog_subscriptions: Vec::new(),
-            _subscriptions: vec![
-                evals_events,
-                evals_changed,
-                evals_quit,
-                events,
-                release,
-                quit,
-                library_events,
-                frontmatter_events,
-                library_ready,
-            ],
+            _subscriptions: subscriptions,
         };
-        workspace.start_watcher(window, cx);
-        workspace.sync_library(cx);
-        workspace.listen_for_launches(launches, window, cx);
-        if let Some((text, tone)) = notice {
-            workspace.notify_with(text, tone, Vec::new(), cx);
-        }
+        workspace.started(launches, notice, window, cx);
         workspace
+    }
+
+    fn started(
+        &mut self,
+        launches: UnboundedReceiver<LaunchMessage>,
+        notice: Option<(String, ToastTone)>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.start_watcher(window, cx);
+        self.sync_library(cx);
+        self.listen_for_launches(launches, window, cx);
+        if let Some((text, tone)) = notice {
+            self.notify_with(text, tone, Vec::new(), cx);
+        }
+    }
+
+    fn open_pane(
+        services: &Arc<Services>,
+        initial: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> (Entity<EditorPane>, QuickActionSettings) {
+        let pane = cx.new(|cx| {
+            EditorPane::new(
+                desafinado_runtime::ai_backend::backend(services.clone()),
+                window,
+                cx,
+            )
+        });
+        let quick_actions = load_quick_actions(&services.user_data)
+            .ok()
+            .flatten()
+            .and_then(|text| parse_quick_action_settings(&text))
+            .unwrap_or_else(default_quick_action_settings);
+        pane.update(cx, |pane, cx| {
+            pane.quick_actions = enabled_quick_actions(&quick_actions, true);
+            pane.set_text(initial, window, cx)
+        });
+        (pane, quick_actions)
+    }
+
+    fn subscribe(
+        pane: &Entity<EditorPane>,
+        library: &Entity<LibraryPanel>,
+        frontmatter: &Entity<FrontmatterView>,
+        evals: &Entity<EvalsView>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Vec<Subscription> {
+        let evals_service = evals.read(cx).service();
+        vec![
+            cx.subscribe(pane, |this, _, event: &PaneEvent, cx| {
+                this.on_pane_event(event, cx)
+            }),
+            cx.subscribe_in(
+                library,
+                window,
+                |this, _, event: &LibraryEvent, window, cx| {
+                    this.on_library_event(event, window, cx)
+                },
+            ),
+            cx.subscribe_in(
+                frontmatter,
+                window,
+                |this, _, event: &FrontmatterEvent, window, cx| match event {
+                    FrontmatterEvent::Edit(field, value) => {
+                        this.edit_frontmatter(*field, value, window, cx)
+                    }
+                },
+            ),
+            cx.observe(library, |this, _, cx| this.sync_library(cx)),
+            cx.subscribe_in(evals, window, |this, _, event: &EvalsEvent, window, cx| {
+                this.on_evals_event(event, window, cx)
+            }),
+            cx.observe(evals, |_, _, cx| cx.notify()),
+            cx.on_app_quit(move |_, _| {
+                let service = evals_service.clone();
+                async move { service.shutdown() }
+            }),
+            cx.on_release(|this, _| this.flush_all()),
+            cx.on_app_quit(|this, _| {
+                this.flush_all();
+                this.services.flush_records();
+                async {}
+            }),
+        ]
     }
 
     fn start_watcher(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -2282,9 +2233,9 @@ impl Workspace {
                         cx.notify();
                     }
                 }))
-                .on_click(cx.listener(move |this, _, window, cx| {
-                    this.select_menu_row(index, window, cx)
-                }))
+                .on_click(
+                    cx.listener(move |this, _, window, cx| this.select_menu_row(index, window, cx)),
+                )
                 .child(item.label)
                 .children(shortcut)
         };
@@ -2380,10 +2331,9 @@ impl Workspace {
                 kind,
                 ui::ButtonSize::Regular,
                 ui::Control::focused(focused == index),
-                roles,)
-            .on_click(cx.listener(move |this, _, window, cx| {
-                this.answer_leave(choice, window, cx)
-            }))
+                roles,
+            )
+            .on_click(cx.listener(move |this, _, window, cx| this.answer_leave(choice, window, cx)))
         };
         ui::modal_backdrop(
             "leave-backdrop",
@@ -2545,6 +2495,121 @@ fn row(
     }
 }
 
+struct Start {
+    db: Option<Arc<HistoryDb>>,
+    store: Arc<dyn HistoryStore>,
+    initial: String,
+    notice: Option<(String, ToastTone)>,
+    start: Option<StartFile>,
+    start_path: Option<PathBuf>,
+    remembered: Option<PathBuf>,
+    first_initial: Vec<VersionSummary>,
+}
+
+fn open_start(launch: Option<PathBuf>, user_data: &Path) -> Start {
+    let db = HistoryDb::open(&user_data.join(HISTORY_FILE))
+        .map_err(|error| eprintln!("History could not open: {error}"))
+        .ok()
+        .map(Arc::new);
+    let store: Arc<dyn HistoryStore> = match &db {
+        Some(db) => Arc::new(DbHistoryStore::new(db.clone(), now_ms)),
+        None => Arc::new(MemoryHistoryStore::new()),
+    };
+    let from_launch = launch
+        .map(|path| reopen(db.as_deref(), &path, "Could not open"))
+        .unwrap_or_default();
+    let launched = from_launch.start.as_ref().map(|start| start.path.clone());
+    if let Some(path) = &launched {
+        save_last_file(user_data, path);
+    }
+    let last_file = launched.clone().or_else(|| load_last_file(user_data));
+    let reopened = match (&launched, &last_file) {
+        (Some(_), _) => from_launch.clone(),
+        (None, Some(path)) => reopen(db.as_deref(), path, "Could not reopen"),
+        (None, None) => Reopened::default(),
+    };
+    let notice = from_launch.notice.clone().or(reopened.notice.clone());
+    let initial = reopened
+        .text
+        .clone()
+        .or_else(|| load_unsaved(db.as_deref(), SCRATCH_KEY).map(|unsaved| unsaved.text))
+        .unwrap_or_else(|| SAMPLE_DOCUMENT.to_string());
+    if reopened.gone
+        && let Some(path) = &last_file
+    {
+        clear_last_file(user_data);
+        let key = history_key(Some(path));
+        if let Some(db) = &db
+            && load_unsaved(Some(db), &key).is_none_or(|unsaved| unsaved.text == initial)
+        {
+            let _ = db.clear_unsaved(&key);
+        }
+    }
+    let start = reopened.start.clone();
+    let start_path = start.as_ref().map(|start| start.path.clone());
+    let start_key = history_key(start_path.as_deref());
+    let _ = store.record(
+        &start_key,
+        RecordInput {
+            at: now_ms(),
+            cause: VersionCause::Edited,
+            text: initial.clone(),
+        },
+    );
+    let first_initial = store.list(&start_key).unwrap_or_default();
+    let remembered = if reopened.gone {
+        None
+    } else {
+        start_path.clone().or(last_file)
+    };
+    Start {
+        db,
+        store,
+        initial,
+        notice,
+        start,
+        start_path,
+        remembered,
+        first_initial,
+    }
+}
+
+fn document_history(
+    store: Arc<dyn HistoryStore>,
+    first: Option<PathBuf>,
+    first_initial: Vec<VersionSummary>,
+) -> SwitchableHistory<PathBuf> {
+    SwitchableHistory::new(HubOptions {
+        key_of: Box::new(|reference: Option<&PathBuf>| {
+            history_key(reference.map(PathBuf::as_path))
+        }),
+        create: Box::new(move |key, initial| {
+            let mut options = DocumentHistoryOptions::new(store.clone(), key, HISTORY_IDLE_MS);
+            options.initial = initial;
+            options.on_error = Box::new(|error| eprintln!("History write failed: {error}"));
+            DocumentHistory::new(options)
+        }),
+        first,
+        first_initial,
+    })
+}
+
+fn session_of(start: Option<&StartFile>, initial: &str) -> (Option<FileSession>, Option<Conflict>) {
+    let session = start.map(|start| FileSession {
+        name: start.name.clone(),
+        path: Some(start.path.clone()),
+        saved_text: start.saved_text.clone(),
+        dirty: initial != start.saved_text,
+    });
+    let conflict = start
+        .filter(|start| start.disk_changed)
+        .map(|start| Conflict {
+            name: start.name.clone(),
+            path: start.path.clone(),
+        });
+    (session, conflict)
+}
+
 fn ended_tone(result: &EvalRunResult) -> ToastTone {
     match result {
         EvalRunResult::Completed { .. } => ToastTone::Success,
@@ -2616,30 +2681,33 @@ impl Render for Workspace {
             busy: self.evals.read(cx).going().is_some(),
         });
         let main = self.render_main(mode, evals_shown, evals_button, roles, cx);
-        let root = self.with_actions(
-            div()
-                .id("workspace")
-                .key_context(if mode == HistoryMode::Editing && !evals_shown {
-                    "Workspace"
-                } else {
-                    "HistoryView"
-                })
-                .track_focus(&self.focus),
-            cx,
-        )
-        .relative()
-        .size_full()
-        .flex()
-        .flex_col()
-        .bg(roles.canvas)
-        .text_color(roles.ink)
-        .child(TitleBar::new().child(
-            h_flex_row()
-                .gap(px(4.))
-                .child(self.render_menu_button(MenuKind::File, "File", roles, cx))
-                .child(self.render_menu_button(MenuKind::Edit, "Edit", roles, cx)),
-        ))
-        .child(main);
+        let root = self
+            .with_actions(
+                div()
+                    .id("workspace")
+                    .key_context(if mode == HistoryMode::Editing && !evals_shown {
+                        "Workspace"
+                    } else {
+                        "HistoryView"
+                    })
+                    .track_focus(&self.focus),
+                cx,
+            )
+            .relative()
+            .size_full()
+            .flex()
+            .flex_col()
+            .bg(roles.canvas)
+            .text_color(roles.ink)
+            .child(
+                TitleBar::new().child(
+                    h_flex_row()
+                        .gap(px(4.))
+                        .child(self.render_menu_button(MenuKind::File, "File", roles, cx))
+                        .child(self.render_menu_button(MenuKind::Edit, "Edit", roles, cx)),
+                ),
+            )
+            .child(main);
         self.with_overlays(root, roles, cx)
     }
 }
@@ -2934,15 +3002,18 @@ impl Workspace {
             .flex()
             .flex_row()
             .child(self.render_rail(roles, cx))
-            .when(self.library_open && placement == Placement::Column, |this| {
-                this.child(
-                    div()
-                        .w(px(library_panel::LIBRARY_WIDTH))
-                        .h_full()
-                        .flex_none()
-                        .child(self.library.clone()),
-                )
-            })
+            .when(
+                self.library_open && placement == Placement::Column,
+                |this| {
+                    this.child(
+                        div()
+                            .w(px(library_panel::LIBRARY_WIDTH))
+                            .h_full()
+                            .flex_none()
+                            .child(self.library.clone()),
+                    )
+                },
+            )
             .child(
                 div()
                     .flex_1()
@@ -2966,24 +3037,27 @@ impl Workspace {
                         this.child(self.render_missing_key(roles, cx))
                     }),
             )
-            .when(self.library_open && placement == Placement::Overlay, |this| {
-                this.child(
-                    div()
-                        .id("library-overlay")
-                        .occlude()
-                        .absolute()
-                        .top_0()
-                        .bottom_0()
-                        .left(px(library_panel::RAIL_WIDTH))
-                        .w(px(library_panel::LIBRARY_WIDTH))
-                        .on_mouse_down_out(cx.listener(|this, _, _, cx| {
-                            if this.library_open && this.placement() == Placement::Overlay {
-                                this.fold_library(cx);
-                            }
-                        }))
-                        .child(self.library.clone()),
-                )
-            })
+            .when(
+                self.library_open && placement == Placement::Overlay,
+                |this| {
+                    this.child(
+                        div()
+                            .id("library-overlay")
+                            .occlude()
+                            .absolute()
+                            .top_0()
+                            .bottom_0()
+                            .left(px(library_panel::RAIL_WIDTH))
+                            .w(px(library_panel::LIBRARY_WIDTH))
+                            .on_mouse_down_out(cx.listener(|this, _, _, cx| {
+                                if this.library_open && this.placement() == Placement::Overlay {
+                                    this.fold_library(cx);
+                                }
+                            }))
+                            .child(self.library.clone()),
+                    )
+                },
+            )
     }
 
     fn render_header(&self, roles: Roles, cx: &mut Context<Self>) -> Div {
@@ -3031,9 +3105,9 @@ impl Workspace {
                                 ButtonKind::Primary,
                                 roles,
                             )
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.accept_all(window, cx)
-                            })),
+                            .on_click(
+                                cx.listener(|this, _, window, cx| this.accept_all(window, cx)),
+                            ),
                         )
                         .child(
                             ui::small_button(
@@ -3042,9 +3116,9 @@ impl Workspace {
                                 ButtonKind::Default,
                                 roles,
                             )
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.reject_all(window, cx)
-                            })),
+                            .on_click(
+                                cx.listener(|this, _, window, cx| this.reject_all(window, cx)),
+                            ),
                         ),
                 )
             })
@@ -3053,7 +3127,12 @@ impl Workspace {
             })
     }
 
-    fn render_reviewing(&self, added: usize, roles: Roles, cx: &mut Context<Self>) -> Stateful<Div> {
+    fn render_reviewing(
+        &self,
+        added: usize,
+        roles: Roles,
+        cx: &mut Context<Self>,
+    ) -> Stateful<Div> {
         ui::chip("header-reviewing", roles)
             .tooltip(|window, cx| {
                 gpui_kit::component::tooltip::Tooltip::new("Stop the Review pass").build(window, cx)
@@ -3074,7 +3153,12 @@ impl Workspace {
             .child(div().ml(px(4.)).weight_strong().child("Stop"))
     }
 
-    fn with_overlays(&self, root: Stateful<Div>, roles: Roles, cx: &mut Context<Self>) -> Stateful<Div> {
+    fn with_overlays(
+        &self,
+        root: Stateful<Div>,
+        roles: Roles,
+        cx: &mut Context<Self>,
+    ) -> Stateful<Div> {
         let toast = self.render_toast(roles, cx);
         root.when_some(self.preferences.clone(), |this, preferences| {
             this.child(
@@ -3092,16 +3176,22 @@ impl Workspace {
         .when_some(self.model_dialog.clone(), |this, dialog| this.child(dialog))
         .when_some(self.key_dialog.clone(), |this, dialog| this.child(dialog))
         .when_some(self.new_skill.clone(), |this, dialog| this.child(dialog))
-        .when_some(self.evals.read(cx).dialog(), |this, dialog| this.child(dialog))
-        .when(self.leave.is_some(), |this| this.child(self.render_leave(roles, cx)))
+        .when_some(self.evals.read(cx).dialog(), |this, dialog| {
+            this.child(dialog)
+        })
+        .when(self.leave.is_some(), |this| {
+            this.child(self.render_leave(roles, cx))
+        })
         .when_some(self.review_focus.clone(), |this, input| {
             this.child(self.render_review_popover(&input, roles, cx))
         })
         .when_some(self.open_menu, |this, kind| {
-            this.child(ui::scrim("menu-scrim").on_click(cx.listener(|this, _, _, cx| {
-                this.open_menu = None;
-                cx.notify();
-            })))
+            this.child(
+                ui::scrim("menu-scrim").on_click(cx.listener(|this, _, _, cx| {
+                    this.open_menu = None;
+                    cx.notify();
+                })),
+            )
             .child(self.render_menu(kind, roles, cx))
         })
     }

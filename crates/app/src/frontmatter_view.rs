@@ -318,8 +318,10 @@ impl FrontmatterView {
                                     "Improve description"
                                 },
                                 ButtonKind::Default,
-                                ButtonSize::Regular, ui::Control::disabled(disabled),
-                                roles,)
+                                ButtonSize::Regular,
+                                ui::Control::disabled(disabled),
+                                roles,
+                            )
                             .when(!disabled, |this| {
                                 this.on_click(cx.listener(|this, _, _, cx| this.ask(cx)))
                             }),

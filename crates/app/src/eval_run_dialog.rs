@@ -458,8 +458,10 @@ impl Render for EvalRunDialog {
                                 "eval-run-cancel",
                                 "Cancel",
                                 ButtonKind::Default,
-                                ButtonSize::Regular, ui::Control::default(),
-                                roles,)
+                                ButtonSize::Regular,
+                                ui::Control::default(),
+                                roles,
+                            )
                             .on_click(cx.listener(|_, _, _, cx| cx.emit(EvalRunEvent::Close))),
                         )
                         .child(
@@ -467,8 +469,10 @@ impl Render for EvalRunDialog {
                                 "eval-run-submit",
                                 "Run",
                                 ButtonKind::Strong,
-                                ButtonSize::Regular, ui::Control::disabled(!ready),
-                                roles,)
+                                ButtonSize::Regular,
+                                ui::Control::disabled(!ready),
+                                roles,
+                            )
                             .when(ready, |this| {
                                 this.on_click(cx.listener(|this, _, window, cx| {
                                     this.submit(&SubmitEvalRun, window, cx)

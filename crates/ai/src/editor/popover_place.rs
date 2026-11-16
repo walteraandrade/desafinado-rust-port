@@ -55,6 +55,17 @@ fn room_on(side: Side, input: &PopoverInput) -> f64 {
     }
 }
 
+/// The anchor for a popover that belongs to a range of lines, so that
+/// flipping to the other side never puts it over the range itself.
+pub fn span_anchor(first: Rect, last: Rect, left: f64) -> Rect {
+    Rect {
+        left,
+        right: left,
+        top: first.top.min(last.top),
+        bottom: first.bottom.max(last.bottom),
+    }
+}
+
 pub fn anchor_visible(anchor: &Rect, area: &Viewport) -> bool {
     anchor.bottom > 0.0 && anchor.top < area.height
 }
@@ -83,6 +94,37 @@ pub fn place_popover(input: &PopoverInput) -> Option<Placed> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_span_anchor_runs_from_the_first_line_to_the_last_at_the_given_left() {
+        let first = line(40.0, 100.0);
+        let last = line(10.0, 160.0);
+        assert_eq!(
+            span_anchor(first, last, 25.0),
+            Rect {
+                left: 25.0,
+                right: 25.0,
+                top: 100.0,
+                bottom: 180.0,
+            }
+        );
+    }
+
+    #[test]
+    fn a_span_anchor_keeps_a_last_line_reported_above_the_first() {
+        let first = line(40.0, 100.0);
+        let last = line(10.0, 60.0);
+        let anchor = span_anchor(first, last, 40.0);
+        assert_eq!((anchor.top, anchor.bottom), (60.0, 120.0));
+    }
+
+    #[test]
+    fn a_popover_flipped_off_a_span_never_covers_the_span() {
+        let span = span_anchor(line(40.0, 30.0), line(40.0, 130.0), 40.0);
+        let placed = place_popover(&input(span, Side::Above)).unwrap();
+        assert_eq!(placed.side, Side::Below);
+        assert!(placed.top >= span.bottom);
+    }
 
     const AREA: Viewport = Viewport {
         width: 800.0,

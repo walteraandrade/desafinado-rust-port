@@ -1,8 +1,8 @@
 use std::path::{Path, PathBuf};
 
 use desafinado_features::theme::{
-    color::mix_hex,
     catalog::{ThemeOption, omarchy_option},
+    color::mix_hex,
     omarchy_source::{default_omarchy_state_dir, read_omarchy_theme},
     preference::{
         KeyValueStorage, OMARCHY_CHOICE, THEME_STORAGE_KEY, active_theme, load_theme_choice,

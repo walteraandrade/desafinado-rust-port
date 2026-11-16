@@ -285,8 +285,10 @@ impl SpendView {
                 SharedString::from(format!("spend-period-{}", period.label())),
                 period.label(),
                 ButtonKind::Quiet,
-                ButtonSize::Small, ui::Control::default(),
-                roles,)
+                ButtonSize::Small,
+                ui::Control::default(),
+                roles,
+            )
             .when(chosen, |this| {
                 this.bg(roles.fill).border_color(roles.accent)
             })

@@ -828,8 +828,10 @@ impl LibraryPanel {
                                     ("library-remove", index),
                                     "×",
                                     ButtonKind::Default,
-                                    ButtonSize::Small, ui::Control::default(),
-                                    roles,)
+                                    ButtonSize::Small,
+                                    ui::Control::default(),
+                                    roles,
+                                )
                                 .w(px(24.))
                                 .tooltip(|window, cx| {
                                     component::tooltip::Tooltip::new(

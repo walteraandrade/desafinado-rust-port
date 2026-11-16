@@ -349,8 +349,10 @@ impl PreferencesPanel {
                     id,
                     "Change",
                     ButtonKind::Default,
-                    ButtonSize::Small, ui::Control::default(),
-                    roles,)
+                    ButtonSize::Small,
+                    ui::Control::default(),
+                    roles,
+                )
                 .on_click(cx.listener(move |_, _, _, cx| cx.emit(event()))),
             )
     }
@@ -465,8 +467,10 @@ impl PreferencesPanel {
                 SharedString::from(format!("{name}-{index}")),
                 label,
                 ButtonKind::Default,
-                ButtonSize::Small, ui::Control::disabled(disabled),
-                roles,)
+                ButtonSize::Small,
+                ui::Control::disabled(disabled),
+                roles,
+            )
         };
         let row = ui::row()
             .id(("quick-action", index))

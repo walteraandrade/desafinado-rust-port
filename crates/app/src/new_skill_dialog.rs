@@ -218,8 +218,10 @@ impl Render for NewSkillDialog {
                                 "new-skill-cancel",
                                 "Cancel",
                                 ButtonKind::Default,
-                                ButtonSize::Regular, ui::Control::disabled(self.busy),
-                                roles,)
+                                ButtonSize::Regular,
+                                ui::Control::disabled(self.busy),
+                                roles,
+                            )
                             .when(!self.busy, |this| {
                                 this.on_click(
                                     cx.listener(|_, _, _, cx| cx.emit(NewSkillEvent::Close)),
@@ -231,8 +233,10 @@ impl Render for NewSkillDialog {
                                 "new-skill-create",
                                 "Create",
                                 ButtonKind::Strong,
-                                ButtonSize::Regular, ui::Control::disabled(!ready),
-                                roles,)
+                                ButtonSize::Regular,
+                                ui::Control::disabled(!ready),
+                                roles,
+                            )
                             .when(ready, |this| {
                                 this.on_click(cx.listener(|this, _, window, cx| {
                                     this.submit(&SubmitNewSkill, window, cx)

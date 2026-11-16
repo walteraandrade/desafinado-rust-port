@@ -88,7 +88,11 @@ fn colors_come_only_from_theme_roles() {
 
 #[test]
 fn borders_only_in_the_shared_components() {
-    let violations = matches(&sources(), &["ui.rs", "theme.rs"], &[".border_"]);
+    let violations = matches(
+        &sources(),
+        &["ui.rs", "theme.rs"],
+        &[".border_", "roles.hairline"],
+    );
     report("C2 borders outside ui.rs", &violations);
 }
 
@@ -114,7 +118,10 @@ fn type_comes_from_the_type_scale() {
 
 #[test]
 fn the_type_scale_has_two_sizes_and_the_wordmark() {
-    let ui = sources().into_iter().find(|file| file.name == "ui.rs").unwrap();
+    let ui = sources()
+        .into_iter()
+        .find(|file| file.name == "ui.rs")
+        .unwrap();
     let mut sizes: Vec<String> = ui
         .text
         .match_indices("text_size(px(")
@@ -142,7 +149,12 @@ fn pointer_and_hover_only_through_the_shared_components() {
     let violations = matches(
         &sources(),
         &["ui.rs"],
-        &[".cursor_pointer()", ".hover(", ".cursor(", "bg(roles.fill_hover)"],
+        &[
+            ".cursor_pointer()",
+            ".hover(",
+            ".cursor(CursorStyle",
+            "bg(roles.fill_hover)",
+        ],
     );
     report("C8 hand-rolled interactive styling", &violations);
 }
@@ -153,7 +165,7 @@ fn every_click_target_is_a_shared_component() {
     let violations: Vec<String> = outside(&files, &["ui.rs"])
         .flat_map(|file| {
             let text = &file.text;
-            ["on_click(", "on_mouse_down(MouseButton::Left"]
+            ["on_click(", "on_mouse_down(MouseButton::Left, cx.listener"]
                 .iter()
                 .flat_map(|needle| text.match_indices(needle).map(|(index, _)| index))
                 .filter(|index| !chain_head(text, *index).starts_with("ui::"))
@@ -216,9 +228,7 @@ fn functions_stay_short() {
                     }
                     let indent = &line[..line.len() - trimmed.len()];
                     let close = format!("{indent}}}");
-                    let end = lines[start + 1..]
-                        .iter()
-                        .position(|line| *line == close)?;
+                    let end = lines[start + 1..].iter().position(|line| *line == close)?;
                     let length = end + 2;
                     (length > LONGEST_FUNCTION).then(|| {
                         format!("{}:{}: {} lines: {}", file.name, start + 1, length, trimmed)

@@ -27,7 +27,9 @@ fn pairs() {
             ("fill/canvas", &r.fill, &r.canvas, 1.0),
         ];
         for (name, a, b, floor) in pairs {
-            if contrast(a, b) < floor { *fails.entry(name.into()).or_default() += 1; }
+            if contrast(a, b) < floor {
+                *fails.entry(name.into()).or_default() += 1;
+            }
         }
     }
     println!("{} themes; fails: {:?}", theme_options().len(), fails);
