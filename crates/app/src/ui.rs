@@ -278,6 +278,18 @@ pub fn ai_option_row(id: impl Into<ElementId>, active: bool, roles: Roles) -> St
         .cursor_pointer()
 }
 
+/// An option row that can hold the keyboard focus, shown by the focus ring.
+pub fn focusable_row(
+    id: impl Into<ElementId>,
+    focused: bool,
+    chosen: bool,
+    roles: Roles,
+) -> Stateful<Div> {
+    option_row(id, false, chosen, roles)
+        .border_2()
+        .when(focused, |this| this.border_color(roles.accent))
+}
+
 pub fn disabled_row(id: impl Into<ElementId>, roles: Roles) -> Stateful<Div> {
     div()
         .id(id)

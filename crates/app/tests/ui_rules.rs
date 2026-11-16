@@ -169,7 +169,7 @@ fn every_click_target_is_a_shared_component() {
             ["on_click(", "on_mouse_down(MouseButton::Left, cx.listener"]
                 .iter()
                 .flat_map(|needle| text.match_indices(needle).map(|(index, _)| index))
-                .filter(|index| !chain_head(text, *index).starts_with("ui::"))
+                .filter(|index| !builds_with_ui(text, &chain_head(text, *index)))
                 .map(|index| {
                     let line = text[..index].lines().count();
                     format!(
@@ -183,6 +183,26 @@ fn every_click_target_is_a_shared_component() {
         })
         .collect();
     report("C6 click targets not built by ui.rs", &violations);
+}
+
+fn builds_with_ui(text: &str, head: &str) -> bool {
+    if head.starts_with("ui::") {
+        return true;
+    }
+    let name: String = head
+        .chars()
+        .take_while(|c| c.is_alphanumeric() || *c == '_')
+        .collect();
+    if name.is_empty() || !head[name.len()..].starts_with('(') {
+        return false;
+    }
+    let binding = format!("let {name} = |");
+    text.match_indices(&binding).any(|(at, _)| {
+        let rest = &text[at + binding.len()..];
+        let body = rest[rest.find('|').map_or(0, |end| end + 1)..].trim_start();
+        let body = body.strip_prefix('{').unwrap_or(body).trim_start();
+        body.starts_with("ui::")
+    })
 }
 
 fn chain_head(text: &str, index: usize) -> String {
