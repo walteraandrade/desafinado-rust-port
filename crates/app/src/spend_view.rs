@@ -285,10 +285,8 @@ impl SpendView {
                 SharedString::from(format!("spend-period-{}", period.label())),
                 period.label(),
                 ButtonKind::Quiet,
-                ButtonSize::Small,
-                false,
-                roles,
-            )
+                ButtonSize::Small, ui::Control::default(),
+                roles,)
             .when(chosen, |this| {
                 this.bg(roles.fill).border_color(roles.accent)
             })
@@ -477,10 +475,8 @@ impl Render for SpendView {
                     "spend-refresh",
                     "Refresh",
                     ButtonKind::Default,
-                    ButtonSize::Small,
-                    false,
-                    roles,
-                )
+                    ButtonSize::Small, ui::Control::default(),
+                    roles,)
                 .on_click(cx.listener(|this, _, _, cx| this.reload(cx))),
             )
             .child(
@@ -488,10 +484,8 @@ impl Render for SpendView {
                     "spend-close",
                     "Done",
                     ButtonKind::Default,
-                    ButtonSize::Small,
-                    false,
-                    roles,
-                )
+                    ButtonSize::Small, ui::Control::default(),
+                    roles,)
                 .on_click(cx.listener(|_, _, _, cx| cx.emit(SpendEvent::Close))),
             );
         div()

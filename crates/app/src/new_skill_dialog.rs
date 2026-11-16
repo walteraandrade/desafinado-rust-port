@@ -168,7 +168,7 @@ impl Render for NewSkillDialog {
                 .key_context("NewSkillDialog")
                 .on_action(cx.listener(Self::submit))
                 .on_action(cx.listener(Self::cancel))
-                .child(ui::heading("New skill", roles))
+                .child(ui::title("New skill", roles))
                 .child(
                     ui::detail(
                         "Creates a folder and a SKILL.md from a template, then opens it.",
@@ -218,10 +218,8 @@ impl Render for NewSkillDialog {
                                 "new-skill-cancel",
                                 "Cancel",
                                 ButtonKind::Default,
-                                ButtonSize::Regular,
-                                self.busy,
-                                roles,
-                            )
+                                ButtonSize::Regular, ui::Control::disabled(self.busy),
+                                roles,)
                             .when(!self.busy, |this| {
                                 this.on_click(
                                     cx.listener(|_, _, _, cx| cx.emit(NewSkillEvent::Close)),
@@ -233,10 +231,8 @@ impl Render for NewSkillDialog {
                                 "new-skill-create",
                                 "Create",
                                 ButtonKind::Strong,
-                                ButtonSize::Regular,
-                                !ready,
-                                roles,
-                            )
+                                ButtonSize::Regular, ui::Control::disabled(!ready),
+                                roles,)
                             .when(ready, |this| {
                                 this.on_click(cx.listener(|this, _, window, cx| {
                                     this.submit(&SubmitNewSkill, window, cx)

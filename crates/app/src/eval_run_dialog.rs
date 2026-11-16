@@ -394,7 +394,7 @@ impl Render for EvalRunDialog {
                 .on_action(cx.listener(Self::cancel))
                 .max_h(window.viewport_size().height - px(48.))
                 .overflow_y_scroll()
-                .child(ui::heading(
+                .child(ui::title(
                     format!("Run Evals for {}", self.skill_name),
                     roles,
                 ))
@@ -458,10 +458,8 @@ impl Render for EvalRunDialog {
                                 "eval-run-cancel",
                                 "Cancel",
                                 ButtonKind::Default,
-                                ButtonSize::Regular,
-                                false,
-                                roles,
-                            )
+                                ButtonSize::Regular, ui::Control::default(),
+                                roles,)
                             .on_click(cx.listener(|_, _, _, cx| cx.emit(EvalRunEvent::Close))),
                         )
                         .child(
@@ -469,10 +467,8 @@ impl Render for EvalRunDialog {
                                 "eval-run-submit",
                                 "Run",
                                 ButtonKind::Strong,
-                                ButtonSize::Regular,
-                                !ready,
-                                roles,
-                            )
+                                ButtonSize::Regular, ui::Control::disabled(!ready),
+                                roles,)
                             .when(ready, |this| {
                                 this.on_click(cx.listener(|this, _, window, cx| {
                                     this.submit(&SubmitEvalRun, window, cx)

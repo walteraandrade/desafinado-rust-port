@@ -31,7 +31,7 @@ use gpui_kit::{
 
 use crate::{
     theme::{self, Roles},
-    ui::{self, ButtonKind, ButtonSize},
+    ui::{self, ButtonKind, ButtonSize, ToastTone},
 };
 
 pub const RAIL_WIDTH: f32 = 40.;
@@ -100,7 +100,7 @@ pub enum LibraryEvent {
     OpenResult { path: String },
     NewSkill,
     Escape,
-    Notify(String),
+    Notify(String, ToastTone),
     RootsChanged,
     SearchLeft,
 }
@@ -449,13 +449,19 @@ impl LibraryPanel {
     }
 
     fn added(&mut self, result: AddRootResult, cx: &mut Context<Self>) {
-        let text = match result {
+        let (text, tone) = match result {
             AddRootResult::Cancelled => return,
-            AddRootResult::Failed { reason } => format!("Could not add the folder: {reason}"),
-            AddRootResult::Added { label } => format!("Added {label}"),
-            AddRootResult::Duplicate { label } => format!("{label} is already in the Library"),
+            AddRootResult::Failed { reason } => (
+                format!("Could not add the folder: {reason}"),
+                ToastTone::Danger,
+            ),
+            AddRootResult::Added { label } => (format!("Added {label}"), ToastTone::Success),
+            AddRootResult::Duplicate { label } => (
+                format!("{label} is already in the Library"),
+                ToastTone::Neutral,
+            ),
         };
-        cx.emit(LibraryEvent::Notify(text));
+        cx.emit(LibraryEvent::Notify(text, tone));
         cx.emit(LibraryEvent::RootsChanged);
         self.refresh(cx);
     }
@@ -474,12 +480,15 @@ impl LibraryPanel {
         });
         let result = with_deps(&self.user_data, |deps| remove_library_root(deps, &path));
         let removed = result == RemoveRootResult::Removed;
-        cx.emit(LibraryEvent::Notify(match result {
-            RemoveRootResult::Removed => format!("Removed {}", node.name),
-            RemoveRootResult::Failed { reason } => {
-                format!("Could not remove {}: {reason}", node.name)
+        cx.emit(match result {
+            RemoveRootResult::Removed => {
+                LibraryEvent::Notify(format!("Removed {}", node.name), ToastTone::Neutral)
             }
-        }));
+            RemoveRootResult::Failed { reason } => LibraryEvent::Notify(
+                format!("Could not remove {}: {reason}", node.name),
+                ToastTone::Danger,
+            ),
+        });
         cx.emit(LibraryEvent::RootsChanged);
         if removed && neighbor.is_some() {
             self.focused_id = neighbor;
@@ -819,10 +828,8 @@ impl LibraryPanel {
                                     ("library-remove", index),
                                     "×",
                                     ButtonKind::Default,
-                                    ButtonSize::Small,
-                                    false,
-                                    roles,
-                                )
+                                    ButtonSize::Small, ui::Control::default(),
+                                    roles,)
                                 .w(px(24.))
                                 .tooltip(|window, cx| {
                                     component::tooltip::Tooltip::new(
@@ -951,7 +958,7 @@ impl Render for LibraryPanel {
                     .pb(px(12.))
                     .gap(px(4.))
                     .child(
-                        ui::sized_button("library-new", "New", ButtonKind::Default, ButtonSize::Regular, !ready, roles)
+                        ui::sized_button("library-new", "New", ButtonKind::Default, ButtonSize::Regular, ui::Control::disabled(!ready), roles)
                             .tooltip(|window, cx| component::tooltip::Tooltip::new("Create a skill from a template").build(window, cx))
                             .when(ready, |this| this.on_click(cx.listener(|_, _, _, cx| cx.emit(LibraryEvent::NewSkill)))),
                     )

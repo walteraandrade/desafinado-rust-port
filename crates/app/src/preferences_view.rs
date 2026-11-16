@@ -349,10 +349,8 @@ impl PreferencesPanel {
                     id,
                     "Change",
                     ButtonKind::Default,
-                    ButtonSize::Small,
-                    false,
-                    roles,
-                )
+                    ButtonSize::Small, ui::Control::default(),
+                    roles,)
                 .on_click(cx.listener(move |_, _, _, cx| cx.emit(event()))),
             )
     }
@@ -467,10 +465,8 @@ impl PreferencesPanel {
                 SharedString::from(format!("{name}-{index}")),
                 label,
                 ButtonKind::Default,
-                ButtonSize::Small,
-                disabled,
-                roles,
-            )
+                ButtonSize::Small, ui::Control::disabled(disabled),
+                roles,)
         };
         let row = ui::row()
             .id(("quick-action", index))
@@ -662,7 +658,7 @@ impl Render for PreferencesPanel {
                     .py(px(16.))
                     .border_b_1()
                     .border_color(roles.hairline)
-                    .child(ui::heading("Preferences", roles))
+                    .child(ui::title("Preferences", roles))
                     .child(
                         ui::button("preferences-done", "Done", ButtonKind::Default, roles)
                             .on_click(cx.listener(|_, _, _, cx| cx.emit(PreferencesEvent::Close))),
@@ -744,10 +740,8 @@ impl Render for PreferencesPanel {
                                     "preferences-spend",
                                     "Show",
                                     ButtonKind::Default,
-                                    ButtonSize::Small,
-                                    false,
-                                    roles,
-                                )
+                                    ButtonSize::Small, ui::Control::default(),
+                                    roles,)
                                 .on_click(
                                     cx.listener(|_, _, _, cx| cx.emit(PreferencesEvent::OpenSpend)),
                                 ),
@@ -775,10 +769,8 @@ impl Render for PreferencesPanel {
                                     "quick-action-new",
                                     "New Quick action",
                                     ButtonKind::Default,
-                                    ButtonSize::Regular,
-                                    editing_any,
-                                    roles,
-                                )
+                                    ButtonSize::Regular, ui::Control::disabled(editing_any),
+                                    roles,)
                                 .when(!editing_any, |this| {
                                     this.on_click(cx.listener(|this, _, window, cx| {
                                         this.start_draft(

@@ -103,7 +103,7 @@ impl Render for ModelDialog {
                 .key_context("ModelDialog")
                 .on_action(cx.listener(Self::submit))
                 .on_action(cx.listener(Self::close))
-                .child(ui::heading("Model", roles))
+                .child(ui::title("Model", roles))
                 .child(ui::detail(
                     format!(
                         "An OpenRouter model id. Empty uses the default, {}. The next request uses the new model.",

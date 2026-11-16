@@ -260,10 +260,8 @@ impl Render for KeyDialog {
                                         "key-plain-text",
                                         "Store as plain text",
                                         ButtonKind::Default,
-                                        ButtonSize::Regular,
-                                        self.busy,
-                                        roles,
-                                    )
+                                        ButtonSize::Regular, ui::Control::disabled(self.busy),
+                                        roles,)
                                     .when(!self.busy, |this| {
                                         this.on_click(cx.listener(|this, _, window, cx| {
                                             this.run(KeyCommand::PlainText, window, cx)
@@ -293,10 +291,8 @@ impl Render for KeyDialog {
                                     "key-remove",
                                     "Remove key",
                                     ButtonKind::Default,
-                                    ButtonSize::Regular,
-                                    self.busy,
-                                    roles,
-                                )
+                                    ButtonSize::Regular, ui::Control::disabled(self.busy),
+                                    roles,)
                                 .when(!self.busy, |this| {
                                     this.on_click(cx.listener(|this, _, window, cx| {
                                         this.run(KeyCommand::Clear, window, cx)
@@ -315,10 +311,8 @@ impl Render for KeyDialog {
                                 "key-save",
                                 "Save key",
                                 ButtonKind::Default,
-                                ButtonSize::Regular,
-                                self.busy || empty,
-                                roles,
-                            )
+                                ButtonSize::Regular, ui::Control::disabled(self.busy || empty),
+                                roles,)
                             .when(!self.busy && !empty, |this| {
                                 this.on_click(cx.listener(|this, _, window, cx| {
                                     this.run(KeyCommand::Save, window, cx)

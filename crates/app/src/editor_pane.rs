@@ -65,7 +65,7 @@ use desafinado_runtime::ai_backend::{AiBackend, ReviewCall, ReviewEvent, TargetC
 
 use crate::{
     theme::{self, Roles},
-    ui::{self, ButtonKind, ButtonSize},
+    ui::{self, ButtonKind, ButtonSize, ToastTone, Type as _},
 };
 
 actions!(
@@ -161,6 +161,7 @@ pub enum PaneEvent {
     },
     Toast {
         text: String,
+        tone: ToastTone,
         actions: Vec<PaneToastAction>,
     },
 }
@@ -383,12 +384,14 @@ impl EditorPane {
         if let Some(notice) = notice {
             cx.emit(PaneEvent::Toast {
                 text: notice_message(notice.kind).to_string(),
+                tone: ToastTone::Neutral,
                 actions: Vec::new(),
             });
         }
         for (id, text) in failed {
             cx.emit(PaneEvent::Toast {
                 text,
+                tone: ToastTone::Danger,
                 actions: vec![
                     PaneToastAction::RetrySuggestion(id.clone()),
                     PaneToastAction::ShowSuggestion(id),
@@ -1094,6 +1097,7 @@ impl EditorPane {
         if review_too_large(text.len()) {
             cx.emit(PaneEvent::Toast {
                 text: review_too_large_text(text.len()),
+                tone: ToastTone::Neutral,
                 actions: Vec::new(),
             });
             return;
@@ -1104,6 +1108,7 @@ impl EditorPane {
         if !has_room_for_review(&blocks, &occupied) {
             cx.emit(PaneEvent::Toast {
                 text: review_summary(0, false),
+                tone: ToastTone::Neutral,
                 actions: Vec::new(),
             });
             return;
@@ -1221,6 +1226,11 @@ impl EditorPane {
         };
         cx.emit(PaneEvent::Toast {
             text: review_notice_text(run.added, failure.as_ref()),
+            tone: if failure.is_some() {
+                ToastTone::Danger
+            } else {
+                ToastTone::Neutral
+            },
             actions,
         });
         self.review_ended(cx);
@@ -1246,6 +1256,7 @@ impl EditorPane {
         run.stop.store(true, Ordering::SeqCst);
         cx.emit(PaneEvent::Toast {
             text: review_summary(run.added, true),
+            tone: ToastTone::Neutral,
             actions: Vec::new(),
         });
         self.review_ended(cx);
@@ -1613,10 +1624,8 @@ impl EditorPane {
             id,
             label.to_string(),
             kind,
-            ButtonSize::Small,
-            disabled,
-            roles,
-        )
+            ButtonSize::Small, ui::Control::disabled(disabled),
+            roles,)
         .when_some(hint, |this, hint| {
             this.child(
                 div()
@@ -1750,10 +1759,8 @@ impl EditorPane {
                                     SharedString::from(format!("retry-{id}")),
                                     "Retry",
                                     ButtonKind::Default,
-                                    ButtonSize::Small,
-                                    false,
-                                    roles,
-                                )
+                                    ButtonSize::Small, ui::Control::default(),
+                                    roles,)
                                 .on_click(cx.listener(
                                     move |this, _, window, cx| this.retry(&retry_id, window, cx),
                                 )),
@@ -1763,10 +1770,8 @@ impl EditorPane {
                                     SharedString::from(format!("dismiss-{id}")),
                                     "Dismiss",
                                     ButtonKind::Default,
-                                    ButtonSize::Small,
-                                    false,
-                                    roles,
-                                )
+                                    ButtonSize::Small, ui::Control::default(),
+                                    roles,)
                                 .on_click(cx.listener(
                                     move |this, _, window, cx| {
                                         this.reject(&dismiss_id, cx);

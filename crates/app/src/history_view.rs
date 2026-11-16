@@ -224,10 +224,8 @@ fn quiet_toggle(
         id,
         "",
         ButtonKind::Quiet,
-        ButtonSize::Small,
-        disabled,
-        roles,
-    )
+        ButtonSize::Small, ui::Control::disabled(disabled),
+        roles,)
     .gap(px(6.))
     .when(pressed, |this| this.bg(roles.fill).border_color(roles.ink))
     .child(label)
@@ -397,10 +395,8 @@ impl Workspace {
                         "timeline-full",
                         "",
                         ButtonKind::Quiet,
-                        ButtonSize::Small,
-                        false,
-                        roles,
-                    )
+                        ButtonSize::Small, ui::Control::default(),
+                        roles,)
                     .gap(px(6.))
                     .when(mode == HistoryMode::Full, |this| {
                         this.bg(roles.fill).border_color(roles.ink)
@@ -415,10 +411,8 @@ impl Workspace {
                             "timeline-evals",
                             "",
                             ButtonKind::Quiet,
-                            ButtonSize::Small,
-                            false,
-                            roles,
-                        )
+                            ButtonSize::Small, ui::Control::default(),
+                            roles,)
                         .gap(px(6.))
                         .when(evals.pressed, |this| {
                             this.bg(roles.fill).border_color(roles.ink)
@@ -506,10 +500,8 @@ impl Workspace {
                                     "version-older",
                                     "‹ Older",
                                     ButtonKind::Default,
-                                    ButtonSize::Regular,
-                                    first,
-                                    roles,
-                                )
+                                    ButtonSize::Regular, ui::Control::disabled(first),
+                                    roles,)
                                 .when(!first, |this| {
                                     this.on_click(cx.listener(|this, _, window, cx| {
                                         this.step_version(-1, window, cx)
@@ -521,10 +513,8 @@ impl Workspace {
                                     "version-newer",
                                     "Newer ›",
                                     ButtonKind::Default,
-                                    ButtonSize::Regular,
-                                    last,
-                                    roles,
-                                )
+                                    ButtonSize::Regular, ui::Control::disabled(last),
+                                    roles,)
                                 .when(!last, |this| {
                                     this.on_click(cx.listener(|this, _, window, cx| {
                                         this.step_version(1, window, cx)
@@ -536,10 +526,8 @@ impl Workspace {
                                     "version-restore",
                                     "Restore",
                                     ButtonKind::Default,
-                                    ButtonSize::Regular,
-                                    restorable.is_none(),
-                                    roles,
-                                )
+                                    ButtonSize::Regular, ui::Control::disabled(restorable.is_none()),
+                                    roles,)
                                 .when_some(
                                     restorable,
                                     |this, text| {

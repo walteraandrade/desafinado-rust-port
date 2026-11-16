@@ -1,6 +1,7 @@
 use std::path::{Path, PathBuf};
 
 use desafinado_features::theme::{
+    color::mix_hex,
     catalog::{ThemeOption, omarchy_option},
     omarchy_source::{default_omarchy_state_dir, read_omarchy_theme},
     preference::{
@@ -25,7 +26,9 @@ pub struct Roles {
     pub muted: Hsla,
     pub faint: Hsla,
     pub accent: Hsla,
+    pub accent_hover: Hsla,
     pub ai: Hsla,
+    pub ai_hover: Hsla,
     pub ai_fill: Hsla,
     pub danger: Hsla,
     pub danger_fill: Hsla,
@@ -52,6 +55,8 @@ pub fn hex(code: &str) -> Hsla {
     .into()
 }
 
+const HOVER_SHARE: f64 = 0.2;
+
 pub fn roles_of(tokens: &ThemeTokens) -> Roles {
     let r = &tokens.roles;
     Roles {
@@ -63,7 +68,9 @@ pub fn roles_of(tokens: &ThemeTokens) -> Roles {
         muted: hex(&r.muted),
         faint: hex(&r.faint),
         accent: hex(&r.accent),
+        accent_hover: hex(&mix_hex(&r.accent, &r.ink, HOVER_SHARE)),
         ai: hex(&r.ai),
+        ai_hover: hex(&mix_hex(&r.ai, &r.ink, HOVER_SHARE)),
         ai_fill: hex(&r.ai_fill),
         danger: hex(&r.danger),
         danger_fill: hex(&r.danger_fill),

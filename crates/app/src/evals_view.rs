@@ -733,7 +733,7 @@ impl EvalsView {
         let paragraph = |text: &'static str| div().mt(px(16.)).child(text);
         div()
             .mt(px(24.))
-            .child(ui::heading("This Skill has no Evals yet", roles))
+            .child(ui::title("This Skill has no Evals yet", roles))
             .child(div().mt(px(8.)).child(
                 "An Eval is a folder you write by hand under the Skill's evals/. An Eval run sends its prompt.md to the agent in two Arms, with the Skill and without it, and the files in graders/ score each answer.",
             ))
@@ -1026,10 +1026,8 @@ impl Render for EvalsView {
                                 "eval-run",
                                 if running { "Running…" } else { "Run Evals" },
                                 ButtonKind::Strong,
-                                ButtonSize::Regular,
-                                run_disabled,
-                                roles,
-                            )
+                                ButtonSize::Regular, ui::Control::disabled(run_disabled),
+                                roles,)
                             .when(!run_disabled, |this| {
                                 this.on_click(cx.listener(|_, _, _, cx| cx.emit(EvalsEvent::Ask)))
                             }),
@@ -1045,10 +1043,8 @@ impl Render for EvalsView {
                                     "Cancel"
                                 },
                                 ButtonKind::Default,
-                                ButtonSize::Regular,
-                                cancelling,
-                                roles,
-                            )
+                                ButtonSize::Regular, ui::Control::disabled(cancelling),
+                                roles,)
                             .when(!cancelling, |this| {
                                 this.on_click(cx.listener(|this, _, _, cx| this.cancel(cx)))
                             }),
