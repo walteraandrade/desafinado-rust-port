@@ -1657,11 +1657,26 @@ impl EditorPane {
         let element = ui::enter(
             SharedString::from(format!("card-in-{}", item.id)),
             card,
-            ui::Enter::Rise(-6.),
+            self.card_enter(item, bounds, cx),
             ui::MOTION_ENTER,
         )
         .into_any_element();
         Some((element, bounds.origin.y - origin.y + height + px(8.)))
+    }
+
+    fn card_enter(&self, item: &Suggestion, card: Bounds<Pixels>, cx: &App) -> ui::Enter {
+        if self.card_placement() == CardPlacement::Margin {
+            return ui::Enter::Slide(-8.);
+        }
+        let range_top = self
+            .editor
+            .read(cx)
+            .range_to_bounds(&(item.from..item.from))
+            .map(|line| line.top());
+        match range_top {
+            Some(top) if card.bottom() <= top => ui::Enter::Rise(6.),
+            _ => ui::Enter::Rise(-6.),
+        }
     }
 
     fn place_card(
@@ -2187,7 +2202,7 @@ impl EditorPane {
             .range_to_bounds(&(caret.pos..caret.pos))?;
         let origin = self.origin();
         let pane = self.bounds.get();
-        let flag_width = px(16. + 7. * (caret.label.chars().count() + 4) as f32);
+        let flag_width = px(40. + 7. * caret.label.chars().count() as f32);
         let flipped = bounds.left() + flag_width > pane.origin.x + pane.size.width;
         let flag = ui::ai_flag(roles)
             .absolute()
@@ -2211,7 +2226,7 @@ impl EditorPane {
                 .h(bounds.size.height)
                 .child(bar)
                 .child(ui::enter(
-                    SharedString::from(format!("ai-flag-{}", caret.label)),
+                    "ai-flag",
                     flag,
                     ui::Enter::Rise(3.),
                     ui::MOTION_ENTER,

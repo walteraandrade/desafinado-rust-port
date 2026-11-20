@@ -246,6 +246,7 @@ impl ToastAction {
 }
 
 struct Toast {
+    serial: u64,
     text: SharedString,
     tone: ToastTone,
     actions: Vec<ToastAction>,
@@ -681,7 +682,9 @@ impl Workspace {
                 cx.notify();
             });
         });
+        let serial = self.toast.as_ref().map_or(0, |toast| toast.serial + 1);
         self.toast = Some(Toast {
+            serial,
             text: text.into(),
             tone,
             actions,
@@ -2473,7 +2476,7 @@ impl Workspace {
                 .justify_center()
                 .px(px(24.))
                 .child(ui::enter(
-                    SharedString::from(format!("toast-in-{}", toast.text)),
+                    ("toast-in", toast.serial),
                     ui::toast_frame("toast", toast.tone, roles)
                         .child(toast.text.clone())
                         .children(actions.into_iter().enumerate().map(|(index, action)| {
@@ -3165,12 +3168,7 @@ impl Workspace {
                             cx.notify();
                         }
                     }))
-                    .child(ui::enter(
-                        "preferences-in",
-                        div().size_full().child(preferences),
-                        ui::Enter::Slide(16.),
-                        ui::MOTION_ENTER,
-                    )),
+                    .child(preferences),
             )
         })
         .children(toast)

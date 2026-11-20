@@ -420,12 +420,7 @@ pub fn modal_backdrop(
         .flex()
         .items_center()
         .justify_center()
-        .child(enter(
-            "modal-in",
-            div().max_w_full().child(content),
-            Enter::Rise(6.),
-            MOTION_ENTER,
-        ))
+        .child(content)
 }
 
 pub fn wordmark(roles: Roles) -> Div {
@@ -732,6 +727,15 @@ pub enum Enter {
     Slide(f32),
 }
 
+/// The looping AI caret motion repaints at most this often, so a long Review
+/// pass does not redraw the editor at the display rate.
+const MOTION_LOOP_FPS: f32 = 30.;
+
+/// `--ease-in-out-sine`.
+pub fn ease_in_out_sine(delta: f32) -> f32 {
+    0.5 - 0.5 * (std::f32::consts::PI * delta).cos()
+}
+
 /// `cubic-bezier(0.16, 1, 0.3, 1)` is close to this exponential ease-out.
 pub fn ease_out_expo(delta: f32) -> f32 {
     if delta >= 1. {
@@ -773,7 +777,8 @@ pub fn breathe<E: Styled + IntoElement + 'static>(
         id,
         Animation::new(std::time::Duration::from_millis(1600))
             .repeat()
-            .with_easing(bounce(ease_in_out)),
+            .with_max_fps(MOTION_LOOP_FPS)
+            .with_easing(bounce(ease_in_out_sine)),
         |element, delta| element.opacity(1. - 0.55 * delta),
     )
 }
@@ -798,18 +803,24 @@ pub fn ai_dots(roles: Roles) -> AnyElement {
 
 /// `cm-ai-dot`: 0.35 at the ends, full at 40%, eased like `ease-in-out-sine`.
 pub fn dot_opacity(phase: f32) -> f32 {
-    let rise = |t: f32| 0.5 - 0.5 * (std::f32::consts::PI * t).cos();
     let level = if phase < 0.4 {
-        rise(phase / 0.4)
+        ease_in_out_sine(phase / 0.4)
     } else {
-        rise((1. - phase) / 0.6)
+        ease_in_out_sine((1. - phase) / 0.6)
     };
     0.35 + 0.65 * level
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{dot_opacity, ease_out_expo};
+    use super::{dot_opacity, ease_in_out_sine, ease_out_expo};
+
+    #[test]
+    fn ease_in_out_sine_is_symmetric() {
+        assert!(ease_in_out_sine(0.).abs() < 1e-6);
+        assert!((ease_in_out_sine(0.5) - 0.5).abs() < 1e-6);
+        assert!((ease_in_out_sine(1.) - 1.).abs() < 1e-6);
+    }
 
     #[test]
     fn ease_out_expo_starts_fast_and_lands_on_one() {
