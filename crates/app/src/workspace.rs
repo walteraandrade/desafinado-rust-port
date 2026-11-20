@@ -14,7 +14,7 @@ use desafinado_features::skills::{
     },
     library::{CreateSkillRequest, CreateSkillResult},
     library_view::{open_skill_file, skill_file_label, skill_of_file},
-    scan_skills::SKILL_FILE_NAME,
+    scan_skills::{SKILL_FILE_NAME, is_skill_file},
 };
 use desafinado_features::{
     evals::{
@@ -1475,9 +1475,8 @@ impl Workspace {
                 folder_name: folder_name.as_deref(),
             },
         );
-        self.pane.update(cx, |pane, _| {
-            pane.is_skill = desafinado_core::blocks::find_frontmatter(&text).is_some()
-        });
+        let is_skill = is_skill_file(file_name.as_deref());
+        self.pane.update(cx, |pane, _| pane.is_skill = is_skill);
         self.frontmatter
             .update(cx, |view, cx| view.refresh(&text, report, window, cx));
     }
