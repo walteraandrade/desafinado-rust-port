@@ -2969,6 +2969,7 @@ impl Workspace {
                 .frontmatter
                 .focus_handle(cx)
                 .contains_focused(window, cx)
+            && !self.pane.read(cx).typing_outside_text(window, cx)
     }
 
     fn toggle_reading(&mut self, _: &ToggleReading, window: &mut Window, cx: &mut Context<Self>) {
