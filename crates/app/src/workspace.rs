@@ -851,6 +851,7 @@ impl Workspace {
     fn arrived(&mut self) {
         self.conflict = None;
         self.noticed = None;
+        self.frontmatter_due = true;
         let path = self.session_path().map(Path::to_path_buf);
         self.history.select(path.as_ref(), now_ms());
     }
