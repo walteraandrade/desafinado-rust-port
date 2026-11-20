@@ -1528,6 +1528,7 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         self.open_menu = None;
+        self.reading = false;
         self.close_history(window, cx);
         self.frontmatter
             .update(cx, |view, cx| view.focus_panel(window, cx));
@@ -2266,6 +2267,7 @@ impl Workspace {
 
     fn open_review(&mut self, _: &StartReview, window: &mut Window, cx: &mut Context<Self>) {
         self.open_menu = None;
+        self.reading = false;
         if self.pane.read(cx).review.is_some() {
             return;
         }
@@ -2948,7 +2950,13 @@ impl Workspace {
     }
 
     fn toggle_reading(&mut self, _: &ToggleReading, window: &mut Window, cx: &mut Context<Self>) {
+        if self.modal_open() || self.preferences.is_some() {
+            return;
+        }
         self.open_menu = None;
+        self.spend = None;
+        self.evals_page = false;
+        self.show_editing(window, cx);
         self.reading = !self.reading;
         if self.reading {
             self.focus.focus(window, cx);
