@@ -714,7 +714,7 @@ pub fn list_icon(roles: Roles) -> Div {
         .child(line())
 }
 
-const HEADING_SCALE: [f32; 6] = [1.75, 1.4, 1.2, 1.05, 1., 1.];
+const HEADING_SCALE: [f32; 6] = [1.85, 1.45, 1.2, 1.05, 1., 1.];
 
 fn heading_size(level: u8) -> Pixels {
     TEXT_DOCUMENT * HEADING_SCALE[usize::from(level.clamp(1, 6)) - 1]

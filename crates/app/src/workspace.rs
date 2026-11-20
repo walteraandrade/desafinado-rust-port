@@ -1768,6 +1768,7 @@ impl Workspace {
     }
 
     fn show_editing(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.reading = false;
         if self.visible_mode() != HistoryMode::Editing {
             self.close_history(window, cx);
         }
@@ -2267,7 +2268,6 @@ impl Workspace {
 
     fn open_review(&mut self, _: &StartReview, window: &mut Window, cx: &mut Context<Self>) {
         self.open_menu = None;
-        self.reading = false;
         if self.pane.read(cx).review.is_some() {
             return;
         }
@@ -2690,6 +2690,11 @@ impl Render for Workspace {
         if evals_shown {
             self.check_unsaved(false, cx);
         }
+        if self.reading
+            && (evals_shown || self.spend.is_some() || self.visible_mode() != HistoryMode::Editing)
+        {
+            self.reading = false;
+        }
         let mode = if evals_shown {
             HistoryMode::Editing
         } else {
@@ -2959,15 +2964,28 @@ impl Workspace {
         }
     }
 
+    fn reading_toggle_allowed(&self, window: &Window, cx: &App) -> bool {
+        let editor = self.pane.read(cx).editor.read(cx).focus_handle(cx);
+        window.focused(cx).is_none()
+            || self.focus.is_focused(window)
+            || self.menu_focus.is_focused(window)
+            || editor.is_focused(window)
+    }
+
     fn toggle_reading(&mut self, _: &ToggleReading, window: &mut Window, cx: &mut Context<Self>) {
-        if self.modal_open() || self.preferences.is_some() {
+        if self.modal_open()
+            || self.preferences.is_some()
+            || self.review_focus.is_some()
+            || !self.reading_toggle_allowed(window, cx)
+        {
             return;
         }
+        let next = !self.reading;
         self.open_menu = None;
         self.spend = None;
         self.evals_page = false;
         self.show_editing(window, cx);
-        self.reading = !self.reading;
+        self.reading = next;
         if self.reading {
             self.focus.focus(window, cx);
         } else {
