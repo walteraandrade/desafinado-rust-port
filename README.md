@@ -17,6 +17,8 @@ The AI proposes; your voice wins. Every change it suggests sits in your text as 
 - Accept is a normal edit, so `Ctrl+Z` undoes it.
 - **Edit → Review…** reads the whole document, optionally with a focus such as "tone only", and streams up to six suggestions, with Accept all and Reject all.
 
+**Read it rendered.** `Ctrl+Shift+V` (or **Edit → Reading view**) swaps the editor for the rendered Markdown: real heading sizes, lists, quotes, code blocks and links, without the frontmatter. Press it again to edit.
+
 **Keep the history.** The timeline under the header keeps a version after each accept, open, restore, save and pause in your typing, marked by who made it. Compare any version with the current text and restore it. Each document keeps its own history, with no cap, in a SQLite database in the settings folder.
 
 **Edit agent Skills.** The Library (`Ctrl+B`) lists the Skills in `~/.claude/skills`, `~/.agents/skills` and any folder you add, by their frontmatter name. Library search (`Ctrl+P`) finds Skills and files as you type. Files on disk are the source of truth: saves are atomic, and when an agent or `git pull` changes the open file, the editor reloads it, or asks first if you have unsaved text. The Evals page runs a Skill's evals through the Claude CLI, with and without the Skill, and shows whether it helped.

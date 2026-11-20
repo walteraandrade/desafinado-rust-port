@@ -111,6 +111,7 @@ actions!(
         SearchLibrary,
         ShowFrontmatterProblems,
         ShowSpend,
+        ToggleReading,
         OpenFileMenu,
         OpenEditMenu,
         MenuDown,
@@ -135,6 +136,7 @@ pub fn init(cx: &mut App) {
         KeyBinding::new("ctrl-,", OpenPreferences, None),
         KeyBinding::new("ctrl-b", ToggleLibrary, None),
         KeyBinding::new("ctrl-p", SearchLibrary, None),
+        KeyBinding::new("ctrl-shift-v", ToggleReading, None),
         KeyBinding::new("escape", CloseMenu, Some("Menu")),
         KeyBinding::new("down", MenuDown, Some("Menu")),
         KeyBinding::new("up", MenuUp, Some("Menu")),
@@ -366,6 +368,7 @@ pub struct Workspace {
     frontmatter_height: std::rc::Rc<std::cell::Cell<Pixels>>,
     evals: Entity<EvalsView>,
     evals_page: bool,
+    reading: bool,
     unsaved_checked: Option<(String, bool)>,
     menu_active: Option<usize>,
     menu_focus: FocusHandle,
@@ -462,6 +465,7 @@ impl Workspace {
             frontmatter_height: std::rc::Rc::new(std::cell::Cell::new(px(0.))),
             evals,
             evals_page: false,
+            reading: false,
             unsaved_checked: None,
             menu_active: None,
             menu_focus: cx.focus_handle(),
@@ -2101,10 +2105,23 @@ impl Workspace {
                 rows
             }
             MenuKind::Edit => vec![
-                if self.pane.read(cx).review.is_some() {
-                    row("Stop Review", None, Box::new(StopReview), false)
-                } else {
-                    row("Review…", None, Box::new(StartReview), false)
+                row(
+                    if self.reading {
+                        "Edit text"
+                    } else {
+                        "Reading view"
+                    },
+                    Some("Ctrl+Shift+V"),
+                    Box::new(ToggleReading),
+                    false,
+                ),
+                MenuRow {
+                    separated: true,
+                    ..if self.pane.read(cx).review.is_some() {
+                        row("Stop Review", None, Box::new(StopReview), false)
+                    } else {
+                        row("Review…", None, Box::new(StartReview), false)
+                    }
                 },
                 MenuRow {
                     separated: true,
@@ -2888,6 +2905,7 @@ impl Workspace {
             .on_action(cx.listener(Self::show_frontmatter_problems))
             .on_action(cx.listener(Self::open_preferences))
             .on_action(cx.listener(Self::show_spend))
+            .on_action(cx.listener(Self::toggle_reading))
             .on_action(cx.listener(|this, _: &OpenFileMenu, window, cx| {
                 this.toggle_menu(MenuKind::File, window, cx)
             }))
@@ -2929,6 +2947,18 @@ impl Workspace {
         self.pane.update(cx, |pane, cx| pane.reject_all(window, cx));
     }
 
+    fn toggle_reading(&mut self, _: &ToggleReading, window: &mut Window, cx: &mut Context<Self>) {
+        self.open_menu = None;
+        self.reading = !self.reading;
+        if self.reading {
+            self.focus.focus(window, cx);
+        } else {
+            let editor = self.pane.read(cx).editor.clone();
+            editor.update(cx, |editor, cx| editor.focus(window, cx));
+        }
+        cx.notify();
+    }
+
     fn render_main(
         &mut self,
         mode: HistoryMode,
@@ -2951,6 +2981,9 @@ impl Workspace {
                 .map(|spend| spend.into_any_element())
                 .unwrap_or_else(|| div().into_any_element()),
             _ if evals_shown => self.evals.clone().into_any_element(),
+            HistoryMode::Editing if self.reading => {
+                crate::reading_view::render_reading(&self.text(cx), roles)
+            }
             HistoryMode::Editing => self.render_editing(cx),
             HistoryMode::Version { id } => self.render_compare(id, roles, cx).into_any_element(),
             HistoryMode::Full => self.render_full_history(roles, cx).into_any_element(),
@@ -3053,8 +3086,19 @@ impl Workspace {
                     .gap(px(8.))
                     .type_small()
                     .text_color(roles.muted)
-                    .child("Select text and press")
-                    .child(ui::kbd("Ctrl+K", roles)),
+                    .child(if self.reading {
+                        "Reading. Edit with"
+                    } else {
+                        "Select text and press"
+                    })
+                    .child(ui::kbd(
+                        if self.reading {
+                            "Ctrl+Shift+V"
+                        } else {
+                            "Ctrl+K"
+                        },
+                        roles,
+                    )),
             )
             .when(open > 0, |this| {
                 this.child(
