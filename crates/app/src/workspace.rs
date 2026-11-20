@@ -14,7 +14,7 @@ use desafinado_features::skills::{
     },
     library::{CreateSkillRequest, CreateSkillResult},
     library_view::{open_skill_file, skill_file_label, skill_of_file},
-    scan_skills::{SKILL_FILE_NAME, is_skill_file},
+    scan_skills::is_skill_file,
 };
 use desafinado_features::{
     evals::{
@@ -1457,7 +1457,7 @@ impl Workspace {
             .as_ref()
             .map(|open| open.file_name.clone())
             .or_else(|| self.session.as_ref().map(|session| session.name.clone()));
-        let folder_name = if file_name.as_deref() != Some(SKILL_FILE_NAME) {
+        let folder_name = if !is_skill_file(file_name.as_deref()) {
             None
         } else {
             open.as_ref()
