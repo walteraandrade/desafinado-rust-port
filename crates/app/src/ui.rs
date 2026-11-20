@@ -714,8 +714,6 @@ pub fn list_icon(roles: Roles) -> Div {
         .child(line())
 }
 
-/// Rendered Markdown headings, relative to the Document size: the one place
-/// the type grows past the scale, because it is the Document's own hierarchy.
 const HEADING_SCALE: [f32; 6] = [1.75, 1.4, 1.2, 1.05, 1., 1.];
 
 fn heading_size(level: u8) -> Pixels {

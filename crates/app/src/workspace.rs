@@ -1116,7 +1116,7 @@ impl Workspace {
                 self.load(path.clone(), window, cx);
                 if self.session_path() == Some(path.as_path()) {
                     self.notify_success(format!("Created {name}"), cx);
-                    self.pane.update(cx, |pane, cx| pane.focus(window, cx));
+                    self.focus_text(window, cx);
                 }
             }
         }
@@ -1343,7 +1343,7 @@ impl Workspace {
 
     fn focus_text_from_library(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let fold_search = self.search_unfolded;
-        self.pane.update(cx, |pane, cx| pane.focus(window, cx));
+        self.focus_text(window, cx);
         if fold_search || self.placement() == Placement::Overlay {
             self.fold_library(cx);
         }
@@ -1358,7 +1358,7 @@ impl Workspace {
 
     fn fold_and_return(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.fold_library(cx);
-        self.pane.update(cx, |pane, cx| pane.focus(window, cx));
+        self.focus_text(window, cx);
     }
 
     fn toggle_library(&mut self, _: &ToggleLibrary, window: &mut Window, cx: &mut Context<Self>) {
@@ -1541,7 +1541,7 @@ impl Workspace {
         };
         match choice {
             LeaveChoice::Cancel => {
-                self.pane.update(cx, |pane, cx| pane.focus(window, cx));
+                self.focus_text(window, cx);
                 if let LeaveIntent::OpenPath(_) = intent
                     && let Some((_, _, search)) = self.library_request.take()
                 {
@@ -1758,7 +1758,7 @@ impl Workspace {
         if editing {
             self.hovered = None;
             if !was_editing {
-                self.pane.update(cx, |pane, cx| pane.focus(window, cx));
+                self.focus_text(window, cx);
             }
         } else {
             self.open_menu = None;
@@ -1842,7 +1842,7 @@ impl Workspace {
             return;
         }
         if self.review_focus.take().is_some() {
-            self.pane.update(cx, |pane, cx| pane.focus(window, cx));
+            self.focus_text(window, cx);
         }
         cx.notify();
     }
@@ -1934,7 +1934,7 @@ impl Workspace {
                 let handle = preferences.read(cx).focus_handle(cx);
                 window.focus(&handle, cx);
             }
-            None => self.pane.update(cx, |pane, cx| pane.focus(window, cx)),
+            None => self.focus_text(window, cx),
         }
     }
 
@@ -1958,7 +1958,7 @@ impl Workspace {
             |this, _, event: &PreferencesEvent, window, cx| match event {
                 PreferencesEvent::Close => {
                     this.preferences = None;
-                    this.pane.update(cx, |pane, cx| pane.focus(window, cx));
+                    this.focus_text(window, cx);
                     cx.notify();
                 }
                 PreferencesEvent::OpenModel => this.open_model(window, cx),
@@ -2048,7 +2048,7 @@ impl Workspace {
             match event {
                 SpendEvent::Close => {
                     this.spend = None;
-                    this.pane.update(cx, |pane, cx| pane.focus(window, cx));
+                    this.focus_text(window, cx);
                 }
             }
             cx.notify();
@@ -2106,23 +2106,10 @@ impl Workspace {
                 rows
             }
             MenuKind::Edit => vec![
-                row(
-                    if self.reading {
-                        "Edit text"
-                    } else {
-                        "Reading view"
-                    },
-                    Some("Ctrl+Shift+V"),
-                    Box::new(ToggleReading),
-                    false,
-                ),
-                MenuRow {
-                    separated: true,
-                    ..if self.pane.read(cx).review.is_some() {
-                        row("Stop Review", None, Box::new(StopReview), false)
-                    } else {
-                        row("Review…", None, Box::new(StartReview), false)
-                    }
+                if self.pane.read(cx).review.is_some() {
+                    row("Stop Review", None, Box::new(StopReview), false)
+                } else {
+                    row("Review…", None, Box::new(StartReview), false)
                 },
                 MenuRow {
                     separated: true,
@@ -2139,6 +2126,19 @@ impl Workspace {
                     Box::new(RejectAll),
                     open == 0,
                 ),
+                MenuRow {
+                    separated: true,
+                    ..row(
+                        if self.reading {
+                            "Edit text"
+                        } else {
+                            "Reading view"
+                        },
+                        Some("Ctrl+Shift+V"),
+                        Box::new(ToggleReading),
+                        false,
+                    )
+                },
             ],
         }
     }
@@ -2931,10 +2931,12 @@ impl Workspace {
             .on_action(cx.listener(|this, _: &DotEnd, window, cx| this.step_dot("End", window, cx)))
             .on_action(cx.listener(|this, _: &AcceptAll, window, cx| {
                 this.open_menu = None;
+                this.reading = false;
                 this.accept_all(window, cx);
             }))
             .on_action(cx.listener(|this, _: &RejectAll, window, cx| {
                 this.open_menu = None;
+                this.reading = false;
                 this.reject_all(window, cx);
             }))
     }
@@ -2947,6 +2949,14 @@ impl Workspace {
     fn reject_all(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.show_editing(window, cx);
         self.pane.update(cx, |pane, cx| pane.reject_all(window, cx));
+    }
+
+    fn focus_text(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.reading {
+            window.focus(&self.focus, cx);
+        } else {
+            self.pane.update(cx, |pane, cx| pane.focus(window, cx));
+        }
     }
 
     fn toggle_reading(&mut self, _: &ToggleReading, window: &mut Window, cx: &mut Context<Self>) {
@@ -3186,7 +3196,7 @@ impl Workspace {
                     .on_mouse_down_out(cx.listener(|this, _, window, cx| {
                         if !this.modal_open() && this.preferences.is_some() {
                             this.preferences = None;
-                            this.pane.update(cx, |pane, cx| pane.focus(window, cx));
+                            this.focus_text(window, cx);
                             cx.notify();
                         }
                     }))
