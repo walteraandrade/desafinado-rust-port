@@ -1654,11 +1654,15 @@ impl EditorPane {
                 self.render_ready_card(frame, ready, kind, card_focused, roles, cx)
             }
         };
-        let element = ui::enter(
+        let element = ui::enter_after(
             SharedString::from(format!("card-in-{}", item.id)),
             card,
             self.card_enter(item, bounds, cx),
-            ui::MOTION_ENTER,
+            if kind == CardKind::Hover {
+                ui::MOTION_HOVER_DELAY
+            } else {
+                std::time::Duration::ZERO
+            },
         )
         .into_any_element();
         Some((element, bounds.origin.y - origin.y + height + px(8.)))
@@ -1668,10 +1672,16 @@ impl EditorPane {
         if self.card_placement() == CardPlacement::Margin {
             return ui::Enter::Slide(-8.);
         }
+        let anchor_at = match item {
+            Suggestion::Ready(ready) => {
+                desafinado_core::suggestions::first_change_at(ready.from, &ready.diff)
+            }
+            _ => item.from,
+        };
         let range_top = self
             .editor
             .read(cx)
-            .range_to_bounds(&(item.from..item.from))
+            .range_to_bounds(&(anchor_at..anchor_at))
             .map(|line| line.top());
         match range_top {
             Some(top) if card.bottom() <= top => ui::Enter::Rise(6.),
@@ -2367,7 +2377,7 @@ impl EditorPane {
                     .enumerate()
                     .map(|(index, row)| self.render_ask_row(index, row, roles, cx)),
             );
-        Some(bubble_in(bubble, anchor.above))
+        Some(bubble_in(bubble, placed.side == Side::Above))
     }
 
     fn render_ask_row(
