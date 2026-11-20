@@ -18,7 +18,7 @@ pub fn render_reading(text: &str, roles: Roles) -> AnyElement {
             div()
                 .type_ui()
                 .type_document()
-                .line_height(relative(1.6))
+                .line_height(relative(1.75))
                 .text_color(roles.ink)
                 .child(
                     TextView::markdown("reading-text", body_after_frontmatter(text).to_string())

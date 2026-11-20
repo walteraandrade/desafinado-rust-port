@@ -17,7 +17,7 @@ The AI proposes; your voice wins. Every change it suggests sits in your text as 
 - Accept is a normal edit, so `Ctrl+Z` undoes it.
 - **Edit → Review…** reads the whole document, optionally with a focus such as "tone only", and streams up to six suggestions, with Accept all and Reject all.
 
-**Read it rendered.** `Ctrl+Shift+V` (or **Edit → Reading view**) swaps the editor for the rendered Markdown: real heading sizes, lists, quotes, code blocks and links, without the frontmatter. Press it again to edit.
+**Read it rendered.** `Ctrl+Alt+R` (or **Edit → Reading view**) swaps the editor for the rendered Markdown: real heading sizes, lists, quotes, code blocks and links, without the frontmatter. Press it again to edit.
 
 **Keep the history.** The timeline under the header keeps a version after each accept, open, restore, save and pause in your typing, marked by who made it. Compare any version with the current text and restore it. Each document keeps its own history, with no cap, in a SQLite database in the settings folder.
 

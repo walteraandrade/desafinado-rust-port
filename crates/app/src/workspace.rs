@@ -136,7 +136,7 @@ pub fn init(cx: &mut App) {
         KeyBinding::new("ctrl-,", OpenPreferences, None),
         KeyBinding::new("ctrl-b", ToggleLibrary, None),
         KeyBinding::new("ctrl-p", SearchLibrary, None),
-        KeyBinding::new("ctrl-shift-v", ToggleReading, None),
+        KeyBinding::new("ctrl-alt-r", ToggleReading, None),
         KeyBinding::new("escape", CloseMenu, Some("Menu")),
         KeyBinding::new("down", MenuDown, Some("Menu")),
         KeyBinding::new("up", MenuUp, Some("Menu")),
@@ -2135,7 +2135,7 @@ impl Workspace {
                         } else {
                             "Reading view"
                         },
-                        Some("Ctrl+Shift+V"),
+                        Some("Ctrl+Alt+R"),
                         Box::new(ToggleReading),
                         false,
                     )
@@ -2268,6 +2268,7 @@ impl Workspace {
 
     fn open_review(&mut self, _: &StartReview, window: &mut Window, cx: &mut Context<Self>) {
         self.open_menu = None;
+        self.reading = false;
         if self.pane.read(cx).review.is_some() {
             return;
         }
@@ -2965,11 +2966,11 @@ impl Workspace {
     }
 
     fn reading_toggle_allowed(&self, window: &Window, cx: &App) -> bool {
-        let editor = self.pane.read(cx).editor.read(cx).focus_handle(cx);
-        window.focused(cx).is_none()
-            || self.focus.is_focused(window)
-            || self.menu_focus.is_focused(window)
-            || editor.is_focused(window)
+        !self.library.read(cx).search_focused(window, cx)
+            && !self
+                .frontmatter
+                .focus_handle(cx)
+                .contains_focused(window, cx)
     }
 
     fn toggle_reading(&mut self, _: &ToggleReading, window: &mut Window, cx: &mut Context<Self>) {
@@ -3128,11 +3129,7 @@ impl Workspace {
                         "Select text and press"
                     })
                     .child(ui::kbd(
-                        if self.reading {
-                            "Ctrl+Shift+V"
-                        } else {
-                            "Ctrl+K"
-                        },
+                        if self.reading { "Ctrl+Alt+R" } else { "Ctrl+K" },
                         roles,
                     )),
             )
