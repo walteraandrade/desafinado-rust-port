@@ -2171,7 +2171,7 @@ impl Workspace {
             MenuKind::Edit => px(52.),
         };
         let active = self.menu_active;
-        ui::popover_frame("menu", roles)
+        let menu = ui::popover_frame("menu", roles)
             .key_context("Menu")
             .track_focus(&self.menu_focus)
             .on_action(cx.listener(|this, _: &MenuDown, _, cx| this.move_in_menu(true, cx)))
@@ -2200,7 +2200,16 @@ impl Workspace {
                     .into_iter()
                     .enumerate()
                     .map(|(index, item)| self.render_menu_row(index, item, active, roles, cx)),
-            )
+            );
+        ui::enter(
+            match kind {
+                MenuKind::File => "menu-in-file",
+                MenuKind::Edit => "menu-in-edit",
+            },
+            menu,
+            ui::Enter::Rise(-4.),
+            ui::MOTION_ENTER,
+        )
     }
 
     fn render_menu_row(
@@ -2287,7 +2296,7 @@ impl Workspace {
     ) -> impl IntoElement {
         let left = px(52.);
         let width = px(384.).min(self.viewport_width - left - px(8.));
-        ui::popover_frame("review-popover", roles)
+        let popover = ui::popover_frame("review-popover", roles)
             .key_context("ReviewPopover")
             .on_mouse_down_out(cx.listener(|this, _, _, cx| {
                 if this.review_focus.take().is_some() {
@@ -2314,7 +2323,13 @@ impl Workspace {
                         this.confirm_review(&ConfirmReview, window, cx)
                     }),
                 ),
-            )
+            );
+        ui::enter(
+            "review-popover-in",
+            popover,
+            ui::Enter::Rise(-4.),
+            ui::MOTION_ENTER,
+        )
     }
 
     fn render_leave(&self, roles: Roles, cx: &mut Context<Self>) -> impl IntoElement {
@@ -2457,7 +2472,8 @@ impl Workspace {
                 .flex()
                 .justify_center()
                 .px(px(24.))
-                .child(
+                .child(ui::enter(
+                    SharedString::from(format!("toast-in-{}", toast.text)),
                     ui::toast_frame("toast", toast.tone, roles)
                         .child(toast.text.clone())
                         .children(actions.into_iter().enumerate().map(|(index, action)| {
@@ -2473,7 +2489,9 @@ impl Workspace {
                                 },
                             ))
                         })),
-                )
+                    ui::Enter::Rise(10.),
+                    ui::MOTION_TOAST,
+                ))
                 .into_any_element(),
         )
     }
@@ -2972,7 +2990,7 @@ impl Workspace {
                             .w(px(library_panel::LIBRARY_WIDTH))
                             .h_full()
                             .flex_none()
-                            .child(self.library.clone()),
+                            .child(self.library_in()),
                     )
                 },
             )
@@ -3016,10 +3034,19 @@ impl Workspace {
                                     this.fold_library(cx);
                                 }
                             }))
-                            .child(self.library.clone()),
+                            .child(self.library_in()),
                     )
                 },
             )
+    }
+
+    fn library_in(&self) -> AnimationElement<Div> {
+        ui::enter(
+            "library-in",
+            div().size_full().child(self.library.clone()),
+            ui::Enter::Slide(-16.),
+            ui::MOTION_ENTER,
+        )
     }
 
     fn render_header(&self, roles: Roles, cx: &mut Context<Self>) -> Div {
@@ -3138,7 +3165,12 @@ impl Workspace {
                             cx.notify();
                         }
                     }))
-                    .child(preferences),
+                    .child(ui::enter(
+                        "preferences-in",
+                        div().size_full().child(preferences),
+                        ui::Enter::Slide(16.),
+                        ui::MOTION_ENTER,
+                    )),
             )
         })
         .children(toast)

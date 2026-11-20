@@ -420,7 +420,12 @@ pub fn modal_backdrop(
         .flex()
         .items_center()
         .justify_center()
-        .child(content)
+        .child(enter(
+            "modal-in",
+            div().max_w_full().child(content),
+            Enter::Rise(6.),
+            MOTION_ENTER,
+        ))
 }
 
 pub fn wordmark(roles: Roles) -> Div {
@@ -712,4 +717,112 @@ pub fn list_icon(roles: Roles) -> Div {
         .child(line())
         .child(line())
         .child(line())
+}
+
+/// How long a surface takes to arrive, and how a toast lands. The Electron
+/// build's `--motion-enter` and `.toast-in`.
+pub const MOTION_ENTER: std::time::Duration = std::time::Duration::from_millis(260);
+pub const MOTION_TOAST: std::time::Duration = std::time::Duration::from_millis(320);
+
+/// Where a surface comes from as it fades in: a vertical rise (negative drops
+/// from above) or a horizontal slide (negative comes from the left).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Enter {
+    Rise(f32),
+    Slide(f32),
+}
+
+/// `cubic-bezier(0.16, 1, 0.3, 1)` is close to this exponential ease-out.
+pub fn ease_out_expo(delta: f32) -> f32 {
+    if delta >= 1. {
+        1.
+    } else {
+        1. - 2f32.powf(-10. * delta)
+    }
+}
+
+/// Fades a surface in while it moves the last few pixels into place, once,
+/// when an element with this id first shows. The offset is a margin, so it
+/// moves an absolutely placed surface without touching its `top` or `left`.
+pub fn enter<E: Styled + IntoElement + 'static>(
+    id: impl Into<ElementId>,
+    element: E,
+    from: Enter,
+    duration: std::time::Duration,
+) -> AnimationElement<E> {
+    element.with_animation(
+        id,
+        Animation::new(duration).with_easing(ease_out_expo),
+        move |element, delta| {
+            let rest = 1. - delta;
+            let element = element.opacity(delta);
+            match from {
+                Enter::Rise(offset) => element.mt(px(offset * rest)),
+                Enter::Slide(offset) => element.ml(px(offset * rest)),
+            }
+        },
+    )
+}
+
+/// The AI caret's bar breathes, `cm-ai-breathe`: full, 0.45 at the middle.
+pub fn breathe<E: Styled + IntoElement + 'static>(
+    id: impl Into<ElementId>,
+    element: E,
+) -> AnimationElement<E> {
+    element.with_animation(
+        id,
+        Animation::new(std::time::Duration::from_millis(1600))
+            .repeat()
+            .with_easing(bounce(ease_in_out)),
+        |element, delta| element.opacity(1. - 0.55 * delta),
+    )
+}
+
+/// The three dots after the AI caret's label, `cm-ai-dots`: each pulses from
+/// 0.35 to full, 160 ms after the one before.
+pub fn ai_dots(roles: Roles) -> AnyElement {
+    const PERIOD_MS: f32 = 1200.;
+    const STAGGER_MS: f32 = 160.;
+    row()
+        .gap(px(4.))
+        .children((0usize..3).map(move |index| {
+            let shift = STAGGER_MS * index as f32 / PERIOD_MS;
+            div().size(px(3.)).bg(roles.canvas).with_animation(
+                ("ai-dot", index),
+                Animation::new(std::time::Duration::from_millis(PERIOD_MS as u64)).repeat(),
+                move |dot, delta| dot.opacity(dot_opacity((delta - shift).rem_euclid(1.))),
+            )
+        }))
+        .into_any_element()
+}
+
+/// `cm-ai-dot`: 0.35 at the ends, full at 40%, eased like `ease-in-out-sine`.
+pub fn dot_opacity(phase: f32) -> f32 {
+    let rise = |t: f32| 0.5 - 0.5 * (std::f32::consts::PI * t).cos();
+    let level = if phase < 0.4 {
+        rise(phase / 0.4)
+    } else {
+        rise((1. - phase) / 0.6)
+    };
+    0.35 + 0.65 * level
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{dot_opacity, ease_out_expo};
+
+    #[test]
+    fn ease_out_expo_starts_fast_and_lands_on_one() {
+        assert_eq!(ease_out_expo(0.), 0.);
+        assert!(ease_out_expo(0.2) > 0.7);
+        assert_eq!(ease_out_expo(1.), 1.);
+    }
+
+    #[test]
+    fn a_dot_is_faint_at_the_ends_and_full_at_forty_percent() {
+        assert!((dot_opacity(0.) - 0.35).abs() < 1e-5);
+        assert!((dot_opacity(0.4) - 1.).abs() < 1e-5);
+        assert!((dot_opacity(1.) - 0.35).abs() < 1e-5);
+        assert!(dot_opacity(0.7) > 0.35 && dot_opacity(0.7) < 1.);
+    }
 }
