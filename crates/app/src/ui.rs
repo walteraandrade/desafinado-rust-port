@@ -714,16 +714,10 @@ pub fn list_icon(roles: Roles) -> Div {
         .child(line())
 }
 
-/// How long a surface takes to arrive, and how a toast lands. The Electron
-/// build's `--motion-enter` and `.toast-in`.
 pub const MOTION_ENTER: std::time::Duration = std::time::Duration::from_millis(260);
 pub const MOTION_TOAST: std::time::Duration = std::time::Duration::from_millis(320);
 pub const MOTION_HOVER_DELAY: std::time::Duration = std::time::Duration::from_millis(160);
 
-/// Where a surface comes from as it fades in: a vertical rise (negative drops
-/// from above) or a horizontal slide (negative comes from the left), both as
-/// margins; a lift moves an element whose bottom is pinned, which a margin
-/// cannot.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Enter {
     Rise(f32),
@@ -731,22 +725,12 @@ pub enum Enter {
     Lift(f32),
 }
 
-/// The looping AI caret motion repaints at most this often, so a long Review
-/// pass does not redraw the editor at the display rate.
 const MOTION_LOOP_FPS: f32 = 30.;
 
-/// GNOME's `enable-animations` answer, as `gsettings get` prints it; the same
-/// setting Chromium reads for `prefers-reduced-motion` on Linux.
-pub fn animations_off(gsettings: &str) -> bool {
-    gsettings.trim() == "false"
-}
-
-/// `--ease-in-out-sine`.
 pub fn ease_in_out_sine(delta: f32) -> f32 {
     0.5 - 0.5 * (std::f32::consts::PI * delta).cos()
 }
 
-/// `cubic-bezier(0.16, 1, 0.3, 1)` is close to this exponential ease-out.
 pub fn ease_out_expo(delta: f32) -> f32 {
     if delta >= 1. {
         1.
@@ -755,9 +739,6 @@ pub fn ease_out_expo(delta: f32) -> f32 {
     }
 }
 
-/// Fades a surface in while it moves the last few pixels into place, once,
-/// when an element with this id first shows. The offset is a margin, so it
-/// moves an absolutely placed surface without touching its `top` or `left`.
 pub fn enter<E: Styled + IntoElement + 'static>(
     id: impl Into<ElementId>,
     element: E,
@@ -767,8 +748,6 @@ pub fn enter<E: Styled + IntoElement + 'static>(
     entering(id, element, from, std::time::Duration::ZERO, duration)
 }
 
-/// `enter` for a Card: a hover Card waits 160 ms first, so a passing pointer
-/// shows nothing, as `.cm-ai-card-hover` does.
 pub fn enter_after<E: Styled + IntoElement + 'static>(
     id: impl Into<ElementId>,
     element: E,
@@ -802,8 +781,6 @@ fn entering<E: Styled + IntoElement + 'static>(
     )
 }
 
-/// Holds an easing at 0 for the first `lead` of the time, then runs it over
-/// the rest, like `animation-delay` with `fill-mode: backwards`.
 pub fn delayed(easing: impl Fn(f32) -> f32, lead: f32, t: f32) -> f32 {
     if t <= lead {
         0.
@@ -812,9 +789,6 @@ pub fn delayed(easing: impl Fn(f32) -> f32, lead: f32, t: f32) -> f32 {
     }
 }
 
-/// How far a surface still is from its place, as (x, y), when `rest` of the
-/// motion is left: a positive rise starts below, a negative one above; a
-/// negative slide starts on the left.
 pub fn enter_offset(from: Enter, rest: f32) -> (f32, f32) {
     match from {
         Enter::Rise(offset) | Enter::Lift(offset) => (0., offset * rest),
@@ -822,7 +796,6 @@ pub fn enter_offset(from: Enter, rest: f32) -> (f32, f32) {
     }
 }
 
-/// The AI caret's bar breathes, `cm-ai-breathe`: full, 0.45 at the middle.
 pub fn breathe<E: Styled + IntoElement + 'static>(
     id: impl Into<ElementId>,
     element: E,
@@ -837,27 +810,29 @@ pub fn breathe<E: Styled + IntoElement + 'static>(
     )
 }
 
-/// The three dots after the AI caret's label, `cm-ai-dots`: each pulses from
-/// 0.35 to full, 160 ms after the one before.
-pub fn ai_dots(roles: Roles) -> AnyElement {
+pub fn ai_dots(roles: Roles, still: bool) -> AnyElement {
     const PERIOD_MS: f32 = 1200.;
     const STAGGER_MS: f32 = 160.;
     row()
         .gap(px(4.))
         .children((0usize..3).map(move |index| {
             let shift = STAGGER_MS * index as f32 / PERIOD_MS;
-            div().size(px(3.)).bg(roles.canvas).with_animation(
+            let dot = div().size(px(3.)).bg(roles.canvas);
+            if still {
+                return dot.into_any_element();
+            }
+            dot.with_animation(
                 ("ai-dot", index),
                 Animation::new(std::time::Duration::from_millis(PERIOD_MS as u64))
                     .repeat()
                     .with_max_fps(MOTION_LOOP_FPS),
                 move |dot, delta| dot.opacity(dot_opacity((delta - shift).rem_euclid(1.))),
             )
+            .into_any_element()
         }))
         .into_any_element()
 }
 
-/// `cm-ai-dot`: 0.35 at the ends, full at 40%, eased like `ease-in-out-sine`.
 pub fn dot_opacity(phase: f32) -> f32 {
     let level = if phase < 0.4 {
         ease_in_out_sine(phase / 0.4)
@@ -869,9 +844,7 @@ pub fn dot_opacity(phase: f32) -> f32 {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        Enter, animations_off, delayed, dot_opacity, ease_in_out_sine, ease_out_expo, enter_offset,
-    };
+    use super::{Enter, delayed, dot_opacity, ease_in_out_sine, ease_out_expo, enter_offset};
 
     #[test]
     fn a_rise_starts_below_a_drop_above_a_slide_on_its_side() {
@@ -879,13 +852,6 @@ mod tests {
         assert_eq!(enter_offset(Enter::Rise(-4.), 1.), (0., -4.));
         assert_eq!(enter_offset(Enter::Slide(-16.), 0.5), (-8., 0.));
         assert_eq!(enter_offset(Enter::Lift(10.), 0.), (0., 0.));
-    }
-
-    #[test]
-    fn reads_gnome_animations_off() {
-        assert!(animations_off("false\n"));
-        assert!(!animations_off("true\n"));
-        assert!(!animations_off(""));
     }
 
     #[test]

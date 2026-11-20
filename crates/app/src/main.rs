@@ -75,7 +75,6 @@ fn show_start_error(message: String) {
         .with_assets(gpui_kit::assets::Assets::new(""))
         .run(move |cx| {
             gpui_kit::init(cx);
-            cx.set_reduce_motion(system_reduces_motion());
             let _ = cx
                 .text_system()
                 .add_fonts(FONTS.iter().map(|font| Cow::Borrowed(*font)).collect());
@@ -93,13 +92,6 @@ fn show_start_error(message: String) {
             .detach();
             cx.activate(true);
         });
-}
-
-fn system_reduces_motion() -> bool {
-    std::process::Command::new("gsettings")
-        .args(["get", "org.gnome.desktop.interface", "enable-animations"])
-        .output()
-        .is_ok_and(|output| ui::animations_off(&String::from_utf8_lossy(&output.stdout)))
 }
 
 fn main() {

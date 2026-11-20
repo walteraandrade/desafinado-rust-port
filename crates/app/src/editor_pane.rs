@@ -2222,7 +2222,7 @@ impl EditorPane {
             .gap(px(4.))
             .whitespace_nowrap()
             .child(div().weight_regular().child(caret.label.clone()))
-            .child(ui::ai_dots(roles));
+            .child(ui::ai_dots(roles, cx.reduce_motion()));
         let bar = ui::breathe(
             "ai-caret-bar",
             div().absolute().top_0().left_0().size_full().bg(roles.ai),
