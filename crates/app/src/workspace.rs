@@ -337,6 +337,7 @@ pub struct Workspace {
     watcher: Option<ExternalChangesController>,
     watched: Option<Option<PathBuf>>,
     toast: Option<Toast>,
+    toast_serial: u64,
     pub(crate) mode: HistoryMode,
     pub(crate) hovered: Option<VersionId>,
     pub(crate) dot_hovered: Option<VersionId>,
@@ -433,6 +434,7 @@ impl Workspace {
             watcher: None,
             watched: None,
             toast: None,
+            toast_serial: 0,
             mode: HistoryMode::Editing,
             hovered: None,
             dot_hovered: None,
@@ -682,7 +684,8 @@ impl Workspace {
                 cx.notify();
             });
         });
-        let serial = self.toast.as_ref().map_or(0, |toast| toast.serial + 1);
+        self.toast_serial += 1;
+        let serial = self.toast_serial;
         self.toast = Some(Toast {
             serial,
             text: text.into(),
@@ -2492,7 +2495,7 @@ impl Workspace {
                                 },
                             ))
                         })),
-                    ui::Enter::Rise(10.),
+                    ui::Enter::Lift(10.),
                     ui::MOTION_TOAST,
                 ))
                 .into_any_element(),

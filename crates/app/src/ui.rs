@@ -720,11 +720,14 @@ pub const MOTION_ENTER: std::time::Duration = std::time::Duration::from_millis(2
 pub const MOTION_TOAST: std::time::Duration = std::time::Duration::from_millis(320);
 
 /// Where a surface comes from as it fades in: a vertical rise (negative drops
-/// from above) or a horizontal slide (negative comes from the left).
+/// from above) or a horizontal slide (negative comes from the left), both as
+/// margins; a lift moves an element whose bottom is pinned, which a margin
+/// cannot.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Enter {
     Rise(f32),
     Slide(f32),
+    Lift(f32),
 }
 
 /// The looping AI caret motion repaints at most this often, so a long Review
@@ -763,6 +766,7 @@ pub fn enter<E: Styled + IntoElement + 'static>(
             match from {
                 Enter::Rise(offset) => element.mt(px(offset * rest)),
                 Enter::Slide(offset) => element.ml(px(offset * rest)),
+                Enter::Lift(offset) => element.relative().top(px(offset * rest)),
             }
         },
     )
@@ -794,7 +798,9 @@ pub fn ai_dots(roles: Roles) -> AnyElement {
             let shift = STAGGER_MS * index as f32 / PERIOD_MS;
             div().size(px(3.)).bg(roles.canvas).with_animation(
                 ("ai-dot", index),
-                Animation::new(std::time::Duration::from_millis(PERIOD_MS as u64)).repeat(),
+                Animation::new(std::time::Duration::from_millis(PERIOD_MS as u64))
+                    .repeat()
+                    .with_max_fps(MOTION_LOOP_FPS),
                 move |dot, delta| dot.opacity(dot_opacity((delta - shift).rem_euclid(1.))),
             )
         }))
