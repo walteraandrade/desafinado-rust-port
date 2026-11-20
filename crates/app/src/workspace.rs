@@ -2937,12 +2937,10 @@ impl Workspace {
             .on_action(cx.listener(|this, _: &DotEnd, window, cx| this.step_dot("End", window, cx)))
             .on_action(cx.listener(|this, _: &AcceptAll, window, cx| {
                 this.open_menu = None;
-                this.reading = false;
                 this.accept_all(window, cx);
             }))
             .on_action(cx.listener(|this, _: &RejectAll, window, cx| {
                 this.open_menu = None;
-                this.reading = false;
                 this.reject_all(window, cx);
             }))
     }
@@ -2977,6 +2975,7 @@ impl Workspace {
         if self.modal_open()
             || self.preferences.is_some()
             || self.review_focus.is_some()
+            || self.evals.read(cx).dialog().is_some()
             || !self.reading_toggle_allowed(window, cx)
         {
             return;
@@ -2988,6 +2987,7 @@ impl Workspace {
         self.show_editing(window, cx);
         self.reading = next;
         if self.reading {
+            self.pane.update(cx, |pane, cx| pane.put_away(window, cx));
             self.focus.focus(window, cx);
         } else {
             let editor = self.pane.read(cx).editor.clone();

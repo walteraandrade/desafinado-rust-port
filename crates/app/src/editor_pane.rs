@@ -698,6 +698,11 @@ impl EditorPane {
         desafinado_ai::quick_actions::quick_actions_for(self.is_skill, &self.quick_actions)
     }
 
+    pub fn put_away(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.refine = None;
+        self.dismiss_bubble(window, cx);
+    }
+
     fn dismiss_bubble(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let selection = self.selection(cx);
         self.bubble = next_bubble(
