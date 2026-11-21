@@ -917,6 +917,26 @@ pub fn column_share(opening: bool, delta: f32) -> f32 {
     if opening { delta } else { 1. - delta }
 }
 
+pub fn glide<E: Styled + IntoElement + 'static>(
+    id: impl Into<ElementId>,
+    element: E,
+    from: f32,
+) -> AnimationElement<E> {
+    element.with_animation(
+        id,
+        Animation::new(MOTION_ENTER).with_easing(ease_out_expo),
+        move |element, delta| element.relative().top(px(from * (1. - delta))),
+    )
+}
+
+pub fn collapse(id: impl Into<ElementId>, row: Div, full: Pixels) -> AnimationElement<Div> {
+    row.with_animation(
+        id,
+        Animation::new(MOTION_LEAVE).with_easing(ease_out_quart),
+        move |row, delta| row.h(full * (1. - delta)).opacity(1. - delta),
+    )
+}
+
 pub fn grow_height(
     id: impl Into<ElementId>,
     bar: Div,
