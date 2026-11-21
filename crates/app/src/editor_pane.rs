@@ -194,12 +194,21 @@ enum Applying {
 type CardRects = Rc<RefCell<Vec<(Bounds<Pixels>, CardKind)>>>;
 
 #[derive(Clone)]
+struct GhostRow {
+    label: SharedString,
+    skill: bool,
+}
+
+#[derive(Clone)]
 struct BubbleGhost {
     left: Pixels,
     top: Pixels,
+    height: Pixels,
     above: bool,
     query: SharedString,
-    rows: Vec<SharedString>,
+    hint: Option<SharedString>,
+    rows: Vec<GhostRow>,
+    active: usize,
 }
 
 pub struct EditorPane {
@@ -2320,6 +2329,7 @@ impl EditorPane {
         roles: Roles,
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
+        self.last_bubble.replace(None);
         let state = self.editor.read(cx);
         let head = state.range_to_bounds(&(anchor.head..anchor.head))?;
         let first = if self.above_view(anchor.span.start, cx) {
@@ -2370,6 +2380,7 @@ impl EditorPane {
         let hint = ask_menu::hint_visible(&self.menu)
             .then(|| ask_menu::ask_hint(&actions))
             .flatten();
+        let hint_text = hint.clone().map(SharedString::from);
         let bubble = ui::popover_frame("bubble", roles)
             .key_context("AskBubble")
             .on_action(cx.listener(Self::bubble_up))
@@ -2405,25 +2416,37 @@ impl EditorPane {
                 ui::enter_in_turn(
                     ("ask-row-in", index),
                     self.render_ask_row(index, row, roles, cx),
-                    ui::Enter::Rise(-4.),
+                    ui::Enter::Lift(-4.),
                     index,
                 )
             }));
-        self.remember_bubble(&placed, &rows, cx);
+        self.remember_bubble(&placed, &rows, hint_text, height, cx);
         Some(bubble_in(bubble, placed.side == Side::Above))
     }
 
-    fn remember_bubble(&self, placed: &Placed, rows: &[AskRow], cx: &App) {
+    fn remember_bubble(
+        &self,
+        placed: &Placed,
+        rows: &[AskRow],
+        hint: Option<SharedString>,
+        height: Pixels,
+        cx: &App,
+    ) {
         self.last_bubble.replace(Some(BubbleGhost {
             left: px(placed.left as f32),
             top: px(placed.top as f32),
+            height,
             above: placed.side == Side::Above,
             query: self.bubble_input.read(cx).value(),
+            hint,
             rows: rows
                 .iter()
-                .map(ask_row_label)
-                .map(SharedString::from)
+                .map(|row| GhostRow {
+                    label: ask_row_label(row).into(),
+                    skill: matches!(row, AskRow::Action { action, .. } if action.skill_only),
+                })
                 .collect(),
+            active: self.menu.active,
         }));
     }
 
@@ -2469,10 +2492,7 @@ impl EditorPane {
                 .into_any_element(),
             _ => StyledText::new(label.clone()).into_any_element(),
         };
-        ui::ai_option_row(("ask-row", index), index == self.menu.active, roles)
-            .h(px(28.))
-            .px(px(8.))
-            .justify_between()
+        ui::ask_option_row(("ask-row", index), index == self.menu.active, roles)
             .on_mouse_move(cx.listener(move |this, _, _, cx| {
                 let next = ask_menu::hover_ask_menu(&this.menu, index);
                 if next != this.menu {
@@ -2695,24 +2715,28 @@ fn ask_row_label(row: &AskRow) -> String {
 }
 
 fn render_bubble_ghost(ghost: &BubbleGhost, roles: Roles) -> AnyElement {
-    let frame = ui::popover_frame("bubble-ghost", roles)
+    let frame = ui::popover_surface(roles)
         .absolute()
         .left(ghost.left)
         .top(ghost.top)
         .w(px(BUBBLE_WIDTH))
+        .h(ghost.height)
+        .overflow_hidden()
         .p(px(8.))
         .gap(px(8.))
         .child(
             ui::row()
                 .gap(px(8.))
                 .child(ui::ai_flag(roles))
-                .child(div().flex_1().child(ghost.query.clone())),
+                .child(div().flex_1().min_h(px(20.)).child(ghost.query.clone())),
         )
-        .children(ghost.rows.iter().enumerate().map(|(index, label)| {
-            ui::ai_option_row(("ghost-row", index), false, roles)
-                .h(px(28.))
-                .px(px(8.))
-                .child(label.clone())
+        .when_some(ghost.hint.clone(), |this, hint| {
+            this.child(ui::meta(hint, roles))
+        })
+        .children(ghost.rows.iter().enumerate().map(|(index, row)| {
+            ui::ask_option_row(("ghost-row", index), index == ghost.active, roles)
+                .child(row.label.clone())
+                .when(row.skill, |this| this.child(ui::meta("Skill", roles)))
         }));
     ui::leave(
         "bubble-out",

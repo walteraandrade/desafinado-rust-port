@@ -979,6 +979,7 @@ impl Render for LibraryPanel {
                     .min_h_0()
                     .overflow_y_scroll()
                     .pb(px(24.))
+                    .pr(px(8.))
                     .on_key_down(cx.listener(Self::on_tree_key))
                     .children(rows),
             )

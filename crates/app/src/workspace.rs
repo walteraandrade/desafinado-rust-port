@@ -1981,7 +1981,8 @@ impl Workspace {
         let events = cx.subscribe_in(
             &panel,
             window,
-            |this, _, event: &PreferencesEvent, window, cx| match event {
+            |this, panel, event: &PreferencesEvent, window, cx| match event {
+                _ if this.preferences.as_ref() != Some(panel) => {}
                 PreferencesEvent::Close => {
                     this.close_preferences(cx);
                     this.focus_text(window, cx);
@@ -2712,7 +2713,7 @@ fn save_as_target(chosen: &Path, text: &str) -> FileSaveResult {
 }
 
 fn preferences_motion(panel: Entity<PreferencesPanel>, open: bool) -> AnyElement {
-    let panel = div().size_full().child(panel);
+    let panel = div().relative().size_full().child(panel);
     if open {
         ui::enter(
             "preferences-in",
@@ -2722,7 +2723,12 @@ fn preferences_motion(panel: Entity<PreferencesPanel>, open: bool) -> AnyElement
         )
         .into_any_element()
     } else {
-        ui::leave("preferences-out", panel, ui::Enter::Slide(16.)).into_any_element()
+        ui::leave(
+            "preferences-out",
+            panel.child(ui::input_cover("preferences-cover")),
+            ui::Enter::Slide(16.),
+        )
+        .into_any_element()
     }
 }
 
@@ -3171,7 +3177,7 @@ impl Workspace {
     }
 
     fn library_in(&self) -> AnimationElement<Div> {
-        let panel = div().size_full().child(self.library.clone());
+        let panel = div().relative().size_full().child(self.library.clone());
         if self.library_open {
             ui::enter(
                 "library-in",
@@ -3180,7 +3186,11 @@ impl Workspace {
                 ui::MOTION_ENTER,
             )
         } else {
-            ui::leave("library-out", panel, ui::Enter::Slide(-16.))
+            ui::leave(
+                "library-out",
+                panel.child(ui::input_cover("library-cover")),
+                ui::Enter::Slide(-16.),
+            )
         }
     }
 

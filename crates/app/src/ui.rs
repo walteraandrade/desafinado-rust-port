@@ -283,6 +283,13 @@ pub fn ai_option_row(id: impl Into<ElementId>, active: bool, roles: Roles) -> St
         .cursor_pointer()
 }
 
+pub fn ask_option_row(id: impl Into<ElementId>, active: bool, roles: Roles) -> Stateful<Div> {
+    ai_option_row(id, active, roles)
+        .h(px(28.))
+        .px(px(8.))
+        .justify_between()
+}
+
 /// An option row that can hold the keyboard focus, shown by the focus ring.
 pub fn focusable_row(
     id: impl Into<ElementId>,
@@ -395,9 +402,15 @@ pub fn dialog_frame(id: impl Into<ElementId>, width: Pixels, roles: Roles) -> St
 }
 
 pub fn popover_frame(id: impl Into<ElementId>, roles: Roles) -> Stateful<Div> {
+    popover_surface(roles).id(id).occlude()
+}
+
+pub fn input_cover(id: impl Into<ElementId>) -> Stateful<Div> {
+    div().id(id).absolute().inset_0().occlude()
+}
+
+pub fn popover_surface(roles: Roles) -> Div {
     div()
-        .id(id)
-        .occlude()
         .bg(roles.overlay)
         .text_color(roles.ink)
         .type_body()
@@ -753,6 +766,7 @@ pub const MOTION_GROW: std::time::Duration = std::time::Duration::from_millis(42
 const CASCADE_STEP_MS: u64 = 30;
 const CASCADE_MAX_STEPS: usize = 8;
 const GROW_STEP_MS: u64 = 24;
+const GROW_MAX_STEPS: usize = 14;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Enter {
@@ -800,7 +814,7 @@ fn entering<E: Styled + IntoElement + 'static>(
     delay: std::time::Duration,
     duration: std::time::Duration,
 ) -> AnimationElement<E> {
-    let lead = delay.as_secs_f32() / (delay + duration).as_secs_f32();
+    let lead = lead_of(delay, duration);
     element.with_animation(
         id,
         Animation::new(delay + duration).with_easing(move |t| delayed(ease_out_expo, lead, t)),
@@ -849,7 +863,7 @@ pub fn leave<E: Styled + IntoElement + 'static>(
         id,
         Animation::new(MOTION_LEAVE).with_easing(ease_out_quart),
         move |element, delta| {
-            let (x, y) = enter_offset(to, delta);
+            let (x, y) = leave_offset(to, delta);
             let element = element.opacity(1. - delta);
             match to {
                 Enter::Lift(_) => element.relative().top(px(y)),
@@ -884,13 +898,21 @@ fn growing(
     index: usize,
     size: impl Fn(Div, f32) -> Div + 'static,
 ) -> AnimationElement<Div> {
-    let delay = cascade_delay(index, GROW_STEP_MS, 14);
-    let lead = delay.as_secs_f32() / (delay + MOTION_GROW).as_secs_f32();
+    let delay = cascade_delay(index, GROW_STEP_MS, GROW_MAX_STEPS);
+    let lead = lead_of(delay, MOTION_GROW);
     bar.with_animation(
         id,
         Animation::new(delay + MOTION_GROW).with_easing(move |t| delayed(ease_out_expo, lead, t)),
         size,
     )
+}
+
+pub fn lead_of(delay: std::time::Duration, duration: std::time::Duration) -> f32 {
+    delay.as_secs_f32() / (delay + duration).as_secs_f32()
+}
+
+pub fn leave_offset(to: Enter, delta: f32) -> (f32, f32) {
+    enter_offset(to, delta)
 }
 
 pub fn delayed(easing: impl Fn(f32) -> f32, lead: f32, t: f32) -> f32 {
@@ -958,7 +980,7 @@ pub fn dot_opacity(phase: f32) -> f32 {
 mod tests {
     use super::{
         Enter, cascade_delay, delayed, dot_opacity, ease_in_out_sine, ease_out_expo,
-        ease_out_quart, enter_offset,
+        ease_out_quart, enter_offset, lead_of, leave_offset,
     };
 
     #[test]
@@ -975,6 +997,20 @@ mod tests {
         assert_eq!(step(0), 0);
         assert_eq!(step(3), 90);
         assert_eq!(step(50), 240);
+    }
+
+    #[test]
+    fn a_leave_ends_at_the_side_it_came_from() {
+        assert_eq!(leave_offset(Enter::Slide(-16.), 0.), (0., 0.));
+        assert_eq!(leave_offset(Enter::Slide(-16.), 1.), (-16., 0.));
+        assert_eq!(leave_offset(Enter::Slide(16.), 1.), (16., 0.));
+    }
+
+    #[test]
+    fn the_lead_is_the_share_of_time_spent_waiting() {
+        let ms = std::time::Duration::from_millis;
+        assert_eq!(lead_of(ms(0), ms(260)), 0.);
+        assert!((lead_of(ms(160), ms(240)) - 0.4).abs() < 1e-6);
     }
 
     #[test]
