@@ -12,6 +12,7 @@ mod menu_nav;
 mod model_dialog;
 mod new_skill_dialog;
 mod preferences_view;
+mod reading_view;
 mod single_instance;
 mod spend;
 mod spend_view;

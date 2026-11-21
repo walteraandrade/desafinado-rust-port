@@ -14,7 +14,7 @@ use desafinado_features::skills::{
     },
     library::{CreateSkillRequest, CreateSkillResult},
     library_view::{open_skill_file, skill_file_label, skill_of_file},
-    scan_skills::SKILL_FILE_NAME,
+    scan_skills::is_skill_file,
 };
 use desafinado_features::{
     evals::{
@@ -111,6 +111,7 @@ actions!(
         SearchLibrary,
         ShowFrontmatterProblems,
         ShowSpend,
+        ToggleReading,
         OpenFileMenu,
         OpenEditMenu,
         MenuDown,
@@ -135,6 +136,7 @@ pub fn init(cx: &mut App) {
         KeyBinding::new("ctrl-,", OpenPreferences, None),
         KeyBinding::new("ctrl-b", ToggleLibrary, None),
         KeyBinding::new("ctrl-p", SearchLibrary, None),
+        KeyBinding::new("ctrl-alt-r", ToggleReading, None),
         KeyBinding::new("escape", CloseMenu, Some("Menu")),
         KeyBinding::new("down", MenuDown, Some("Menu")),
         KeyBinding::new("up", MenuUp, Some("Menu")),
@@ -368,6 +370,7 @@ pub struct Workspace {
     frontmatter_height: std::rc::Rc<std::cell::Cell<Pixels>>,
     evals: Entity<EvalsView>,
     evals_page: bool,
+    reading: bool,
     unsaved_checked: Option<(String, bool)>,
     menu_active: Option<usize>,
     menu_focus: FocusHandle,
@@ -465,6 +468,7 @@ impl Workspace {
             frontmatter_height: std::rc::Rc::new(std::cell::Cell::new(px(0.))),
             evals,
             evals_page: false,
+            reading: false,
             unsaved_checked: None,
             menu_active: None,
             menu_focus: cx.focus_handle(),
@@ -857,6 +861,7 @@ impl Workspace {
     fn arrived(&mut self) {
         self.conflict = None;
         self.noticed = None;
+        self.frontmatter_due = true;
         let path = self.session_path().map(Path::to_path_buf);
         self.history.select(path.as_ref(), now_ms());
     }
@@ -1118,7 +1123,7 @@ impl Workspace {
                 self.load(path.clone(), window, cx);
                 if self.session_path() == Some(path.as_path()) {
                     self.notify_success(format!("Created {name}"), cx);
-                    self.pane.update(cx, |pane, cx| pane.focus(window, cx));
+                    self.focus_text(window, cx);
                 }
             }
         }
@@ -1345,7 +1350,7 @@ impl Workspace {
 
     fn focus_text_from_library(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let fold_search = self.search_unfolded;
-        self.pane.update(cx, |pane, cx| pane.focus(window, cx));
+        self.focus_text(window, cx);
         if fold_search || self.placement() == Placement::Overlay {
             self.fold_library(cx);
         }
@@ -1360,7 +1365,7 @@ impl Workspace {
 
     fn fold_and_return(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.fold_library(cx);
-        self.pane.update(cx, |pane, cx| pane.focus(window, cx));
+        self.focus_text(window, cx);
     }
 
     fn toggle_library(&mut self, _: &ToggleLibrary, window: &mut Window, cx: &mut Context<Self>) {
@@ -1462,7 +1467,7 @@ impl Workspace {
             .as_ref()
             .map(|open| open.file_name.clone())
             .or_else(|| self.session.as_ref().map(|session| session.name.clone()));
-        let folder_name = if file_name.as_deref() != Some(SKILL_FILE_NAME) {
+        let folder_name = if !is_skill_file(file_name.as_deref()) {
             None
         } else {
             open.as_ref()
@@ -1481,9 +1486,8 @@ impl Workspace {
                 folder_name: folder_name.as_deref(),
             },
         );
-        self.pane.update(cx, |pane, _| {
-            pane.is_skill = desafinado_core::blocks::find_frontmatter(&text).is_some()
-        });
+        let is_skill = is_skill_file(file_name.as_deref());
+        self.pane.update(cx, |pane, _| pane.is_skill = is_skill);
         self.frontmatter
             .update(cx, |view, cx| view.refresh(&text, report, window, cx));
     }
@@ -1530,6 +1534,7 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         self.open_menu = None;
+        self.reading = false;
         self.close_history(window, cx);
         self.frontmatter
             .update(cx, |view, cx| view.focus_panel(window, cx));
@@ -1542,7 +1547,7 @@ impl Workspace {
         };
         match choice {
             LeaveChoice::Cancel => {
-                self.pane.update(cx, |pane, cx| pane.focus(window, cx));
+                self.focus_text(window, cx);
                 if let LeaveIntent::OpenPath(_) = intent
                     && let Some((_, _, search)) = self.library_request.take()
                 {
@@ -1759,7 +1764,7 @@ impl Workspace {
         if editing {
             self.hovered = None;
             if !was_editing {
-                self.pane.update(cx, |pane, cx| pane.focus(window, cx));
+                self.focus_text(window, cx);
             }
         } else {
             self.open_menu = None;
@@ -1769,6 +1774,7 @@ impl Workspace {
     }
 
     fn show_editing(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.reading = false;
         if self.visible_mode() != HistoryMode::Editing {
             self.close_history(window, cx);
         }
@@ -1843,7 +1849,7 @@ impl Workspace {
             return;
         }
         if self.review_focus.take().is_some() {
-            self.pane.update(cx, |pane, cx| pane.focus(window, cx));
+            self.focus_text(window, cx);
         }
         cx.notify();
     }
@@ -1935,7 +1941,7 @@ impl Workspace {
                 let handle = preferences.read(cx).focus_handle(cx);
                 window.focus(&handle, cx);
             }
-            None => self.pane.update(cx, |pane, cx| pane.focus(window, cx)),
+            None => self.focus_text(window, cx),
         }
     }
 
@@ -1959,7 +1965,7 @@ impl Workspace {
             |this, _, event: &PreferencesEvent, window, cx| match event {
                 PreferencesEvent::Close => {
                     this.preferences = None;
-                    this.pane.update(cx, |pane, cx| pane.focus(window, cx));
+                    this.focus_text(window, cx);
                     cx.notify();
                 }
                 PreferencesEvent::OpenModel => this.open_model(window, cx),
@@ -2049,7 +2055,7 @@ impl Workspace {
             match event {
                 SpendEvent::Close => {
                     this.spend = None;
-                    this.pane.update(cx, |pane, cx| pane.focus(window, cx));
+                    this.focus_text(window, cx);
                 }
             }
             cx.notify();
@@ -2127,6 +2133,19 @@ impl Workspace {
                     Box::new(RejectAll),
                     open == 0,
                 ),
+                MenuRow {
+                    separated: true,
+                    ..row(
+                        if self.reading {
+                            "Edit text"
+                        } else {
+                            "Reading view"
+                        },
+                        Some("Ctrl+Alt+R"),
+                        Box::new(ToggleReading),
+                        false,
+                    )
+                },
             ],
         }
     }
@@ -2264,6 +2283,7 @@ impl Workspace {
 
     fn open_review(&mut self, _: &StartReview, window: &mut Window, cx: &mut Context<Self>) {
         self.open_menu = None;
+        self.reading = false;
         if self.pane.read(cx).review.is_some() {
             return;
         }
@@ -2695,6 +2715,11 @@ impl Render for Workspace {
         if evals_shown {
             self.check_unsaved(false, cx);
         }
+        if self.reading
+            && (evals_shown || self.spend.is_some() || self.visible_mode() != HistoryMode::Editing)
+        {
+            self.reading = false;
+        }
         let mode = if evals_shown {
             HistoryMode::Editing
         } else {
@@ -2912,6 +2937,7 @@ impl Workspace {
             .on_action(cx.listener(Self::show_frontmatter_problems))
             .on_action(cx.listener(Self::open_preferences))
             .on_action(cx.listener(Self::show_spend))
+            .on_action(cx.listener(Self::toggle_reading))
             .on_action(cx.listener(|this, _: &OpenFileMenu, window, cx| {
                 this.toggle_menu(MenuKind::File, window, cx)
             }))
@@ -2953,6 +2979,48 @@ impl Workspace {
         self.pane.update(cx, |pane, cx| pane.reject_all(window, cx));
     }
 
+    fn focus_text(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.reading {
+            window.focus(&self.focus, cx);
+        } else {
+            self.pane.update(cx, |pane, cx| pane.focus(window, cx));
+        }
+    }
+
+    fn reading_toggle_allowed(&self, window: &Window, cx: &App) -> bool {
+        !self.library.read(cx).search_focused(window, cx)
+            && !self
+                .frontmatter
+                .focus_handle(cx)
+                .contains_focused(window, cx)
+            && !self.pane.read(cx).typing_outside_text(window, cx)
+    }
+
+    fn toggle_reading(&mut self, _: &ToggleReading, window: &mut Window, cx: &mut Context<Self>) {
+        if self.modal_open()
+            || self.preferences.is_some()
+            || self.review_focus.is_some()
+            || self.evals.read(cx).dialog().is_some()
+            || !self.reading_toggle_allowed(window, cx)
+        {
+            return;
+        }
+        let next = !self.reading;
+        self.open_menu = None;
+        self.spend = None;
+        self.evals_page = false;
+        self.show_editing(window, cx);
+        self.reading = next;
+        if self.reading {
+            self.pane.update(cx, |pane, cx| pane.put_away(window, cx));
+            self.focus.focus(window, cx);
+        } else {
+            let editor = self.pane.read(cx).editor.clone();
+            editor.update(cx, |editor, cx| editor.focus(window, cx));
+        }
+        cx.notify();
+    }
+
     fn render_main(
         &mut self,
         mode: HistoryMode,
@@ -2975,6 +3043,9 @@ impl Workspace {
                 .map(|spend| spend.into_any_element())
                 .unwrap_or_else(|| div().into_any_element()),
             _ if evals_shown => self.evals.clone().into_any_element(),
+            HistoryMode::Editing if self.reading => {
+                crate::reading_view::render_reading(&self.text(cx), roles)
+            }
             HistoryMode::Editing => self.render_editing(cx),
             HistoryMode::Version { id } => self.render_compare(id, roles, cx).into_any_element(),
             HistoryMode::Full => self.render_full_history(roles, cx).into_any_element(),
@@ -3086,8 +3157,15 @@ impl Workspace {
                     .gap(px(8.))
                     .type_small()
                     .text_color(roles.muted)
-                    .child("Select text and press")
-                    .child(ui::kbd("Ctrl+K", roles)),
+                    .child(if self.reading {
+                        "Reading. Edit with"
+                    } else {
+                        "Select text and press"
+                    })
+                    .child(ui::kbd(
+                        if self.reading { "Ctrl+Alt+R" } else { "Ctrl+K" },
+                        roles,
+                    )),
             )
             .when(open > 0, |this| {
                 this.child(
@@ -3167,7 +3245,7 @@ impl Workspace {
                     .on_mouse_down_out(cx.listener(|this, _, window, cx| {
                         if !this.modal_open() && this.preferences.is_some() {
                             this.preferences = None;
-                            this.pane.update(cx, |pane, cx| pane.focus(window, cx));
+                            this.focus_text(window, cx);
                             cx.notify();
                         }
                     }))

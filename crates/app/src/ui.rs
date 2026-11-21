@@ -5,7 +5,7 @@
 
 use std::rc::Rc;
 
-use gpui_kit::{prelude::FluentBuilder as _, *};
+use gpui_kit::{base::TextViewStyle, prelude::FluentBuilder as _, *};
 
 use crate::theme::Roles;
 
@@ -712,6 +712,37 @@ pub fn list_icon(roles: Roles) -> Div {
         .child(line())
         .child(line())
         .child(line())
+}
+
+const HEADING_SCALE: [f32; 6] = [1.85, 1.45, 1.2, 1.05, 1., 1.];
+
+fn heading_size(level: u8) -> Pixels {
+    TEXT_DOCUMENT * HEADING_SCALE[usize::from(level.clamp(1, 6)) - 1]
+}
+
+pub fn markdown_style(roles: Roles) -> TextViewStyle {
+    let heading_color = roles.heading;
+    TextViewStyle::default()
+        .with_dark(roles.dark)
+        .with_foreground(roles.ink)
+        .with_muted_foreground(roles.muted)
+        .with_link(roles.accent)
+        .with_selection(roles.selection)
+        .with_code_background(roles.raised)
+        .with_border(roles.hairline)
+        .with_paragraph_gap(rems(1.))
+        .with_inline_code(HighlightStyle {
+            color: Some(roles.ink),
+            background_color: Some(roles.raised),
+            ..Default::default()
+        })
+        .with_heading(move |level| {
+            let mut style = StyleRefinement::default();
+            style.text.font_size = Some(heading_size(level).into());
+            style.text.font_weight = Some(FontWeight::BOLD);
+            style.text.color = Some(heading_color);
+            style
+        })
 }
 
 pub const MOTION_ENTER: std::time::Duration = std::time::Duration::from_millis(260);
