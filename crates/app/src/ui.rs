@@ -15,7 +15,7 @@ pub const TEXT_BODY: Pixels = px(14.);
 /// The Document's own text, in the editor and wherever a Version is read.
 pub const TEXT_DOCUMENT: Pixels = px(17.);
 pub const UI_FAMILY: &str = "Inter";
-pub const MONO_FAMILY: &str = "DejaVu Sans Mono";
+pub const MONO_FAMILY: &str = "Noto Sans Mono";
 const WORDMARK_FAMILY: &str = "League Spartan";
 
 pub trait Type: Styled + Sized {
@@ -772,6 +772,8 @@ pub fn markdown_style(roles: Roles) -> TextViewStyle {
             background_color: Some(roles.raised),
             ..Default::default()
         })
+        .with_inline_code_style(code_type())
+        .with_code_block(code_block_style())
         .with_heading(move |level| {
             let mut style = StyleRefinement::default();
             style.text.font_size = Some(heading_size(level).into());
@@ -779,6 +781,26 @@ pub fn markdown_style(roles: Roles) -> TextViewStyle {
             style.text.color = Some(heading_color);
             style
         })
+}
+
+fn code_type() -> StyleRefinement {
+    let mut style = StyleRefinement::default();
+    style.text.font_family = Some(MONO_FAMILY.into());
+    style
+}
+
+fn code_block_style() -> StyleRefinement {
+    let mut style = code_type();
+    style.text.font_size = Some(TEXT_BODY.into());
+    style.text.white_space = Some(WhiteSpace::Nowrap);
+    style.display = Some(Display::Flex);
+    style.overflow.x = Some(Overflow::Scroll);
+    style.restrict_scroll_to_axis = Some(true);
+    style
+}
+
+pub fn code_block_scroll_anchor() -> impl IntoElement {
+    Empty
 }
 
 pub const MOTION_ENTER: std::time::Duration = std::time::Duration::from_millis(260);

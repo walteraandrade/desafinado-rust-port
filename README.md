@@ -17,7 +17,7 @@ The AI proposes; your voice wins. Every change it suggests sits in your text as 
 - Accept is a normal edit, so `Ctrl+Z` undoes it.
 - **Edit → Review…** reads the whole document, optionally with a focus such as "tone only", and streams up to six suggestions, with Accept all and Reject all.
 
-**Read it rendered.** `Ctrl+Alt+R` (or **Edit → Reading view**) swaps the editor for the rendered Markdown: real heading sizes, lists, quotes, code blocks and links, without the frontmatter. Press it again to edit.
+**Read it rendered.** `Ctrl+Alt+R` (or **Edit → Reading view**) swaps the editor for the rendered Markdown: real heading sizes, lists, quotes, links, and code in a monospace font whose long lines scroll sideways (Shift+wheel) instead of wrapping, without the frontmatter. Press it again to edit.
 
 **Keep the history.** The timeline under the header keeps a version after each accept, open, restore, save and pause in your typing, marked by who made it. Compare any version with the current text and restore it. Each document keeps its own history, with no cap, in a SQLite database in the settings folder.
 
@@ -31,7 +31,7 @@ The app talks to [OpenRouter](https://openrouter.ai) directly. You bring your ow
 
 Every feature of the Electron build works here; [docs/PARITY.md](docs/PARITY.md) lists them one by one, with each place the native build behaves differently. The main differences come from GPUI:
 
-- Headings are bold but keep the body text size, and code uses the body font.
+- In the editor, headings are bold but keep the body text size, and code uses the body font. The Reading view shows both as they should be.
 - The suggested text shows in the margin card rather than inline between lines.
 - Menus, the bubble, Cards, toasts and the Library fade and slide in, and the AI caret breathes, as in Electron (without its slight scale and blur). Beyond Electron, the Library and Preferences also slide out to their own sides, the bubble fades out and its Quick action rows enter one after another, the Quick actions list in Preferences glides on reorder and shrinks a deleted row, and the AI spend charts grow in. Scrollbars always show in the editor, the Reading view and the scrolling pages and panels (not yet in the Evals run dialog). Still missing: the caret glide, the shimmer, the word-by-word reveal, the rise of the Review toolbar and Refine row, hover transitions, the unfold of descriptions and lists, the exit motion of menus, Cards and toasts, and the theme crossfade. With reduced motion on in the desktop (the XDG portal setting GNOME and KDE back), surfaces appear at rest and the AI caret's dots hold still.
 
