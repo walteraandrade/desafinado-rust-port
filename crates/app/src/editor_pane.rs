@@ -1661,16 +1661,48 @@ impl EditorPane {
             .card_frame(&item.id, bounds.size.width, roles, cx)
             .left(bounds.origin.x - origin.x)
             .top(bounds.origin.y - origin.y);
-        let element = match item {
+        let card = match item {
             Suggestion::Pending(_) => return None,
-            Suggestion::Failed(failed) => self
-                .render_failed_card(frame, &item.id, describe_error(&failed.error), roles, cx)
-                .into_any_element(),
-            Suggestion::Ready(ready) => self
-                .render_ready_card(frame, ready, kind, card_focused, roles, cx)
-                .into_any_element(),
+            Suggestion::Failed(failed) => {
+                self.render_failed_card(frame, &item.id, describe_error(&failed.error), roles, cx)
+            }
+            Suggestion::Ready(ready) => {
+                self.render_ready_card(frame, ready, kind, card_focused, roles, cx)
+            }
         };
+        let element = ui::enter_after(
+            SharedString::from(format!("card-in-{}", item.id)),
+            card,
+            self.card_enter(item, bounds, cx),
+            if kind == CardKind::Hover {
+                ui::MOTION_HOVER_DELAY
+            } else {
+                std::time::Duration::ZERO
+            },
+        )
+        .into_any_element();
         Some((element, bounds.origin.y - origin.y + height + px(8.)))
+    }
+
+    fn card_enter(&self, item: &Suggestion, card: Bounds<Pixels>, cx: &App) -> ui::Enter {
+        if self.card_placement() == CardPlacement::Margin {
+            return ui::Enter::Slide(-8.);
+        }
+        let anchor_at = match item {
+            Suggestion::Ready(ready) => {
+                desafinado_core::suggestions::first_change_at(ready.from, &ready.diff)
+            }
+            _ => item.from,
+        };
+        let range_top = self
+            .editor
+            .read(cx)
+            .range_to_bounds(&(anchor_at..anchor_at))
+            .map(|line| line.top());
+        match range_top {
+            Some(top) if card.bottom() <= top => ui::Enter::Rise(6.),
+            _ => ui::Enter::Rise(-6.),
+        }
     }
 
     fn place_card(
@@ -2196,8 +2228,7 @@ impl EditorPane {
             .range_to_bounds(&(caret.pos..caret.pos))?;
         let origin = self.origin();
         let pane = self.bounds.get();
-        let label = format!("{} ···", caret.label);
-        let flag_width = px(16. + 7. * label.chars().count() as f32);
+        let flag_width = px(40. + 7. * caret.label.chars().count() as f32);
         let flipped = bounds.left() + flag_width > pane.origin.x + pane.size.width;
         let flag = ui::ai_flag(roles)
             .absolute()
@@ -2206,7 +2237,12 @@ impl EditorPane {
             .when(!flipped, |this| this.left(px(0.)))
             .gap(px(4.))
             .whitespace_nowrap()
-            .child(div().weight_regular().child(label));
+            .child(div().weight_regular().child(caret.label.clone()))
+            .child(ui::ai_dots(roles, cx.reduce_motion()));
+        let bar = ui::breathe(
+            "ai-caret-bar",
+            div().absolute().top_0().left_0().size_full().bg(roles.ai),
+        );
         Some(
             div()
                 .absolute()
@@ -2214,8 +2250,13 @@ impl EditorPane {
                 .top(bounds.top() - origin.y)
                 .w(px(2.))
                 .h(bounds.size.height)
-                .bg(roles.ai)
-                .child(flag)
+                .child(bar)
+                .child(ui::enter(
+                    "ai-flag",
+                    flag,
+                    ui::Enter::Rise(3.),
+                    ui::MOTION_ENTER,
+                ))
                 .into_any_element(),
         )
     }
@@ -2316,45 +2357,43 @@ impl EditorPane {
         let hint = ask_menu::hint_visible(&self.menu)
             .then(|| ask_menu::ask_hint(&actions))
             .flatten();
-        Some(
-            ui::popover_frame("bubble", roles)
-                .key_context("AskBubble")
-                .on_action(cx.listener(Self::bubble_up))
-                .on_action(cx.listener(Self::bubble_down))
-                .on_action(cx.listener(Self::bubble_confirm))
-                .on_action(cx.listener(Self::bubble_cancel))
-                .on_action(cx.listener(|_, _: &Stay, _, _| {}))
-                .absolute()
-                .left(px(placed.left as f32))
-                .top(px(placed.top as f32))
-                .w(px(BUBBLE_WIDTH))
-                .child(ui::measure(move |size, cx| {
-                    let previous = heights
-                        .borrow_mut()
-                        .insert(BUBBLE_KEY.to_string(), size.height);
-                    if previous != Some(size.height)
-                        && let Some(entity) = entity.upgrade()
-                    {
-                        entity.update(cx, |_, cx| cx.notify());
-                    }
-                }))
-                .p(px(8.))
-                .gap(px(8.))
-                .child(
-                    ui::row().gap(px(8.)).child(ui::ai_flag(roles)).child(
-                        div()
-                            .flex_1()
-                            .child(Input::new(&self.bubble_input).appearance(false)),
-                    ),
-                )
-                .when_some(hint, |this, hint| this.child(ui::meta(hint, roles)))
-                .children(
-                    rows.into_iter()
-                        .enumerate()
-                        .map(|(index, row)| self.render_ask_row(index, row, roles, cx)),
-                )
-                .into_any_element(),
-        )
+        let bubble = ui::popover_frame("bubble", roles)
+            .key_context("AskBubble")
+            .on_action(cx.listener(Self::bubble_up))
+            .on_action(cx.listener(Self::bubble_down))
+            .on_action(cx.listener(Self::bubble_confirm))
+            .on_action(cx.listener(Self::bubble_cancel))
+            .on_action(cx.listener(|_, _: &Stay, _, _| {}))
+            .absolute()
+            .left(px(placed.left as f32))
+            .top(px(placed.top as f32))
+            .w(px(BUBBLE_WIDTH))
+            .child(ui::measure(move |size, cx| {
+                let previous = heights
+                    .borrow_mut()
+                    .insert(BUBBLE_KEY.to_string(), size.height);
+                if previous != Some(size.height)
+                    && let Some(entity) = entity.upgrade()
+                {
+                    entity.update(cx, |_, cx| cx.notify());
+                }
+            }))
+            .p(px(8.))
+            .gap(px(8.))
+            .child(
+                ui::row().gap(px(8.)).child(ui::ai_flag(roles)).child(
+                    div()
+                        .flex_1()
+                        .child(Input::new(&self.bubble_input).appearance(false)),
+                ),
+            )
+            .when_some(hint, |this, hint| this.child(ui::meta(hint, roles)))
+            .children(
+                rows.into_iter()
+                    .enumerate()
+                    .map(|(index, row)| self.render_ask_row(index, row, roles, cx)),
+            );
+        Some(bubble_in(bubble, placed.side == Side::Above))
     }
 
     fn render_ask_row(
@@ -2592,6 +2631,16 @@ fn area_of(pane: Bounds<Pixels>) -> Viewport {
         width: to_f64(pane.size.width),
         height: to_f64(pane.size.height),
     }
+}
+
+fn bubble_in(bubble: Stateful<Div>, above: bool) -> AnyElement {
+    ui::enter(
+        "bubble-in",
+        bubble,
+        ui::Enter::Rise(if above { 6. } else { -6. }),
+        ui::MOTION_ENTER,
+    )
+    .into_any_element()
 }
 
 fn card_status(item: &Suggestion) -> CardStatus {

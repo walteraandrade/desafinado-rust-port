@@ -248,6 +248,7 @@ impl ToastAction {
 }
 
 struct Toast {
+    serial: u64,
     text: SharedString,
     tone: ToastTone,
     actions: Vec<ToastAction>,
@@ -338,6 +339,7 @@ pub struct Workspace {
     watcher: Option<ExternalChangesController>,
     watched: Option<Option<PathBuf>>,
     toast: Option<Toast>,
+    toast_serial: u64,
     pub(crate) mode: HistoryMode,
     pub(crate) hovered: Option<VersionId>,
     pub(crate) dot_hovered: Option<VersionId>,
@@ -435,6 +437,7 @@ impl Workspace {
             watcher: None,
             watched: None,
             toast: None,
+            toast_serial: 0,
             mode: HistoryMode::Editing,
             hovered: None,
             dot_hovered: None,
@@ -685,7 +688,10 @@ impl Workspace {
                 cx.notify();
             });
         });
+        self.toast_serial += 1;
+        let serial = self.toast_serial;
         self.toast = Some(Toast {
+            serial,
             text: text.into(),
             tone,
             actions,
@@ -2190,7 +2196,7 @@ impl Workspace {
             MenuKind::Edit => px(52.),
         };
         let active = self.menu_active;
-        ui::popover_frame("menu", roles)
+        let menu = ui::popover_frame("menu", roles)
             .key_context("Menu")
             .track_focus(&self.menu_focus)
             .on_action(cx.listener(|this, _: &MenuDown, _, cx| this.move_in_menu(true, cx)))
@@ -2219,7 +2225,16 @@ impl Workspace {
                     .into_iter()
                     .enumerate()
                     .map(|(index, item)| self.render_menu_row(index, item, active, roles, cx)),
-            )
+            );
+        ui::enter(
+            match kind {
+                MenuKind::File => "menu-in-file",
+                MenuKind::Edit => "menu-in-edit",
+            },
+            menu,
+            ui::Enter::Rise(-4.),
+            ui::MOTION_ENTER,
+        )
     }
 
     fn render_menu_row(
@@ -2307,7 +2322,7 @@ impl Workspace {
     ) -> impl IntoElement {
         let left = px(52.);
         let width = px(384.).min(self.viewport_width - left - px(8.));
-        ui::popover_frame("review-popover", roles)
+        let popover = ui::popover_frame("review-popover", roles)
             .key_context("ReviewPopover")
             .on_mouse_down_out(cx.listener(|this, _, _, cx| {
                 if this.review_focus.take().is_some() {
@@ -2334,7 +2349,13 @@ impl Workspace {
                         this.confirm_review(&ConfirmReview, window, cx)
                     }),
                 ),
-            )
+            );
+        ui::enter(
+            "review-popover-in",
+            popover,
+            ui::Enter::Rise(-4.),
+            ui::MOTION_ENTER,
+        )
     }
 
     fn render_leave(&self, roles: Roles, cx: &mut Context<Self>) -> impl IntoElement {
@@ -2477,7 +2498,8 @@ impl Workspace {
                 .flex()
                 .justify_center()
                 .px(px(24.))
-                .child(
+                .child(ui::enter(
+                    ("toast-in", toast.serial),
                     ui::toast_frame("toast", toast.tone, roles)
                         .child(toast.text.clone())
                         .children(actions.into_iter().enumerate().map(|(index, action)| {
@@ -2493,7 +2515,9 @@ impl Workspace {
                                 },
                             ))
                         })),
-                )
+                    ui::Enter::Lift(10.),
+                    ui::MOTION_TOAST,
+                ))
                 .into_any_element(),
         )
     }
@@ -3043,7 +3067,7 @@ impl Workspace {
                             .w(px(library_panel::LIBRARY_WIDTH))
                             .h_full()
                             .flex_none()
-                            .child(self.library.clone()),
+                            .child(self.library_in()),
                     )
                 },
             )
@@ -3087,10 +3111,19 @@ impl Workspace {
                                     this.fold_library(cx);
                                 }
                             }))
-                            .child(self.library.clone()),
+                            .child(self.library_in()),
                     )
                 },
             )
+    }
+
+    fn library_in(&self) -> AnimationElement<Div> {
+        ui::enter(
+            "library-in",
+            div().size_full().child(self.library.clone()),
+            ui::Enter::Slide(-16.),
+            ui::MOTION_ENTER,
+        )
     }
 
     fn render_header(&self, roles: Roles, cx: &mut Context<Self>) -> Div {

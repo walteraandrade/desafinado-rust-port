@@ -33,7 +33,7 @@ Every feature of the Electron build works here; [docs/PARITY.md](docs/PARITY.md)
 
 - Headings are bold but keep the body text size, and code uses the body font.
 - The suggested text shows in the margin card rather than inline between lines.
-- Most motion (caret glide, fades, word-by-word reveal) is not there yet.
+- Menus, the bubble, Cards, toasts and the Library fade and slide in, and the AI caret breathes, as in Electron (without its slight scale and blur). Still missing: the caret glide, the shimmer, the word-by-word reveal, the rise of the Review toolbar and Refine row, hover transitions, the unfold of descriptions and lists, exit motion, and the theme crossfade. With reduced motion on in the desktop (the XDG portal setting GNOME and KDE back), surfaces appear at rest and the AI caret's dots hold still.
 
 Linux only. There is no distribution package yet: you build and install it from this repository. The decision to build on GPUI is recorded in [ADR 0001](docs/adr/0001-native-app-on-rust-and-gpui.md).
 

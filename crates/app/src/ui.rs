@@ -744,3 +744,174 @@ pub fn markdown_style(roles: Roles) -> TextViewStyle {
             style
         })
 }
+
+pub const MOTION_ENTER: std::time::Duration = std::time::Duration::from_millis(260);
+pub const MOTION_TOAST: std::time::Duration = std::time::Duration::from_millis(320);
+pub const MOTION_HOVER_DELAY: std::time::Duration = std::time::Duration::from_millis(160);
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Enter {
+    Rise(f32),
+    Slide(f32),
+    Lift(f32),
+}
+
+const MOTION_LOOP_FPS: f32 = 30.;
+
+pub fn ease_in_out_sine(delta: f32) -> f32 {
+    0.5 - 0.5 * (std::f32::consts::PI * delta).cos()
+}
+
+pub fn ease_out_expo(delta: f32) -> f32 {
+    if delta >= 1. {
+        1.
+    } else {
+        1. - 2f32.powf(-10. * delta)
+    }
+}
+
+pub fn enter<E: Styled + IntoElement + 'static>(
+    id: impl Into<ElementId>,
+    element: E,
+    from: Enter,
+    duration: std::time::Duration,
+) -> AnimationElement<E> {
+    entering(id, element, from, std::time::Duration::ZERO, duration)
+}
+
+pub fn enter_after<E: Styled + IntoElement + 'static>(
+    id: impl Into<ElementId>,
+    element: E,
+    from: Enter,
+    delay: std::time::Duration,
+) -> AnimationElement<E> {
+    entering(id, element, from, delay, MOTION_ENTER)
+}
+
+fn entering<E: Styled + IntoElement + 'static>(
+    id: impl Into<ElementId>,
+    element: E,
+    from: Enter,
+    delay: std::time::Duration,
+    duration: std::time::Duration,
+) -> AnimationElement<E> {
+    let lead = delay.as_secs_f32() / (delay + duration).as_secs_f32();
+    element.with_animation(
+        id,
+        Animation::new(delay + duration).with_easing(move |t| delayed(ease_out_expo, lead, t)),
+        move |element, delta| {
+            let rest = 1. - delta;
+            let (x, y) = enter_offset(from, rest);
+            let element = element.opacity(delta);
+            match from {
+                Enter::Lift(_) => element.relative().top(px(y)),
+                Enter::Rise(_) => element.mt(px(y)),
+                Enter::Slide(_) => element.ml(px(x)),
+            }
+        },
+    )
+}
+
+pub fn delayed(easing: impl Fn(f32) -> f32, lead: f32, t: f32) -> f32 {
+    if t <= lead {
+        0.
+    } else {
+        easing((t - lead) / (1. - lead))
+    }
+}
+
+pub fn enter_offset(from: Enter, rest: f32) -> (f32, f32) {
+    match from {
+        Enter::Rise(offset) | Enter::Lift(offset) => (0., offset * rest),
+        Enter::Slide(offset) => (offset * rest, 0.),
+    }
+}
+
+pub fn breathe<E: Styled + IntoElement + 'static>(
+    id: impl Into<ElementId>,
+    element: E,
+) -> AnimationElement<E> {
+    element.with_animation(
+        id,
+        Animation::new(std::time::Duration::from_millis(1600))
+            .repeat()
+            .with_max_fps(MOTION_LOOP_FPS)
+            .with_easing(bounce(ease_in_out_sine)),
+        |element, delta| element.opacity(1. - 0.55 * delta),
+    )
+}
+
+pub fn ai_dots(roles: Roles, still: bool) -> AnyElement {
+    const PERIOD_MS: f32 = 1200.;
+    const STAGGER_MS: f32 = 160.;
+    row()
+        .gap(px(4.))
+        .children((0usize..3).map(move |index| {
+            let shift = STAGGER_MS * index as f32 / PERIOD_MS;
+            let dot = div().size(px(3.)).bg(roles.canvas);
+            if still {
+                return dot.into_any_element();
+            }
+            dot.with_animation(
+                ("ai-dot", index),
+                Animation::new(std::time::Duration::from_millis(PERIOD_MS as u64))
+                    .repeat()
+                    .with_max_fps(MOTION_LOOP_FPS),
+                move |dot, delta| dot.opacity(dot_opacity((delta - shift).rem_euclid(1.))),
+            )
+            .into_any_element()
+        }))
+        .into_any_element()
+}
+
+pub fn dot_opacity(phase: f32) -> f32 {
+    let level = if phase < 0.4 {
+        ease_in_out_sine(phase / 0.4)
+    } else {
+        ease_in_out_sine((1. - phase) / 0.6)
+    };
+    0.35 + 0.65 * level
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Enter, delayed, dot_opacity, ease_in_out_sine, ease_out_expo, enter_offset};
+
+    #[test]
+    fn a_rise_starts_below_a_drop_above_a_slide_on_its_side() {
+        assert_eq!(enter_offset(Enter::Rise(6.), 1.), (0., 6.));
+        assert_eq!(enter_offset(Enter::Rise(-4.), 1.), (0., -4.));
+        assert_eq!(enter_offset(Enter::Slide(-16.), 0.5), (-8., 0.));
+        assert_eq!(enter_offset(Enter::Lift(10.), 0.), (0., 0.));
+    }
+
+    #[test]
+    fn a_delay_holds_the_start_then_runs_the_easing() {
+        let linear = |t: f32| t;
+        assert_eq!(delayed(linear, 0.25, 0.2), 0.);
+        assert!((delayed(linear, 0.25, 0.625) - 0.5).abs() < 1e-6);
+        assert_eq!(delayed(linear, 0., 0.3), 0.3);
+    }
+
+    #[test]
+    fn ease_in_out_sine_is_symmetric() {
+        assert!(ease_in_out_sine(0.).abs() < 1e-6);
+        assert!((ease_in_out_sine(0.5) - 0.5).abs() < 1e-6);
+        assert!((ease_in_out_sine(1.) - 1.).abs() < 1e-6);
+    }
+
+    #[test]
+    fn ease_out_expo_starts_fast_and_lands_on_one() {
+        assert_eq!(ease_out_expo(0.), 0.);
+        assert!(ease_out_expo(0.2) > 0.7);
+        assert_eq!(ease_out_expo(1.), 1.);
+    }
+
+    #[test]
+    fn a_dot_is_faint_at_the_ends_and_full_at_forty_percent() {
+        assert!((dot_opacity(0.) - 0.35).abs() < 1e-5);
+        assert!((dot_opacity(0.4) - 1.).abs() < 1e-5);
+        assert!((dot_opacity(1.) - 0.35).abs() < 1e-5);
+        assert!(dot_opacity(0.7) > 0.35 && dot_opacity(0.7) < 1.);
+    }
+}
