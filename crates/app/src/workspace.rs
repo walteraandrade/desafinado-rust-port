@@ -250,6 +250,7 @@ impl ToastAction {
 #[derive(Default)]
 struct Leaving {
     library: Option<Task<()>>,
+    library_reopened: bool,
     preferences: Option<(Entity<PreferencesPanel>, Task<()>)>,
 }
 
@@ -1351,6 +1352,7 @@ impl Workspace {
     }
 
     fn fold_library(&mut self, cx: &mut Context<Self>) {
+        self.leaving.library_reopened = false;
         if self.library_open {
             self.leaving.library = Some(cx.spawn(async move |this, cx| {
                 cx.background_executor().timer(ui::MOTION_LEAVE).await;
@@ -1375,7 +1377,7 @@ impl Workspace {
 
     fn open_library(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.library_open = true;
-        self.leaving.library = None;
+        self.leaving.library_reopened = self.leaving.library.take().is_some();
         self.library
             .update(cx, |library, cx| library.focus_tree(window, cx));
         cx.notify();
@@ -1417,7 +1419,7 @@ impl Workspace {
         if !self.library_open {
             self.search_unfolded = true;
             self.library_open = true;
-            self.leaving.library = None;
+            self.leaving.library_reopened = self.leaving.library.take().is_some();
         }
         self.library
             .update(cx, |library, cx| library.focus_search(window, cx));
@@ -2775,6 +2777,13 @@ impl Render for Workspace {
         {
             self.reading = false;
         }
+        let text_shown = !evals_shown
+            && !self.reading
+            && self.spend.is_none()
+            && self.visible_mode() == HistoryMode::Editing;
+        if !text_shown {
+            self.pane.update(cx, |pane, _| pane.forget_bubble());
+        }
         let mode = if evals_shown {
             HistoryMode::Editing
         } else {
@@ -3164,22 +3173,29 @@ impl Workspace {
             )
     }
 
-    fn render_library_column(&self) -> AnimationElement<Div> {
+    fn render_library_column(&self) -> AnyElement {
+        let column = div().h_full().flex_none().overflow_hidden().child(
+            div()
+                .w(px(library_panel::LIBRARY_WIDTH))
+                .h_full()
+                .child(self.library_in()),
+        );
+        if self.library_open && self.leaving.library_reopened {
+            return column
+                .w(px(library_panel::LIBRARY_WIDTH))
+                .into_any_element();
+        }
         ui::column_motion(
             if self.library_open {
                 "library-column-in"
             } else {
                 "library-column-out"
             },
-            div().h_full().flex_none().overflow_hidden().child(
-                div()
-                    .w(px(library_panel::LIBRARY_WIDTH))
-                    .h_full()
-                    .child(self.library_in()),
-            ),
+            column,
             px(library_panel::LIBRARY_WIDTH),
             self.library_open,
         )
+        .into_any_element()
     }
 
     fn library_shown(&self) -> bool {

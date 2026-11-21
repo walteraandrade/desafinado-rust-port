@@ -194,8 +194,6 @@ enum Applying {
 
 type CardRects = Rc<RefCell<Vec<(Bounds<Pixels>, CardKind)>>>;
 
-const GHOST_FRESH: std::time::Duration = std::time::Duration::from_millis(250);
-
 #[derive(Clone)]
 struct GhostRow {
     label: SharedString,
@@ -204,7 +202,6 @@ struct GhostRow {
 
 #[derive(Clone)]
 struct BubbleGhost {
-    seen: std::time::Instant,
     left: Pixels,
     top: Pixels,
     height: Pixels,
@@ -733,6 +730,12 @@ impl EditorPane {
                 .refine
                 .as_ref()
                 .is_some_and(|refine| refine.input.read(cx).focus_handle(cx).is_focused(window))
+    }
+
+    pub fn forget_bubble(&mut self) {
+        self.bubble_shown = false;
+        self.last_bubble.replace(None);
+        self.bubble_leaving = None;
     }
 
     pub fn put_away(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -2452,7 +2455,6 @@ impl EditorPane {
         cx: &App,
     ) {
         self.last_bubble.replace(Some(BubbleGhost {
-            seen: std::time::Instant::now(),
             left: px(placed.left as f32),
             top: px(placed.top as f32),
             height,
@@ -2471,11 +2473,7 @@ impl EditorPane {
     }
 
     fn start_bubble_leave(&mut self, cx: &mut Context<Self>) {
-        let Some(ghost) = self
-            .last_bubble
-            .take()
-            .filter(|ghost| ghost.seen.elapsed() < GHOST_FRESH)
-        else {
+        let Some(ghost) = self.last_bubble.take() else {
             return;
         };
         let done = cx.spawn(async move |this, cx| {
