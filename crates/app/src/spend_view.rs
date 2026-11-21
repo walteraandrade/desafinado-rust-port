@@ -147,13 +147,18 @@ fn table(header: Div, rows: impl IntoIterator<Item = Div>) -> Div {
         .children(rows)
 }
 
-fn share_bar(share: f64, roles: Roles) -> Div {
-    div().w(px(80.)).h(px(8.)).flex_none().bg(roles.fill).child(
-        div()
-            .h_full()
-            .w(px((80. * share.clamp(0., 1.)) as f32))
-            .bg(roles.accent),
-    )
+fn share_bar(id: SharedString, index: usize, share: f64, roles: Roles) -> Div {
+    div()
+        .w(px(80.))
+        .h(px(8.))
+        .flex_none()
+        .bg(roles.fill)
+        .child(ui::grow_width(
+            id,
+            div().h_full().bg(roles.accent),
+            px((80. * share.clamp(0., 1.)) as f32),
+            index,
+        ))
 }
 
 fn tokens(input: Option<f64>, output: Option<f64>) -> String {
@@ -161,7 +166,7 @@ fn tokens(input: Option<f64>, output: Option<f64>) -> String {
     format!("{} / {}", count(input), count(output))
 }
 
-fn bucket_table(title_column: &'static str, rows: &[SpendRow], roles: Roles) -> Div {
+fn bucket_table(title_column: &'static str, period: &str, rows: &[SpendRow], roles: Roles) -> Div {
     let columns = [
         grow(),
         fixed(56., true),
@@ -183,7 +188,7 @@ fn bucket_table(title_column: &'static str, rows: &[SpendRow], roles: Roles) -> 
     );
     table(
         header,
-        rows.iter().map(|row| {
+        rows.iter().enumerate().map(|(index, row)| {
             let bucket = &row.bucket;
             let cells = vec![
                 row.label.clone(),
@@ -199,7 +204,9 @@ fn bucket_table(title_column: &'static str, rows: &[SpendRow], roles: Roles) -> 
                     "–".into()
                 },
             ];
-            table_row(cells, &columns[..4], false, roles).child(share_bar(row.share, roles))
+            let id = SharedString::from(format!("share-{title_column}-{period}-{index}"));
+            table_row(cells, &columns[..4], false, roles)
+                .child(share_bar(id, index, row.share, roles))
         }),
     )
 }
@@ -295,7 +302,12 @@ fn day_chart(report: &SpendReport, roles: Roles) -> Div {
                         .tooltip(move |window, cx| {
                             component::tooltip::Tooltip::new(tip.clone()).build(window, cx)
                         })
-                        .child(div().w_full().h(px(bar as f32)).bg(roles.accent))
+                        .child(ui::grow_height(
+                            ("spend-day-bar", index),
+                            div().w_full().bg(roles.accent),
+                            px(bar as f32),
+                            index,
+                        ))
                 })),
         )
         .child(ui::axis(roles))
@@ -402,9 +414,19 @@ impl SpendView {
             .child(section_title("Last 14 days", roles))
             .child(day_chart(&all_days, roles))
             .child(section_title("By model", roles))
-            .child(bucket_table("Model served", &report.by_model, roles))
+            .child(bucket_table(
+                "Model served",
+                self.period.label(),
+                &report.by_model,
+                roles,
+            ))
             .child(section_title("By task", roles))
-            .child(bucket_table("Task", &report.by_task, roles))
+            .child(bucket_table(
+                "Task",
+                self.period.label(),
+                &report.by_task,
+                roles,
+            ))
             .child(section_title("Recent calls", roles))
             .child(recent_table(&shown, now, offset, roles))
             .when(shown.len() > RECENT_LIMIT, |this| {
@@ -468,7 +490,7 @@ impl Render for SpendView {
                     roles,)
                 .on_click(cx.listener(|_, _, _, cx| cx.emit(SpendEvent::Close))),
             );
-        div()
+        let page = div()
             .id("spend-page")
             .size_full()
             .overflow_y_scroll()
@@ -476,7 +498,8 @@ impl Render for SpendView {
             .type_body()
             .text_color(roles.ink)
             .child(
-                div().w_full().flex().justify_center().child(
+                div().w_full().flex().justify_center().child(ui::enter(
+                    "spend-in",
                     div()
                         .w(px(SPEND_WIDTH))
                         .max_w_full()
@@ -484,7 +507,10 @@ impl Render for SpendView {
                         .pb(px(160.))
                         .child(header)
                         .child(body),
-                ),
-            )
+                    ui::Enter::Rise(6.),
+                    ui::MOTION_ENTER,
+                )),
+            );
+        ui::scrolled(page, &self.scroll)
     }
 }

@@ -192,6 +192,7 @@ pub fn apply(roles: Roles, cx: &mut App) {
         cx,
     );
     Theme::update(cx, |theme| {
+        theme.scrollbar_mode = gpui_kit::component::scroll::ScrollbarMode::Always;
         let c = &mut theme.colors;
         c.background = roles.canvas;
         c.foreground = roles.ink;

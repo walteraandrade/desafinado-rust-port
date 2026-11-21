@@ -1092,7 +1092,7 @@ impl Render for EvalsView {
         });
         let running_line = running
             .then(|| ui::meta("Running Evals. This can take a few minutes.", roles).mt(px(12.)));
-        div()
+        let page = div()
             .id("evals-page")
             .size_full()
             .overflow_y_scroll()
@@ -1111,7 +1111,7 @@ impl Render for EvalsView {
                         .children(running_line),
                 )
                 .pb(px(160.)),
-            )
-            .into_any_element()
+            );
+        ui::scrolled(page, &self.scroll).into_any_element()
     }
 }

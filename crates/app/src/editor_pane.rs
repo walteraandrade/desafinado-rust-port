@@ -19,7 +19,7 @@ use desafinado_ai::{
         card_placement::{CardPlacement, MARGIN_CARD_WIDTH, placement_for},
         focus_cycle::cycle_index,
         geometry::{Rect, Viewport},
-        popover_place::{PopoverInput, Side, place_popover, span_anchor},
+        popover_place::{Placed, PopoverInput, Side, place_popover, span_anchor},
         shown_cards::{CardKind, CardStatus, shown_cards},
     },
     edits::{MAX_REVIEW_EDITS, ReviewValidationContext},
@@ -51,6 +51,7 @@ use desafinado_core::{
     },
 };
 use futures::{StreamExt as _, channel::mpsc};
+use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::{
     component::input::{
         Editor, EditorState, Input, InputEditsEvent, InputState, RangeDecoration,
@@ -193,6 +194,24 @@ enum Applying {
 
 type CardRects = Rc<RefCell<Vec<(Bounds<Pixels>, CardKind)>>>;
 
+#[derive(Clone)]
+struct GhostRow {
+    label: SharedString,
+    skill: bool,
+}
+
+#[derive(Clone)]
+struct BubbleGhost {
+    left: Pixels,
+    top: Pixels,
+    height: Pixels,
+    above: bool,
+    query: SharedString,
+    hint: Option<SharedString>,
+    rows: Vec<GhostRow>,
+    active: usize,
+}
+
 pub struct EditorPane {
     pub editor: Entity<EditorState>,
     pub suggestions: SuggestionsState,
@@ -202,6 +221,8 @@ pub struct EditorPane {
     bubble: BubbleState,
     menu: AskMenu,
     bubble_shown: bool,
+    last_bubble: RefCell<Option<BubbleGhost>>,
+    bubble_leaving: Option<(BubbleGhost, Task<()>)>,
     pointer_down: Rc<Cell<bool>>,
     last_selection: Range<usize>,
     refine: Option<RefineInput>,
@@ -299,6 +320,8 @@ impl EditorPane {
             bubble: BubbleState::default(),
             menu: AskMenu::default(),
             bubble_shown: false,
+            last_bubble: RefCell::new(None),
+            bubble_leaving: None,
             pointer_down: Rc::new(Cell::new(false)),
             last_selection: 0..0,
             refine: None,
@@ -709,8 +732,15 @@ impl EditorPane {
                 .is_some_and(|refine| refine.input.read(cx).focus_handle(cx).is_focused(window))
     }
 
+    pub fn forget_bubble(&mut self) {
+        self.bubble_shown = false;
+        self.last_bubble.replace(None);
+        self.bubble_leaving = None;
+    }
+
     pub fn put_away(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.refine = None;
+        self.last_bubble.replace(None);
         self.dismiss_bubble(window, cx);
     }
 
@@ -767,6 +797,7 @@ impl EditorPane {
             Some(AskRow::Free { text }) => Instruction::FreeText { text },
             None => return,
         };
+        self.last_bubble.replace(None);
         self.clear_bubble(window, cx);
         self.ask_with(instruction, window, cx);
         self.focus(window, cx);
@@ -1906,8 +1937,8 @@ impl EditorPane {
                 div()
                     .id(SharedString::from(format!("replacement-{id}")))
                     .max_h(replacement_cap)
-                    .overflow_y_scroll()
-                    .child(styled_replacement(&ready.diff.hunks, roles)),
+                    .child(styled_replacement(&ready.diff.hunks, roles))
+                    .overflow_y_scrollbar(),
             )
             .children(
                 active
@@ -2307,6 +2338,7 @@ impl EditorPane {
         roles: Roles,
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
+        self.last_bubble.replace(None);
         let state = self.editor.read(cx);
         let head = state.range_to_bounds(&(anchor.head..anchor.head))?;
         let first = if self.above_view(anchor.span.start, cx) {
@@ -2357,6 +2389,7 @@ impl EditorPane {
         let hint = ask_menu::hint_visible(&self.menu)
             .then(|| ask_menu::ask_hint(&actions))
             .flatten();
+        let hint_text = hint.clone().map(SharedString::from);
         let bubble = ui::popover_frame("bubble", roles)
             .key_context("AskBubble")
             .on_action(cx.listener(Self::bubble_up))
@@ -2377,23 +2410,84 @@ impl EditorPane {
                 {
                     entity.update(cx, |_, cx| cx.notify());
                 }
-            }))
-            .p(px(8.))
-            .gap(px(8.))
-            .child(
-                ui::row().gap(px(8.)).child(ui::ai_flag(roles)).child(
-                    div()
-                        .flex_1()
-                        .child(Input::new(&self.bubble_input).appearance(false)),
-                ),
-            )
-            .when_some(hint, |this, hint| this.child(ui::meta(hint, roles)))
-            .children(
-                rows.into_iter()
-                    .enumerate()
-                    .map(|(index, row)| self.render_ask_row(index, row, roles, cx)),
-            );
+            }));
+        let live_rows = self.bubble_rows(&rows, roles, cx);
+        let bubble = bubble_body(
+            bubble,
+            Input::new(&self.bubble_input)
+                .appearance(false)
+                .into_any_element(),
+            hint.map(SharedString::from),
+            live_rows,
+            roles,
+        );
+        self.remember_bubble(&placed, &rows, hint_text, height, cx);
         Some(bubble_in(bubble, placed.side == Side::Above))
+    }
+
+    fn bubble_rows(
+        &self,
+        rows: &[AskRow],
+        roles: Roles,
+        cx: &mut Context<Self>,
+    ) -> Vec<AnyElement> {
+        rows.iter()
+            .cloned()
+            .enumerate()
+            .map(|(index, row)| {
+                ui::enter_in_turn(
+                    ("ask-row-in", index),
+                    self.render_ask_row(index, row, roles, cx),
+                    ui::Enter::Lift(-4.),
+                    index,
+                )
+                .into_any_element()
+            })
+            .collect()
+    }
+
+    fn remember_bubble(
+        &self,
+        placed: &Placed,
+        rows: &[AskRow],
+        hint: Option<SharedString>,
+        height: Pixels,
+        cx: &App,
+    ) {
+        self.last_bubble.replace(Some(BubbleGhost {
+            left: px(placed.left as f32),
+            top: px(placed.top as f32),
+            height,
+            above: placed.side == Side::Above,
+            query: self.bubble_input.read(cx).value(),
+            hint,
+            rows: rows
+                .iter()
+                .map(|row| GhostRow {
+                    label: ask_row_label(row).into(),
+                    skill: matches!(row, AskRow::Action { action, .. } if action.skill_only),
+                })
+                .collect(),
+            active: self.menu.active,
+        }));
+    }
+
+    fn start_bubble_leave(&mut self, cx: &mut Context<Self>) {
+        if cx.reduce_motion() {
+            self.last_bubble.replace(None);
+            return;
+        }
+        let Some(ghost) = self.last_bubble.take() else {
+            return;
+        };
+        let done = cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(ui::MOTION_LEAVE).await;
+            let _ = this.update(cx, |this, cx| {
+                this.bubble_leaving = None;
+                cx.notify();
+            });
+        });
+        self.bubble_leaving = Some((ghost, done));
     }
 
     fn render_ask_row(
@@ -2403,11 +2497,10 @@ impl EditorPane {
         roles: Roles,
         cx: &mut Context<Self>,
     ) -> Stateful<Div> {
-        let (label, skill, span) = match &row {
-            AskRow::Action { action, match_span } => {
-                (action.label.clone(), action.skill_only, *match_span)
-            }
-            AskRow::Free { text } => (format!("Ask AI: “{text}”"), false, None),
+        let label = ask_row_label(&row);
+        let (skill, span) = match &row {
+            AskRow::Action { action, match_span } => (action.skill_only, *match_span),
+            AskRow::Free { .. } => (false, None),
         };
         let text = match span {
             Some((from, to)) if to <= label.len() => StyledText::new(label.clone())
@@ -2425,10 +2518,7 @@ impl EditorPane {
                 .into_any_element(),
             _ => StyledText::new(label.clone()).into_any_element(),
         };
-        ui::ai_option_row(("ask-row", index), index == self.menu.active, roles)
-            .h(px(28.))
-            .px(px(8.))
-            .justify_between()
+        ui::ask_option_row(("ask-row", index), index == self.menu.active, roles)
             .on_mouse_move(cx.listener(move |this, _, _, cx| {
                 let next = ask_menu::hover_ask_menu(&this.menu, index);
                 if next != this.menu {
@@ -2575,11 +2665,21 @@ impl Render for EditorPane {
         let shown = bubble.is_some();
         if self.bubble_shown && !shown {
             self.clear_bubble(window, cx);
+            self.start_bubble_leave(cx);
+        }
+        if shown {
+            self.bubble_leaving = None;
         }
         self.bubble_shown = shown;
         let cards = self.render_cards(window, roles, cx);
         let caret = self.render_caret(roles, cx);
-        let bubble = bubble.and_then(|anchor| self.render_bubble(anchor, roles, cx));
+        let bubble = bubble
+            .and_then(|anchor| self.render_bubble(anchor, roles, cx))
+            .or_else(|| {
+                self.bubble_leaving
+                    .as_ref()
+                    .map(|(ghost, _)| render_bubble_ghost(ghost, roles))
+            });
         let press = self.pointer_down.clone();
         div()
             .id("editor-pane")
@@ -2631,6 +2731,69 @@ fn area_of(pane: Bounds<Pixels>) -> Viewport {
         width: to_f64(pane.size.width),
         height: to_f64(pane.size.height),
     }
+}
+
+fn ask_row_label(row: &AskRow) -> String {
+    match row {
+        AskRow::Action { action, .. } => action.label.clone(),
+        AskRow::Free { text } => format!("Ask AI: “{text}”"),
+    }
+}
+
+fn bubble_body<E: ParentElement + Styled>(
+    frame: E,
+    query: AnyElement,
+    hint: Option<SharedString>,
+    rows: Vec<AnyElement>,
+    roles: Roles,
+) -> E {
+    let frame = frame.p(px(8.)).gap(px(8.)).child(
+        ui::row()
+            .gap(px(8.))
+            .child(ui::ai_flag(roles))
+            .child(div().flex_1().child(query)),
+    );
+    let frame = match hint {
+        Some(hint) => frame.child(ui::meta(hint, roles)),
+        None => frame,
+    };
+    frame.children(rows)
+}
+
+fn render_bubble_ghost(ghost: &BubbleGhost, roles: Roles) -> AnyElement {
+    let rows = ghost
+        .rows
+        .iter()
+        .enumerate()
+        .map(|(index, row)| {
+            ui::ask_option_row(("ghost-row", index), index == ghost.active, roles)
+                .child(row.label.clone())
+                .when(row.skill, |this| this.child(ui::meta("Skill", roles)))
+                .into_any_element()
+        })
+        .collect();
+    let frame = bubble_body(
+        ui::popover_surface(roles)
+            .absolute()
+            .left(ghost.left)
+            .top(ghost.top)
+            .w(px(BUBBLE_WIDTH))
+            .h(ghost.height)
+            .overflow_hidden(),
+        div()
+            .min_h(px(20.))
+            .child(ghost.query.clone())
+            .into_any_element(),
+        ghost.hint.clone(),
+        rows,
+        roles,
+    );
+    ui::leave(
+        "bubble-out",
+        frame,
+        ui::Enter::Rise(if ghost.above { 6. } else { -6. }),
+    )
+    .into_any_element()
 }
 
 fn bubble_in(bubble: Stateful<Div>, above: bool) -> AnyElement {

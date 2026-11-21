@@ -5,6 +5,7 @@
 
 use std::rc::Rc;
 
+use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::{base::TextViewStyle, prelude::FluentBuilder as _, *};
 
 use crate::theme::Roles;
@@ -283,6 +284,13 @@ pub fn ai_option_row(id: impl Into<ElementId>, active: bool, roles: Roles) -> St
         .cursor_pointer()
 }
 
+pub fn ask_option_row(id: impl Into<ElementId>, active: bool, roles: Roles) -> Stateful<Div> {
+    ai_option_row(id, active, roles)
+        .h(px(28.))
+        .px(px(8.))
+        .justify_between()
+}
+
 /// An option row that can hold the keyboard focus, shown by the focus ring.
 pub fn focusable_row(
     id: impl Into<ElementId>,
@@ -395,9 +403,37 @@ pub fn dialog_frame(id: impl Into<ElementId>, width: Pixels, roles: Roles) -> St
 }
 
 pub fn popover_frame(id: impl Into<ElementId>, roles: Roles) -> Stateful<Div> {
+    popover_surface(roles).id(id).occlude()
+}
+
+pub fn input_cover(id: impl Into<ElementId>) -> Stateful<Div> {
+    div().id(id).absolute().inset_0().occlude()
+}
+
+pub fn scrolled(content: impl IntoElement, handle: &ScrollHandle) -> Div {
     div()
-        .id(id)
-        .occlude()
+        .relative()
+        .size_full()
+        .flex()
+        .flex_col()
+        .child(content)
+        .vertical_scrollbar(handle)
+}
+
+pub fn scrolled_rest(content: impl IntoElement, handle: &ScrollHandle) -> Div {
+    div()
+        .relative()
+        .flex_1()
+        .min_h_0()
+        .w_full()
+        .flex()
+        .flex_col()
+        .child(content)
+        .vertical_scrollbar(handle)
+}
+
+pub fn popover_surface(roles: Roles) -> Div {
+    div()
         .bg(roles.overlay)
         .text_color(roles.ink)
         .type_body()
@@ -748,6 +784,12 @@ pub fn markdown_style(roles: Roles) -> TextViewStyle {
 pub const MOTION_ENTER: std::time::Duration = std::time::Duration::from_millis(260);
 pub const MOTION_TOAST: std::time::Duration = std::time::Duration::from_millis(320);
 pub const MOTION_HOVER_DELAY: std::time::Duration = std::time::Duration::from_millis(160);
+pub const MOTION_LEAVE: std::time::Duration = std::time::Duration::from_millis(180);
+pub const MOTION_GROW: std::time::Duration = std::time::Duration::from_millis(420);
+const CASCADE_STEP_MS: u64 = 30;
+const CASCADE_MAX_STEPS: usize = 8;
+const GROW_STEP_MS: u64 = 24;
+const GROW_MAX_STEPS: usize = 14;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Enter {
@@ -795,7 +837,7 @@ fn entering<E: Styled + IntoElement + 'static>(
     delay: std::time::Duration,
     duration: std::time::Duration,
 ) -> AnimationElement<E> {
-    let lead = delay.as_secs_f32() / (delay + duration).as_secs_f32();
+    let lead = lead_of(delay, duration);
     element.with_animation(
         id,
         Animation::new(delay + duration).with_easing(move |t| delayed(ease_out_expo, lead, t)),
@@ -810,6 +852,126 @@ fn entering<E: Styled + IntoElement + 'static>(
             }
         },
     )
+}
+
+pub fn enter_in_turn<E: Styled + IntoElement + 'static>(
+    id: impl Into<ElementId>,
+    element: E,
+    from: Enter,
+    index: usize,
+) -> AnimationElement<E> {
+    entering(
+        id,
+        element,
+        from,
+        cascade_delay(index, CASCADE_STEP_MS, CASCADE_MAX_STEPS),
+        MOTION_ENTER,
+    )
+}
+
+pub fn cascade_delay(index: usize, step_ms: u64, max_steps: usize) -> std::time::Duration {
+    std::time::Duration::from_millis(step_ms * index.min(max_steps) as u64)
+}
+
+pub fn ease_out_quart(delta: f32) -> f32 {
+    1. - (1. - delta.clamp(0., 1.)).powi(4)
+}
+
+pub fn leave<E: Styled + IntoElement + 'static>(
+    id: impl Into<ElementId>,
+    element: E,
+    to: Enter,
+) -> AnimationElement<E> {
+    element.with_animation(
+        id,
+        Animation::new(MOTION_LEAVE).with_easing(ease_out_quart),
+        move |element, delta| {
+            let (x, y) = enter_offset(to, delta);
+            let element = element.opacity(1. - delta);
+            match to {
+                Enter::Lift(_) => element.relative().top(px(y)),
+                Enter::Rise(_) => element.mt(px(y)),
+                Enter::Slide(_) => element.ml(px(x)),
+            }
+        },
+    )
+}
+
+pub fn column_motion(
+    id: impl Into<ElementId>,
+    column: Div,
+    full: Pixels,
+    opening: bool,
+) -> AnimationElement<Div> {
+    let animation = if opening {
+        Animation::new(MOTION_ENTER).with_easing(ease_out_expo)
+    } else {
+        Animation::new(MOTION_LEAVE).with_easing(ease_out_quart)
+    };
+    column.with_animation(id, animation, move |column, delta| {
+        column.w(full * column_share(opening, delta))
+    })
+}
+
+pub fn column_share(opening: bool, delta: f32) -> f32 {
+    if opening { delta } else { 1. - delta }
+}
+
+pub fn glide<E: Styled + IntoElement + 'static>(
+    id: impl Into<ElementId>,
+    element: E,
+    from: f32,
+) -> AnimationElement<E> {
+    element.with_animation(
+        id,
+        Animation::new(MOTION_ENTER).with_easing(ease_out_expo),
+        move |element, delta| element.relative().top(px(from * (1. - delta))),
+    )
+}
+
+pub fn collapse(id: impl Into<ElementId>, row: Div, full: Pixels) -> AnimationElement<Div> {
+    row.with_animation(
+        id,
+        Animation::new(MOTION_LEAVE).with_easing(ease_out_quart),
+        move |row, delta| row.h(full * (1. - delta)).opacity(1. - delta),
+    )
+}
+
+pub fn grow_height(
+    id: impl Into<ElementId>,
+    bar: Div,
+    full: Pixels,
+    index: usize,
+) -> AnimationElement<Div> {
+    growing(id, bar, index, move |bar, delta| bar.h(full * delta))
+}
+
+pub fn grow_width(
+    id: impl Into<ElementId>,
+    bar: Div,
+    full: Pixels,
+    index: usize,
+) -> AnimationElement<Div> {
+    growing(id, bar, index, move |bar, delta| bar.w(full * delta))
+}
+
+fn growing(
+    id: impl Into<ElementId>,
+    bar: Div,
+    index: usize,
+    size: impl Fn(Div, f32) -> Div + 'static,
+) -> AnimationElement<Div> {
+    let delay = cascade_delay(index, GROW_STEP_MS, GROW_MAX_STEPS);
+    let lead = lead_of(delay, MOTION_GROW);
+    bar.with_animation(
+        id,
+        Animation::new(delay + MOTION_GROW).with_easing(move |t| delayed(ease_out_expo, lead, t)),
+        size,
+    )
+}
+
+pub fn lead_of(delay: std::time::Duration, duration: std::time::Duration) -> f32 {
+    delay.as_secs_f32() / (delay + duration).as_secs_f32()
 }
 
 pub fn delayed(easing: impl Fn(f32) -> f32, lead: f32, t: f32) -> f32 {
@@ -875,7 +1037,10 @@ pub fn dot_opacity(phase: f32) -> f32 {
 
 #[cfg(test)]
 mod tests {
-    use super::{Enter, delayed, dot_opacity, ease_in_out_sine, ease_out_expo, enter_offset};
+    use super::{
+        Enter, cascade_delay, column_share, delayed, dot_opacity, ease_in_out_sine, ease_out_expo,
+        ease_out_quart, enter_offset, lead_of,
+    };
 
     #[test]
     fn a_rise_starts_below_a_drop_above_a_slide_on_its_side() {
@@ -883,6 +1048,37 @@ mod tests {
         assert_eq!(enter_offset(Enter::Rise(-4.), 1.), (0., -4.));
         assert_eq!(enter_offset(Enter::Slide(-16.), 0.5), (-8., 0.));
         assert_eq!(enter_offset(Enter::Lift(10.), 0.), (0., 0.));
+    }
+
+    #[test]
+    fn a_cascade_steps_each_row_and_stops_growing() {
+        let step = |index| cascade_delay(index, 30, 8).as_millis();
+        assert_eq!(step(0), 0);
+        assert_eq!(step(3), 90);
+        assert_eq!(step(50), 240);
+    }
+
+    #[test]
+    fn the_lead_is_the_share_of_time_spent_waiting() {
+        let ms = std::time::Duration::from_millis;
+        assert_eq!(lead_of(ms(0), ms(260)), 0.);
+        assert!((lead_of(ms(160), ms(240)) - 0.4).abs() < 1e-6);
+    }
+
+    #[test]
+    fn a_column_opens_from_nothing_and_closes_to_nothing() {
+        assert_eq!(column_share(true, 0.), 0.);
+        assert_eq!(column_share(true, 1.), 1.);
+        assert_eq!(column_share(false, 0.), 1.);
+        assert_eq!(column_share(false, 1.), 0.);
+    }
+
+    #[test]
+    fn ease_out_quart_lands_on_one_and_clamps() {
+        assert_eq!(ease_out_quart(0.), 0.);
+        assert_eq!(ease_out_quart(1.), 1.);
+        assert!(ease_out_quart(0.5) > 0.9);
+        assert_eq!(ease_out_quart(2.), 1.);
     }
 
     #[test]

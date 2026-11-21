@@ -23,6 +23,7 @@ use desafinado_platform::{
         create_skill, list_library, remove_library_root,
     },
 };
+use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::{
     component::input::{Input, InputEvent, InputState},
     prelude::FluentBuilder as _,
@@ -607,9 +608,9 @@ impl LibraryPanel {
                         .id("library-search-list")
                         .mt(px(4.))
                         .max_h(max_height)
-                        .overflow_y_scroll()
                         .bg(roles.overlay)
-                        .children(list),
+                        .children(list)
+                        .overflow_y_scrollbar(),
                 )
             })
             .when(show_empty, |this| {
@@ -968,7 +969,7 @@ impl Render for LibraryPanel {
             .child(search)
             .child(self.render_actions(roles, cx))
             .child(self.render_status(roles, cx))
-            .child(
+            .child(ui::scrolled_rest(
                 div()
                     .id("library-tree")
                     .track_focus(&self.tree_focus)
@@ -977,9 +978,11 @@ impl Render for LibraryPanel {
                     .min_h_0()
                     .overflow_y_scroll()
                     .pb(px(24.))
+                    .pr(px(8.))
                     .on_key_down(cx.listener(Self::on_tree_key))
                     .children(rows),
-            )
+                &self.tree_scroll,
+            ))
     }
 }
 

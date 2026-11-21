@@ -509,13 +509,16 @@ impl Workspace {
             Some(changes) => line_diff(changes, false, DiffSize::Document, roles),
             None => div().into_any_element(),
         };
-        div()
-            .id("compare")
-            .size_full()
-            .overflow_y_scroll()
-            .track_scroll(&self.compare_scroll)
-            .child(centered(div().pt(px(16.)).pb(px(160.)).child(body)))
-            .into_any_element()
+        ui::scrolled(
+            div()
+                .id("compare")
+                .size_full()
+                .overflow_y_scroll()
+                .track_scroll(&self.compare_scroll)
+                .child(centered(div().pt(px(16.)).pb(px(160.)).child(body))),
+            &self.compare_scroll,
+        )
+        .into_any_element()
     }
 
     fn entry_diff(&mut self, before: VersionId, after: VersionId) -> Option<Vec<LineChange>> {
@@ -565,16 +568,19 @@ impl Workspace {
                     .into_any_element()
             })
             .collect();
-        div()
-            .id("full-history")
-            .type_body()
-            .size_full()
-            .overflow_y_scroll()
-            .track_scroll(&self.history_scroll)
-            .child(header)
-            .children(entries)
-            .child(div().h(px(160.)))
-            .into_any_element()
+        ui::scrolled(
+            div()
+                .id("full-history")
+                .type_body()
+                .size_full()
+                .overflow_y_scroll()
+                .track_scroll(&self.history_scroll)
+                .child(header)
+                .children(entries)
+                .child(div().h(px(160.))),
+            &self.history_scroll,
+        )
+        .into_any_element()
     }
 
     fn render_entry(

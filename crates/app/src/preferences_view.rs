@@ -3,6 +3,7 @@ use desafinado_ai::quick_action_settings::{
     add_user_quick_action, check_quick_action_draft, draft_is_valid, is_user_quick_action,
     move_quick_action, remove_user_quick_action, toggle_quick_action, update_user_quick_action,
 };
+use desafinado_ai::ui::list_motion::{ListStep, plan_list_change};
 use desafinado_features::theme::{
     catalog::{ThemeOption, themes_of_mode},
     tokens::ThemeMode,
@@ -28,6 +29,7 @@ actions!(
 );
 
 pub const PREFERENCES_WIDTH: f32 = 416.;
+const QUICK_ACTION_ROW: f32 = 40.;
 
 pub const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const APP_COMMIT: &str = env!("DESAFINADO_COMMIT");
@@ -86,8 +88,19 @@ fn draft_of(slot: &QuickActionSlot) -> QuickActionDraft {
     }
 }
 
+struct LeavingRow {
+    serial: u32,
+    index: usize,
+    label: SharedString,
+    _done: Task<()>,
+}
+
 pub struct PreferencesPanel {
     settings: QuickActionSettings,
+    motion: std::collections::BTreeMap<String, ListStep>,
+    motion_round: u32,
+    leaving_rows: Vec<LeavingRow>,
+    leaving_serial: u32,
     editing: Editing,
     draft: Option<Draft>,
     created: u32,
@@ -101,6 +114,10 @@ impl PreferencesPanel {
         window.focus(&focus, cx);
         Self {
             settings,
+            motion: std::collections::BTreeMap::new(),
+            motion_round: 0,
+            leaving_rows: Vec::new(),
+            leaving_serial: 0,
             editing: Editing::None,
             draft: None,
             created: 0,
@@ -118,9 +135,66 @@ impl PreferencesPanel {
         if next == self.settings {
             return;
         }
+        self.plan_motion(&next, cx);
         self.settings = next.clone();
         cx.emit(PreferencesEvent::QuickActions(next));
         cx.notify();
+    }
+
+    fn plan_motion(&mut self, next: &QuickActionSettings, cx: &mut Context<Self>) {
+        let ids = |settings: &QuickActionSettings| {
+            settings
+                .iter()
+                .map(|slot| slot.action.id.clone())
+                .collect::<Vec<_>>()
+        };
+        let Some(change) = plan_list_change(
+            &ids(&self.settings),
+            &ids(next),
+            f64::from(QUICK_ACTION_ROW),
+            cx.reduce_motion(),
+        ) else {
+            return;
+        };
+        self.motion = change.steps;
+        self.motion_round += 1;
+        for (index, id) in change.removed {
+            let Some(slot) = self.settings.iter().find(|slot| slot.action.id == id) else {
+                continue;
+            };
+            self.leaving_serial += 1;
+            let serial = self.leaving_serial;
+            let done = cx.spawn(async move |this, cx| {
+                cx.background_executor().timer(ui::MOTION_LEAVE).await;
+                let _ = this.update(cx, |this, cx| {
+                    this.leaving_rows.retain(|row| row.serial != serial);
+                    cx.notify();
+                });
+            });
+            self.leaving_rows.push(LeavingRow {
+                serial,
+                index,
+                label: format!("Delete “{}”?", slot.action.label).into(),
+                _done: done,
+            });
+        }
+    }
+
+    fn with_list_motion(&self, id: &str, row: AnyElement) -> AnyElement {
+        let key = SharedString::from(format!("quick-action-motion-{}-{id}", self.motion_round));
+        match self.motion.get(id) {
+            Some(ListStep::Enter) => ui::enter(
+                key,
+                div().child(row),
+                ui::Enter::Lift(-6.),
+                ui::MOTION_ENTER,
+            )
+            .into_any_element(),
+            Some(ListStep::Move { delta }) => {
+                ui::glide(key, div().child(row), *delta as f32).into_any_element()
+            }
+            None => row,
+        }
     }
 
     fn start_draft(
@@ -430,7 +504,7 @@ impl PreferencesPanel {
         let toggle_id = id.clone();
         ui::row()
             .id(("quick-action", index))
-            .min_h(px(36.))
+            .h(px(QUICK_ACTION_ROW))
             .gap(px(8.))
             .child(
                 ui::option_row(("quick-action-toggle", index), false, false, roles)
@@ -469,7 +543,7 @@ impl PreferencesPanel {
         let keep = id.clone();
         ui::row()
             .id(("quick-action", index))
-            .min_h(px(36.))
+            .h(px(QUICK_ACTION_ROW))
             .gap(px(8.))
             .child(
                 div()
@@ -640,11 +714,35 @@ impl PreferencesPanel {
     ) -> Div {
         let settings = self.settings.clone();
         let editing_any = matches!(self.editing, Editing::Edit(_));
-        let quick_actions = settings
+        let mut quick_actions = settings
             .iter()
             .enumerate()
-            .map(|(index, slot)| self.render_quick_action(index, slot, roles, window, cx))
+            .map(|(index, slot)| {
+                let row = self.render_quick_action(index, slot, roles, window, cx);
+                self.with_list_motion(&slot.action.id, row)
+            })
             .collect::<Vec<_>>();
+        for leaving in &self.leaving_rows {
+            quick_actions.insert(
+                leaving.index.min(quick_actions.len()),
+                ui::collapse(
+                    SharedString::from(format!("quick-action-leave-{}", leaving.serial)),
+                    ui::row()
+                        .h(px(QUICK_ACTION_ROW))
+                        .pl(px(8.))
+                        .overflow_hidden()
+                        .child(
+                            div()
+                                .min_w_0()
+                                .flex_1()
+                                .truncate()
+                                .child(leaving.label.clone()),
+                        ),
+                    px(QUICK_ACTION_ROW),
+                )
+                .into_any_element(),
+            );
+        }
         let new_form =
             matches!(self.editing, Editing::New).then(|| self.render_draft(roles, window, cx));
         div()
@@ -724,7 +822,7 @@ impl Render for PreferencesPanel {
                             .on_click(cx.listener(|_, _, _, cx| cx.emit(PreferencesEvent::Close))),
                     ),
             )
-            .child(
+            .child(ui::scrolled_rest(
                 div()
                     .id("preferences-scroll")
                     .flex_1()
@@ -737,7 +835,8 @@ impl Render for PreferencesPanel {
                     .child(self.render_ai_section(roles, cx))
                     .child(self.render_quick_actions_section(roles, window, cx))
                     .child(ui::meta(version_line(), roles).mt(px(32.))),
-            )
+                &self.scroll,
+            ))
     }
 }
 

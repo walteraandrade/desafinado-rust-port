@@ -1,5 +1,9 @@
 use desafinado_core::blocks::body_after_frontmatter;
-use gpui_kit::{base::TextView, component, *};
+use gpui_kit::{
+    base::TextView,
+    component::{self, scroll::ScrollableElement as _},
+    *,
+};
 
 use crate::{
     theme::Roles,
@@ -11,7 +15,6 @@ pub fn render_reading(text: &str, roles: Roles) -> AnyElement {
     div()
         .id("reading-view")
         .size_full()
-        .overflow_y_scroll()
         .pt(px(16.))
         .pb(px(48.))
         .child(column_row(
@@ -30,5 +33,6 @@ pub fn render_reading(text: &str, roles: Roles) -> AnyElement {
                         }),
                 ),
         ))
+        .overflow_y_scrollbar()
         .into_any_element()
 }
