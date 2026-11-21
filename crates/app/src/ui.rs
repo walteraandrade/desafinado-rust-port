@@ -5,6 +5,7 @@
 
 use std::rc::Rc;
 
+use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::{base::TextViewStyle, prelude::FluentBuilder as _, *};
 
 use crate::theme::Roles;
@@ -407,6 +408,28 @@ pub fn popover_frame(id: impl Into<ElementId>, roles: Roles) -> Stateful<Div> {
 
 pub fn input_cover(id: impl Into<ElementId>) -> Stateful<Div> {
     div().id(id).absolute().inset_0().occlude()
+}
+
+pub fn scrolled(content: impl IntoElement, handle: &ScrollHandle) -> Div {
+    div()
+        .relative()
+        .size_full()
+        .flex()
+        .flex_col()
+        .child(content)
+        .vertical_scrollbar(handle)
+}
+
+pub fn scrolled_rest(content: impl IntoElement, handle: &ScrollHandle) -> Div {
+    div()
+        .relative()
+        .flex_1()
+        .min_h_0()
+        .w_full()
+        .flex()
+        .flex_col()
+        .child(content)
+        .vertical_scrollbar(handle)
 }
 
 pub fn popover_surface(roles: Roles) -> Div {
@@ -863,7 +886,7 @@ pub fn leave<E: Styled + IntoElement + 'static>(
         id,
         Animation::new(MOTION_LEAVE).with_easing(ease_out_quart),
         move |element, delta| {
-            let (x, y) = leave_offset(to, delta);
+            let (x, y) = enter_offset(to, delta);
             let element = element.opacity(1. - delta);
             match to {
                 Enter::Lift(_) => element.relative().top(px(y)),
@@ -872,6 +895,26 @@ pub fn leave<E: Styled + IntoElement + 'static>(
             }
         },
     )
+}
+
+pub fn column_motion(
+    id: impl Into<ElementId>,
+    column: Div,
+    full: Pixels,
+    opening: bool,
+) -> AnimationElement<Div> {
+    let animation = if opening {
+        Animation::new(MOTION_ENTER).with_easing(ease_out_expo)
+    } else {
+        Animation::new(MOTION_LEAVE).with_easing(ease_out_quart)
+    };
+    column.with_animation(id, animation, move |column, delta| {
+        column.w(full * column_share(opening, delta))
+    })
+}
+
+pub fn column_share(opening: bool, delta: f32) -> f32 {
+    if opening { delta } else { 1. - delta }
 }
 
 pub fn grow_height(
@@ -909,10 +952,6 @@ fn growing(
 
 pub fn lead_of(delay: std::time::Duration, duration: std::time::Duration) -> f32 {
     delay.as_secs_f32() / (delay + duration).as_secs_f32()
-}
-
-pub fn leave_offset(to: Enter, delta: f32) -> (f32, f32) {
-    enter_offset(to, delta)
 }
 
 pub fn delayed(easing: impl Fn(f32) -> f32, lead: f32, t: f32) -> f32 {
@@ -979,8 +1018,8 @@ pub fn dot_opacity(phase: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::{
-        Enter, cascade_delay, delayed, dot_opacity, ease_in_out_sine, ease_out_expo,
-        ease_out_quart, enter_offset, lead_of, leave_offset,
+        Enter, cascade_delay, column_share, delayed, dot_opacity, ease_in_out_sine, ease_out_expo,
+        ease_out_quart, enter_offset, lead_of,
     };
 
     #[test]
@@ -1000,17 +1039,18 @@ mod tests {
     }
 
     #[test]
-    fn a_leave_ends_at_the_side_it_came_from() {
-        assert_eq!(leave_offset(Enter::Slide(-16.), 0.), (0., 0.));
-        assert_eq!(leave_offset(Enter::Slide(-16.), 1.), (-16., 0.));
-        assert_eq!(leave_offset(Enter::Slide(16.), 1.), (16., 0.));
-    }
-
-    #[test]
     fn the_lead_is_the_share_of_time_spent_waiting() {
         let ms = std::time::Duration::from_millis;
         assert_eq!(lead_of(ms(0), ms(260)), 0.);
         assert!((lead_of(ms(160), ms(240)) - 0.4).abs() < 1e-6);
+    }
+
+    #[test]
+    fn a_column_opens_from_nothing_and_closes_to_nothing() {
+        assert_eq!(column_share(true, 0.), 0.);
+        assert_eq!(column_share(true, 1.), 1.);
+        assert_eq!(column_share(false, 0.), 1.);
+        assert_eq!(column_share(false, 1.), 0.);
     }
 
     #[test]

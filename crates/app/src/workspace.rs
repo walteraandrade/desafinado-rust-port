@@ -3116,15 +3116,7 @@ impl Workspace {
             .child(self.render_rail(roles, cx))
             .when(
                 self.library_shown() && placement == Placement::Column,
-                |this| {
-                    this.child(
-                        div()
-                            .w(px(library_panel::LIBRARY_WIDTH))
-                            .h_full()
-                            .flex_none()
-                            .child(self.library_in()),
-                    )
-                },
+                |this| this.child(self.render_library_column()),
             )
             .child(
                 div()
@@ -3170,6 +3162,24 @@ impl Workspace {
                     )
                 },
             )
+    }
+
+    fn render_library_column(&self) -> AnimationElement<Div> {
+        ui::column_motion(
+            if self.library_open {
+                "library-column-in"
+            } else {
+                "library-column-out"
+            },
+            div().h_full().flex_none().overflow_hidden().child(
+                div()
+                    .w(px(library_panel::LIBRARY_WIDTH))
+                    .h_full()
+                    .child(self.library_in()),
+            ),
+            px(library_panel::LIBRARY_WIDTH),
+            self.library_open,
+        )
     }
 
     fn library_shown(&self) -> bool {

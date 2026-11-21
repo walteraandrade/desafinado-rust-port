@@ -51,6 +51,7 @@ use desafinado_core::{
     },
 };
 use futures::{StreamExt as _, channel::mpsc};
+use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::{
     component::input::{
         Editor, EditorState, Input, InputEditsEvent, InputState, RangeDecoration,
@@ -193,6 +194,8 @@ enum Applying {
 
 type CardRects = Rc<RefCell<Vec<(Bounds<Pixels>, CardKind)>>>;
 
+const GHOST_FRESH: std::time::Duration = std::time::Duration::from_millis(250);
+
 #[derive(Clone)]
 struct GhostRow {
     label: SharedString,
@@ -201,6 +204,7 @@ struct GhostRow {
 
 #[derive(Clone)]
 struct BubbleGhost {
+    seen: std::time::Instant,
     left: Pixels,
     top: Pixels,
     height: Pixels,
@@ -733,6 +737,7 @@ impl EditorPane {
 
     pub fn put_away(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.refine = None;
+        self.last_bubble.replace(None);
         self.dismiss_bubble(window, cx);
     }
 
@@ -789,6 +794,7 @@ impl EditorPane {
             Some(AskRow::Free { text }) => Instruction::FreeText { text },
             None => return,
         };
+        self.last_bubble.replace(None);
         self.clear_bubble(window, cx);
         self.ask_with(instruction, window, cx);
         self.focus(window, cx);
@@ -1928,8 +1934,8 @@ impl EditorPane {
                 div()
                     .id(SharedString::from(format!("replacement-{id}")))
                     .max_h(replacement_cap)
-                    .overflow_y_scroll()
-                    .child(styled_replacement(&ready.diff.hunks, roles)),
+                    .child(styled_replacement(&ready.diff.hunks, roles))
+                    .overflow_y_scrollbar(),
             )
             .children(
                 active
@@ -2401,27 +2407,40 @@ impl EditorPane {
                 {
                     entity.update(cx, |_, cx| cx.notify());
                 }
-            }))
-            .p(px(8.))
-            .gap(px(8.))
-            .child(
-                ui::row().gap(px(8.)).child(ui::ai_flag(roles)).child(
-                    div()
-                        .flex_1()
-                        .child(Input::new(&self.bubble_input).appearance(false)),
-                ),
-            )
-            .when_some(hint, |this, hint| this.child(ui::meta(hint, roles)))
-            .children(rows.iter().cloned().enumerate().map(|(index, row)| {
+            }));
+        let live_rows = self.bubble_rows(&rows, roles, cx);
+        let bubble = bubble_body(
+            bubble,
+            Input::new(&self.bubble_input)
+                .appearance(false)
+                .into_any_element(),
+            hint.map(SharedString::from),
+            live_rows,
+            roles,
+        );
+        self.remember_bubble(&placed, &rows, hint_text, height, cx);
+        Some(bubble_in(bubble, placed.side == Side::Above))
+    }
+
+    fn bubble_rows(
+        &self,
+        rows: &[AskRow],
+        roles: Roles,
+        cx: &mut Context<Self>,
+    ) -> Vec<AnyElement> {
+        rows.iter()
+            .cloned()
+            .enumerate()
+            .map(|(index, row)| {
                 ui::enter_in_turn(
                     ("ask-row-in", index),
                     self.render_ask_row(index, row, roles, cx),
                     ui::Enter::Lift(-4.),
                     index,
                 )
-            }));
-        self.remember_bubble(&placed, &rows, hint_text, height, cx);
-        Some(bubble_in(bubble, placed.side == Side::Above))
+                .into_any_element()
+            })
+            .collect()
     }
 
     fn remember_bubble(
@@ -2433,6 +2452,7 @@ impl EditorPane {
         cx: &App,
     ) {
         self.last_bubble.replace(Some(BubbleGhost {
+            seen: std::time::Instant::now(),
             left: px(placed.left as f32),
             top: px(placed.top as f32),
             height,
@@ -2451,7 +2471,11 @@ impl EditorPane {
     }
 
     fn start_bubble_leave(&mut self, cx: &mut Context<Self>) {
-        let Some(ghost) = self.last_bubble.take() else {
+        let Some(ghost) = self
+            .last_bubble
+            .take()
+            .filter(|ghost| ghost.seen.elapsed() < GHOST_FRESH)
+        else {
             return;
         };
         let done = cx.spawn(async move |this, cx| {
@@ -2714,30 +2738,54 @@ fn ask_row_label(row: &AskRow) -> String {
     }
 }
 
+fn bubble_body<E: ParentElement + Styled>(
+    frame: E,
+    query: AnyElement,
+    hint: Option<SharedString>,
+    rows: Vec<AnyElement>,
+    roles: Roles,
+) -> E {
+    let frame = frame.p(px(8.)).gap(px(8.)).child(
+        ui::row()
+            .gap(px(8.))
+            .child(ui::ai_flag(roles))
+            .child(div().flex_1().child(query)),
+    );
+    let frame = match hint {
+        Some(hint) => frame.child(ui::meta(hint, roles)),
+        None => frame,
+    };
+    frame.children(rows)
+}
+
 fn render_bubble_ghost(ghost: &BubbleGhost, roles: Roles) -> AnyElement {
-    let frame = ui::popover_surface(roles)
-        .absolute()
-        .left(ghost.left)
-        .top(ghost.top)
-        .w(px(BUBBLE_WIDTH))
-        .h(ghost.height)
-        .overflow_hidden()
-        .p(px(8.))
-        .gap(px(8.))
-        .child(
-            ui::row()
-                .gap(px(8.))
-                .child(ui::ai_flag(roles))
-                .child(div().flex_1().min_h(px(20.)).child(ghost.query.clone())),
-        )
-        .when_some(ghost.hint.clone(), |this, hint| {
-            this.child(ui::meta(hint, roles))
-        })
-        .children(ghost.rows.iter().enumerate().map(|(index, row)| {
+    let rows = ghost
+        .rows
+        .iter()
+        .enumerate()
+        .map(|(index, row)| {
             ui::ask_option_row(("ghost-row", index), index == ghost.active, roles)
                 .child(row.label.clone())
                 .when(row.skill, |this| this.child(ui::meta("Skill", roles)))
-        }));
+                .into_any_element()
+        })
+        .collect();
+    let frame = bubble_body(
+        ui::popover_surface(roles)
+            .absolute()
+            .left(ghost.left)
+            .top(ghost.top)
+            .w(px(BUBBLE_WIDTH))
+            .h(ghost.height)
+            .overflow_hidden(),
+        div()
+            .min_h(px(20.))
+            .child(ghost.query.clone())
+            .into_any_element(),
+        ghost.hint.clone(),
+        rows,
+        roles,
+    );
     ui::leave(
         "bubble-out",
         frame,

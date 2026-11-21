@@ -37,7 +37,6 @@ use desafinado_platform::evals::{
     find_claude_with_override, is_executable_file, stage_skill,
 };
 use futures::channel::oneshot;
-use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::{prelude::FluentBuilder as _, *};
 
 use crate::{
@@ -1093,12 +1092,11 @@ impl Render for EvalsView {
         });
         let running_line = running
             .then(|| ui::meta("Running Evals. This can take a few minutes.", roles).mt(px(12.)));
-        div()
+        let page = div()
             .id("evals-page")
             .size_full()
             .overflow_y_scroll()
             .track_scroll(&self.scroll)
-            .vertical_scrollbar(&self.scroll)
             .type_body()
             .child(
                 column_row(
@@ -1113,7 +1111,7 @@ impl Render for EvalsView {
                         .children(running_line),
                 )
                 .pb(px(160.)),
-            )
-            .into_any_element()
+            );
+        ui::scrolled(page, &self.scroll).into_any_element()
     }
 }

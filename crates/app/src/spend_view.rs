@@ -3,7 +3,6 @@ use std::sync::Arc;
 use chrono::{FixedOffset, Utc};
 use desafinado_ai::records::AiCallRecord;
 use desafinado_runtime::services::Services;
-use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::{prelude::FluentBuilder as _, *};
 
 use crate::{
@@ -491,12 +490,11 @@ impl Render for SpendView {
                     roles,)
                 .on_click(cx.listener(|_, _, _, cx| cx.emit(SpendEvent::Close))),
             );
-        div()
+        let page = div()
             .id("spend-page")
             .size_full()
             .overflow_y_scroll()
             .track_scroll(&self.scroll)
-            .vertical_scrollbar(&self.scroll)
             .type_body()
             .text_color(roles.ink)
             .child(
@@ -512,6 +510,7 @@ impl Render for SpendView {
                     ui::Enter::Rise(6.),
                     ui::MOTION_ENTER,
                 )),
-            )
+            );
+        ui::scrolled(page, &self.scroll)
     }
 }

@@ -7,7 +7,6 @@ use desafinado_features::theme::{
     catalog::{ThemeOption, themes_of_mode},
     tokens::ThemeMode,
 };
-use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::{
     component::input::{Input, InputEvent, InputState, Textarea, TextareaState},
     prelude::FluentBuilder as _,
@@ -725,21 +724,21 @@ impl Render for PreferencesPanel {
                             .on_click(cx.listener(|_, _, _, cx| cx.emit(PreferencesEvent::Close))),
                     ),
             )
-            .child(
+            .child(ui::scrolled_rest(
                 div()
                     .id("preferences-scroll")
                     .flex_1()
                     .min_h_0()
                     .overflow_y_scroll()
                     .track_scroll(&self.scroll)
-                    .vertical_scrollbar(&self.scroll)
                     .px(px(20.))
                     .pb(px(20.))
                     .child(self.render_theme_section(roles, cx))
                     .child(self.render_ai_section(roles, cx))
                     .child(self.render_quick_actions_section(roles, window, cx))
                     .child(ui::meta(version_line(), roles).mt(px(32.))),
-            )
+                &self.scroll,
+            ))
     }
 }
 
