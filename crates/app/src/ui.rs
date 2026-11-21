@@ -786,12 +786,12 @@ pub fn markdown_style(roles: Roles) -> TextViewStyle {
 fn code_type() -> StyleRefinement {
     let mut style = StyleRefinement::default();
     style.text.font_family = Some(MONO_FAMILY.into());
-    style.text.font_size = Some(TEXT_BODY.into());
     style
 }
 
 fn code_block_style() -> StyleRefinement {
     let mut style = code_type();
+    style.text.font_size = Some(TEXT_BODY.into());
     style.text.white_space = Some(WhiteSpace::Nowrap);
     style.display = Some(Display::Flex);
     style.overflow.x = Some(Overflow::Scroll);
