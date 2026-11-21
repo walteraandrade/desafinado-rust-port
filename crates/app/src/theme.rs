@@ -1,4 +1,7 @@
-use std::path::{Path, PathBuf};
+use std::{
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 use desafinado_features::theme::{
     catalog::{ThemeOption, omarchy_option},
@@ -12,8 +15,12 @@ use desafinado_features::theme::{
 };
 use desafinado_platform::files::write_atomic_unconditionally;
 use gpui_kit::{
-    App, Global, Hsla, Rgba,
-    component::{Theme, ThemeMode as ThemeModeKind, highlighter::HighlightTheme},
+    App, Global, HighlightStyle, Hsla, Rgba,
+    base::{input::Rope, text::CodeBlock},
+    component::{
+        Theme, ThemeMode as ThemeModeKind,
+        highlighter::{HighlightTheme, SyntaxHighlighter},
+    },
 };
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -180,8 +187,32 @@ pub fn roles(cx: &App) -> Roles {
     *cx.global::<Roles>()
 }
 
+pub type CodeHighlighter =
+    dyn Fn(&CodeBlock) -> Vec<(std::ops::Range<usize>, HighlightStyle)> + Send + Sync;
+
+pub struct ReadingCode(pub Arc<CodeHighlighter>);
+
+impl Global for ReadingCode {}
+
+pub fn reading_code(cx: &App) -> Arc<CodeHighlighter> {
+    cx.global::<ReadingCode>().0.clone()
+}
+
+fn code_highlighter(theme: HighlightTheme) -> Arc<CodeHighlighter> {
+    Arc::new(move |block: &CodeBlock| {
+        let Some(lang) = block.lang() else {
+            return Vec::new();
+        };
+        let code = block.code();
+        let mut highlighter = SyntaxHighlighter::new(lang.as_ref());
+        highlighter.update(None, &Rope::from_str(code.as_ref()), None);
+        highlighter.styles(&(0..code.len()), &theme)
+    })
+}
+
 pub fn apply(roles: Roles, cx: &mut App) {
     cx.set_global(roles);
+    cx.set_global(ReadingCode(code_highlighter(code_theme(&roles))));
     Theme::change(
         if roles.dark {
             ThemeModeKind::Dark
@@ -344,10 +375,99 @@ fn highlight_theme(roles: &Roles) -> HighlightTheme {
     serde_json::from_value(value).expect("highlight theme")
 }
 
+/// Syntax colors for code read in the Reading view. The editor's theme mutes
+/// code on purpose; here code is content, so every token stays readable.
+fn code_theme(roles: &Roles) -> HighlightTheme {
+    let color = |hsla: Hsla| serde_json::json!({ "color": css(hsla) });
+    let mut syntax = serde_json::Map::new();
+    let groups: [(&[&str], Hsla); 5] = [
+        (
+            &[
+                "punctuation",
+                "punctuation.bracket",
+                "punctuation.delimiter",
+                "punctuation.special",
+                "operator",
+            ],
+            roles.muted,
+        ),
+        (
+            &[
+                "string",
+                "string.escape",
+                "string.regex",
+                "string.special",
+                "string.special.symbol",
+            ],
+            roles.success,
+        ),
+        (
+            &["number", "boolean", "constant", "constant.builtin"],
+            roles.ai,
+        ),
+        (
+            &[
+                "keyword",
+                "type",
+                "function",
+                "tag",
+                "attribute",
+                "constructor",
+            ],
+            roles.accent,
+        ),
+        (
+            &[
+                "property",
+                "variable",
+                "variable.special",
+                "label",
+                "variant",
+                "enum",
+            ],
+            roles.ink,
+        ),
+    ];
+    for (keys, hsla) in groups {
+        for key in keys {
+            syntax.insert((*key).into(), color(hsla));
+        }
+    }
+    for key in ["comment", "comment_doc"] {
+        syntax.insert(
+            key.into(),
+            serde_json::json!({ "color": css(roles.muted), "font_style": "italic" }),
+        );
+    }
+    let value = serde_json::json!({
+        "name": "desafinado-reading-code",
+        "appearance": if roles.dark { "dark" } else { "light" },
+        "style": {
+            "editor.background": css(roles.raised),
+            "editor.foreground": css(roles.ink),
+            "syntax": syntax,
+        }
+    });
+    serde_json::from_value(value).expect("code highlight theme")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use desafinado_features::theme::catalog::{default_theme, theme_by_id};
+
+    #[test]
+    fn reads_code_tokens_in_distinct_role_colors() {
+        use gpui_kit::base::input::HighlightStyleResolver as _;
+        let roles = roles_of(&default_theme().tokens);
+        let theme = code_theme(&roles);
+        let color = |name: &str| theme.style(name).and_then(|style| style.color);
+        assert_eq!(color("string"), Some(roles.success));
+        assert_eq!(color("number"), Some(roles.ai));
+        assert_eq!(color("keyword"), Some(roles.accent));
+        assert_eq!(color("punctuation.bracket"), Some(roles.muted));
+        assert_eq!(color("property"), Some(roles.ink));
+    }
 
     #[test]
     fn maps_a_light_palette_to_light_roles() {
