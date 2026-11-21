@@ -23,6 +23,7 @@ use desafinado_platform::{
         create_skill, list_library, remove_library_root,
     },
 };
+use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::{
     component::input::{Input, InputEvent, InputState},
     prelude::FluentBuilder as _,
@@ -973,6 +974,7 @@ impl Render for LibraryPanel {
                     .id("library-tree")
                     .track_focus(&self.tree_focus)
                     .track_scroll(&self.tree_scroll)
+                    .vertical_scrollbar(&self.tree_scroll)
                     .flex_1()
                     .min_h_0()
                     .overflow_y_scroll()

@@ -247,6 +247,12 @@ impl ToastAction {
     }
 }
 
+#[derive(Default)]
+struct Leaving {
+    library: Option<Task<()>>,
+    preferences: Option<(Entity<PreferencesPanel>, Task<()>)>,
+}
+
 struct Toast {
     serial: u64,
     text: SharedString,
@@ -359,6 +365,7 @@ pub struct Workspace {
     leave_index: usize,
     library: Entity<LibraryPanel>,
     library_open: bool,
+    leaving: Leaving,
     search_unfolded: bool,
     search_opening: bool,
     library_request: Option<(PathBuf, bool, bool)>,
@@ -457,6 +464,7 @@ impl Workspace {
             leave_index: 0,
             library,
             library_open: false,
+            leaving: Leaving::default(),
             search_unfolded: false,
             search_opening: false,
             library_request: None,
@@ -1343,6 +1351,15 @@ impl Workspace {
     }
 
     fn fold_library(&mut self, cx: &mut Context<Self>) {
+        if self.library_open {
+            self.leaving.library = Some(cx.spawn(async move |this, cx| {
+                cx.background_executor().timer(ui::MOTION_LEAVE).await;
+                let _ = this.update(cx, |this, cx| {
+                    this.leaving.library = None;
+                    cx.notify();
+                });
+            }));
+        }
         self.library_open = false;
         self.search_unfolded = false;
         cx.notify();
@@ -1358,6 +1375,7 @@ impl Workspace {
 
     fn open_library(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.library_open = true;
+        self.leaving.library = None;
         self.library
             .update(cx, |library, cx| library.focus_tree(window, cx));
         cx.notify();
@@ -1399,6 +1417,7 @@ impl Workspace {
         if !self.library_open {
             self.search_unfolded = true;
             self.library_open = true;
+            self.leaving.library = None;
         }
         self.library
             .update(cx, |library, cx| library.focus_search(window, cx));
@@ -1964,7 +1983,7 @@ impl Workspace {
             window,
             |this, _, event: &PreferencesEvent, window, cx| match event {
                 PreferencesEvent::Close => {
-                    this.preferences = None;
+                    this.close_preferences(cx);
                     this.focus_text(window, cx);
                     cx.notify();
                 }
@@ -1978,7 +1997,22 @@ impl Workspace {
         );
         self._dialog_subscriptions.push(events);
         self.preferences = Some(panel);
+        self.leaving.preferences = None;
         cx.notify();
+    }
+
+    fn close_preferences(&mut self, cx: &mut Context<Self>) {
+        let Some(panel) = self.preferences.take() else {
+            return;
+        };
+        let done = cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(ui::MOTION_LEAVE).await;
+            let _ = this.update(cx, |this, cx| {
+                this.leaving.preferences = None;
+                cx.notify();
+            });
+        });
+        self.leaving.preferences = Some((panel, done));
     }
 
     fn change_quick_actions(&mut self, settings: QuickActionSettings, cx: &mut Context<Self>) {
@@ -2045,7 +2079,7 @@ impl Workspace {
 
     fn show_spend(&mut self, _: &ShowSpend, window: &mut Window, cx: &mut Context<Self>) {
         self.open_menu = None;
-        self.preferences = None;
+        self.close_preferences(cx);
         if let Some(spend) = &self.spend {
             spend.update(cx, |spend, cx| spend.reload(cx));
             return;
@@ -2677,6 +2711,21 @@ fn save_as_target(chosen: &Path, text: &str) -> FileSaveResult {
     save_markdown_as(Path::new(&target), text)
 }
 
+fn preferences_motion(panel: Entity<PreferencesPanel>, open: bool) -> AnyElement {
+    let panel = div().size_full().child(panel);
+    if open {
+        ui::enter(
+            "preferences-in",
+            panel,
+            ui::Enter::Slide(16.),
+            ui::MOTION_ENTER,
+        )
+        .into_any_element()
+    } else {
+        ui::leave("preferences-out", panel, ui::Enter::Slide(16.)).into_any_element()
+    }
+}
+
 pub(crate) fn column_row(content: impl IntoElement) -> Div {
     div().w_full().flex().justify_center().child(
         div()
@@ -3060,7 +3109,7 @@ impl Workspace {
             .flex_row()
             .child(self.render_rail(roles, cx))
             .when(
-                self.library_open && placement == Placement::Column,
+                self.library_shown() && placement == Placement::Column,
                 |this| {
                     this.child(
                         div()
@@ -3095,7 +3144,7 @@ impl Workspace {
                     }),
             )
             .when(
-                self.library_open && placement == Placement::Overlay,
+                self.library_shown() && placement == Placement::Overlay,
                 |this| {
                     this.child(
                         div()
@@ -3117,13 +3166,22 @@ impl Workspace {
             )
     }
 
+    fn library_shown(&self) -> bool {
+        self.library_open || self.leaving.library.is_some()
+    }
+
     fn library_in(&self) -> AnimationElement<Div> {
-        ui::enter(
-            "library-in",
-            div().size_full().child(self.library.clone()),
-            ui::Enter::Slide(-16.),
-            ui::MOTION_ENTER,
-        )
+        let panel = div().size_full().child(self.library.clone());
+        if self.library_open {
+            ui::enter(
+                "library-in",
+                panel,
+                ui::Enter::Slide(-16.),
+                ui::MOTION_ENTER,
+            )
+        } else {
+            ui::leave("library-out", panel, ui::Enter::Slide(-16.))
+        }
     }
 
     fn render_header(&self, roles: Roles, cx: &mut Context<Self>) -> Div {
@@ -3233,7 +3291,17 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) -> Stateful<Div> {
         let toast = self.render_toast(roles, cx);
-        root.when_some(self.preferences.clone(), |this, preferences| {
+        let preferences = self
+            .preferences
+            .clone()
+            .map(|panel| (panel, true))
+            .or_else(|| {
+                self.leaving
+                    .preferences
+                    .as_ref()
+                    .map(|(panel, _)| (panel.clone(), false))
+            });
+        root.when_some(preferences, |this, (preferences, open)| {
             this.child(
                 div()
                     .absolute()
@@ -3244,12 +3312,12 @@ impl Workspace {
                     .max_w_full()
                     .on_mouse_down_out(cx.listener(|this, _, window, cx| {
                         if !this.modal_open() && this.preferences.is_some() {
-                            this.preferences = None;
+                            this.close_preferences(cx);
                             this.focus_text(window, cx);
                             cx.notify();
                         }
                     }))
-                    .child(preferences),
+                    .child(preferences_motion(preferences, open)),
             )
         })
         .children(toast)

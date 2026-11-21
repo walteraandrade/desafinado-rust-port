@@ -748,6 +748,11 @@ pub fn markdown_style(roles: Roles) -> TextViewStyle {
 pub const MOTION_ENTER: std::time::Duration = std::time::Duration::from_millis(260);
 pub const MOTION_TOAST: std::time::Duration = std::time::Duration::from_millis(320);
 pub const MOTION_HOVER_DELAY: std::time::Duration = std::time::Duration::from_millis(160);
+pub const MOTION_LEAVE: std::time::Duration = std::time::Duration::from_millis(180);
+pub const MOTION_GROW: std::time::Duration = std::time::Duration::from_millis(420);
+const CASCADE_STEP_MS: u64 = 30;
+const CASCADE_MAX_STEPS: usize = 8;
+const GROW_STEP_MS: u64 = 24;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Enter {
@@ -809,6 +814,82 @@ fn entering<E: Styled + IntoElement + 'static>(
                 Enter::Slide(_) => element.ml(px(x)),
             }
         },
+    )
+}
+
+pub fn enter_in_turn<E: Styled + IntoElement + 'static>(
+    id: impl Into<ElementId>,
+    element: E,
+    from: Enter,
+    index: usize,
+) -> AnimationElement<E> {
+    entering(
+        id,
+        element,
+        from,
+        cascade_delay(index, CASCADE_STEP_MS, CASCADE_MAX_STEPS),
+        MOTION_ENTER,
+    )
+}
+
+pub fn cascade_delay(index: usize, step_ms: u64, max_steps: usize) -> std::time::Duration {
+    std::time::Duration::from_millis(step_ms * index.min(max_steps) as u64)
+}
+
+pub fn ease_out_quart(delta: f32) -> f32 {
+    1. - (1. - delta.clamp(0., 1.)).powi(4)
+}
+
+pub fn leave<E: Styled + IntoElement + 'static>(
+    id: impl Into<ElementId>,
+    element: E,
+    to: Enter,
+) -> AnimationElement<E> {
+    element.with_animation(
+        id,
+        Animation::new(MOTION_LEAVE).with_easing(ease_out_quart),
+        move |element, delta| {
+            let (x, y) = enter_offset(to, delta);
+            let element = element.opacity(1. - delta);
+            match to {
+                Enter::Lift(_) => element.relative().top(px(y)),
+                Enter::Rise(_) => element.mt(px(y)),
+                Enter::Slide(_) => element.ml(px(x)),
+            }
+        },
+    )
+}
+
+pub fn grow_height(
+    id: impl Into<ElementId>,
+    bar: Div,
+    full: Pixels,
+    index: usize,
+) -> AnimationElement<Div> {
+    growing(id, bar, index, move |bar, delta| bar.h(full * delta))
+}
+
+pub fn grow_width(
+    id: impl Into<ElementId>,
+    bar: Div,
+    full: Pixels,
+    index: usize,
+) -> AnimationElement<Div> {
+    growing(id, bar, index, move |bar, delta| bar.w(full * delta))
+}
+
+fn growing(
+    id: impl Into<ElementId>,
+    bar: Div,
+    index: usize,
+    size: impl Fn(Div, f32) -> Div + 'static,
+) -> AnimationElement<Div> {
+    let delay = cascade_delay(index, GROW_STEP_MS, 14);
+    let lead = delay.as_secs_f32() / (delay + MOTION_GROW).as_secs_f32();
+    bar.with_animation(
+        id,
+        Animation::new(delay + MOTION_GROW).with_easing(move |t| delayed(ease_out_expo, lead, t)),
+        size,
     )
 }
 
@@ -875,7 +956,10 @@ pub fn dot_opacity(phase: f32) -> f32 {
 
 #[cfg(test)]
 mod tests {
-    use super::{Enter, delayed, dot_opacity, ease_in_out_sine, ease_out_expo, enter_offset};
+    use super::{
+        Enter, cascade_delay, delayed, dot_opacity, ease_in_out_sine, ease_out_expo,
+        ease_out_quart, enter_offset,
+    };
 
     #[test]
     fn a_rise_starts_below_a_drop_above_a_slide_on_its_side() {
@@ -883,6 +967,22 @@ mod tests {
         assert_eq!(enter_offset(Enter::Rise(-4.), 1.), (0., -4.));
         assert_eq!(enter_offset(Enter::Slide(-16.), 0.5), (-8., 0.));
         assert_eq!(enter_offset(Enter::Lift(10.), 0.), (0., 0.));
+    }
+
+    #[test]
+    fn a_cascade_steps_each_row_and_stops_growing() {
+        let step = |index| cascade_delay(index, 30, 8).as_millis();
+        assert_eq!(step(0), 0);
+        assert_eq!(step(3), 90);
+        assert_eq!(step(50), 240);
+    }
+
+    #[test]
+    fn ease_out_quart_lands_on_one_and_clamps() {
+        assert_eq!(ease_out_quart(0.), 0.);
+        assert_eq!(ease_out_quart(1.), 1.);
+        assert!(ease_out_quart(0.5) > 0.9);
+        assert_eq!(ease_out_quart(2.), 1.);
     }
 
     #[test]

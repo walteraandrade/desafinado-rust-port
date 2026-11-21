@@ -11,6 +11,7 @@ use desafinado_features::{
         view_mode::HistoryMode,
     },
 };
+use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::{prelude::FluentBuilder as _, *};
 
 use crate::{
@@ -514,6 +515,7 @@ impl Workspace {
             .size_full()
             .overflow_y_scroll()
             .track_scroll(&self.compare_scroll)
+            .vertical_scrollbar(&self.compare_scroll)
             .child(centered(div().pt(px(16.)).pb(px(160.)).child(body)))
             .into_any_element()
     }
@@ -571,6 +573,7 @@ impl Workspace {
             .size_full()
             .overflow_y_scroll()
             .track_scroll(&self.history_scroll)
+            .vertical_scrollbar(&self.history_scroll)
             .child(header)
             .children(entries)
             .child(div().h(px(160.)))
