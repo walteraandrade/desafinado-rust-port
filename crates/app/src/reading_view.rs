@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use desafinado_core::blocks::body_after_frontmatter;
 use gpui_kit::{
     base::TextView,
@@ -6,12 +8,12 @@ use gpui_kit::{
 };
 
 use crate::{
-    theme::Roles,
+    theme::{CodeHighlighter, Roles},
     ui::{Type as _, code_block_scroll_anchor, markdown_style},
     workspace::column_row,
 };
 
-pub fn render_reading(text: &str, roles: Roles) -> AnyElement {
+pub fn render_reading(text: &str, roles: Roles, code: Arc<CodeHighlighter>) -> AnyElement {
     div()
         .id("reading-view")
         .size_full()
@@ -27,6 +29,7 @@ pub fn render_reading(text: &str, roles: Roles) -> AnyElement {
                     TextView::markdown("reading-text", body_after_frontmatter(text).to_string())
                         .style(markdown_style(roles))
                         .selectable(true)
+                        .shared_code_block_highlighter(code)
                         // An actions slot gives each code block an element id, which its sideways scroll needs.
                         .code_block_actions(|_, _, _| code_block_scroll_anchor())
                         .on_link_click(|_, _, _, _| {})

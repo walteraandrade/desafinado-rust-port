@@ -3110,9 +3110,11 @@ impl Workspace {
                 .map(|spend| spend.into_any_element())
                 .unwrap_or_else(|| div().into_any_element()),
             _ if evals_shown => self.evals.clone().into_any_element(),
-            HistoryMode::Editing if self.reading => {
-                crate::reading_view::render_reading(&self.text(cx), roles)
-            }
+            HistoryMode::Editing if self.reading => crate::reading_view::render_reading(
+                &self.text(cx),
+                roles,
+                crate::theme::reading_code(cx),
+            ),
             HistoryMode::Editing => self.render_editing(cx),
             HistoryMode::Version { id } => self.render_compare(id, roles, cx).into_any_element(),
             HistoryMode::Full => self.render_full_history(roles, cx).into_any_element(),
