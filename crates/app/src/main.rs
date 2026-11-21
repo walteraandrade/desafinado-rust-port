@@ -31,12 +31,14 @@ use single_instance::{Claim, LaunchMessage};
 
 use gpui_kit::*;
 
-const FONTS: [&[u8]; 5] = [
+const FONTS: [&[u8]; 7] = [
     include_bytes!("../assets/fonts/Inter-Regular.ttf"),
     include_bytes!("../assets/fonts/Inter-Medium.ttf"),
     include_bytes!("../assets/fonts/Inter-SemiBold.ttf"),
     include_bytes!("../assets/fonts/Inter-Bold.ttf"),
     include_bytes!("../assets/fonts/LeagueSpartan.ttf"),
+    include_bytes!("../assets/fonts/NotoSansMono-Regular.ttf"),
+    include_bytes!("../assets/fonts/NotoSansMono-Bold.ttf"),
 ];
 
 /// Every dialog, panel and popover fits inside this size.
