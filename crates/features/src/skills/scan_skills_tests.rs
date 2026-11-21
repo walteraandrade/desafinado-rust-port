@@ -7,7 +7,7 @@ use super::fake_file_system::{
 use super::frontmatter_fields::FrontmatterProblemRule;
 use super::scan_skills::{
     DEFAULT_MAX_DEPTH, DirectoryEntry, FsError, RootScan, ScanOptions, Skill, SkillFile,
-    SkillFileSystem, scan_skill_roots,
+    SkillFileSystem, is_skill_file, scan_skill_roots,
 };
 
 const CLAUDE: &str = "/home/u/.claude/skills";
@@ -968,4 +968,13 @@ fn reads_the_machine_layout_many_skills_links_into_another_root_and_a_repo() {
     unique.dedup();
     assert_eq!(paths, unique);
     assert_eq!(all.len(), 12 + 6);
+}
+
+#[test]
+fn a_skill_file_is_a_skill_md_only() {
+    assert!(is_skill_file(Some("SKILL.md")));
+    assert!(!is_skill_file(Some("README.md")));
+    assert!(!is_skill_file(Some("skill.md")));
+    assert!(!is_skill_file(Some("notes.markdown")));
+    assert!(!is_skill_file(None));
 }

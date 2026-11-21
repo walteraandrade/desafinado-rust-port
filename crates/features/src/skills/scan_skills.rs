@@ -82,6 +82,10 @@ pub struct ScanOptions {
 
 pub const SKILL_FILE_NAME: &str = "SKILL.md";
 
+pub fn is_skill_file(file_name: Option<&str>) -> bool {
+    file_name == Some(SKILL_FILE_NAME)
+}
+
 pub const DEFAULT_MAX_DEPTH: usize = 3;
 
 fn trailing_slash_start(text: &str) -> &str {

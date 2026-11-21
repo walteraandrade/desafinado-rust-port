@@ -5,7 +5,7 @@ use super::frontmatter_fields::{
     FrontmatterProblem, FrontmatterProblemRule, FrontmatterReading, SkillFieldValues,
     read_frontmatter, set_skill_fields,
 };
-use super::scan_skills::SKILL_FILE_NAME;
+use super::scan_skills::is_skill_file;
 use super::skill_frontmatter::{CheckedField, SkillProblem, SkillRule, check_skill_frontmatter};
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -162,7 +162,7 @@ fn shown(value: Option<&Value>) -> String {
 }
 
 pub fn inspect_frontmatter(text: &str, context: &FrontmatterContext) -> FrontmatterReport {
-    let skill = context.file_name == Some(SKILL_FILE_NAME);
+    let skill = is_skill_file(context.file_name);
     let reading = read_frontmatter(text);
     if let FrontmatterReading::Invalid(problem) = &reading {
         return unreadable(skill, problem);
