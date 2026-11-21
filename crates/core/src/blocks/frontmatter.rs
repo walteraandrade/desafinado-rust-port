@@ -133,6 +133,13 @@ pub fn blank_frontmatter(text: &str) -> String {
     }
 }
 
+pub fn body_after_frontmatter(text: &str) -> &str {
+    match find_frontmatter(text) {
+        None => text,
+        Some(found) => text[found.to..].trim_start_matches(['\n', '\r']),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -398,6 +405,33 @@ mod tests {
         #[test]
         fn allows_anything_when_there_is_no_frontmatter() {
             assert!(!touches_frontmatter(None, range(0, 5)));
+        }
+    }
+
+    mod body_after_frontmatter_tests {
+        use super::*;
+
+        #[test]
+        fn drops_the_frontmatter_and_the_blank_lines_after_it() {
+            assert_eq!(
+                body_after_frontmatter("---\nname: demo\n---\n\n# Demo\n"),
+                "# Demo\n"
+            );
+        }
+
+        #[test]
+        fn keeps_a_document_with_no_frontmatter() {
+            assert_eq!(
+                body_after_frontmatter("# Title\n\nBody.\n"),
+                "# Title\n\nBody.\n"
+            );
+            assert_eq!(body_after_frontmatter(""), "");
+        }
+
+        #[test]
+        fn keeps_a_rule_that_is_not_a_frontmatter() {
+            let text = "---\n\nNot YAML at all, just a rule.\n";
+            assert_eq!(body_after_frontmatter(text), text);
         }
     }
 

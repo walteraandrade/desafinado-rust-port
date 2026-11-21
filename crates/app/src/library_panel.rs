@@ -151,6 +151,10 @@ fn dom_key(keystroke: &Keystroke) -> Option<String> {
 }
 
 impl LibraryPanel {
+    pub fn search_focused(&self, window: &Window, cx: &App) -> bool {
+        self.search.read(cx).focus_handle(cx).is_focused(window)
+    }
+
     pub fn new(user_data: PathBuf, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let search = cx.new(|cx| InputState::new(window, cx).placeholder("Search · Ctrl+P"));
         let search_events =
