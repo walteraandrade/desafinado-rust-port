@@ -2473,6 +2473,10 @@ impl EditorPane {
     }
 
     fn start_bubble_leave(&mut self, cx: &mut Context<Self>) {
+        if cx.reduce_motion() {
+            self.last_bubble.replace(None);
+            return;
+        }
         let Some(ghost) = self.last_bubble.take() else {
             return;
         };

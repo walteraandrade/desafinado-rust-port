@@ -1353,7 +1353,7 @@ impl Workspace {
 
     fn fold_library(&mut self, cx: &mut Context<Self>) {
         self.leaving.library_reopened = false;
-        if self.library_open {
+        if self.library_open && !cx.reduce_motion() {
             self.leaving.library = Some(cx.spawn(async move |this, cx| {
                 cx.background_executor().timer(ui::MOTION_LEAVE).await;
                 let _ = this.update(cx, |this, cx| {
@@ -2008,6 +2008,9 @@ impl Workspace {
         let Some(panel) = self.preferences.take() else {
             return;
         };
+        if cx.reduce_motion() {
+            return;
+        }
         let done = cx.spawn(async move |this, cx| {
             cx.background_executor().timer(ui::MOTION_LEAVE).await;
             let _ = this.update(cx, |this, cx| {
@@ -3204,6 +3207,14 @@ impl Workspace {
 
     fn library_in(&self) -> AnimationElement<Div> {
         let panel = div().relative().size_full().child(self.library.clone());
+        if self.library_open && self.leaving.library_reopened {
+            return ui::enter(
+                "library-back",
+                panel,
+                ui::Enter::Slide(0.),
+                std::time::Duration::from_millis(1),
+            );
+        }
         if self.library_open {
             ui::enter(
                 "library-in",

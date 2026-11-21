@@ -135,4 +135,26 @@ mod tests {
         let change = plan_list_change(&ids(&["a", "b"]), &ids(&["b"]), 40.0, true).unwrap();
         assert!(change.steps.is_empty() && change.removed.is_empty());
     }
+
+    #[test]
+    fn several_removals_and_a_reorder_plan_from_the_rows_that_stay() {
+        let change =
+            plan_list_change(&ids(&["a", "b", "c", "d"]), &ids(&["d", "c"]), 40.0, false).unwrap();
+        assert_eq!(
+            change.removed,
+            vec![(0, "a".to_owned()), (1, "b".to_owned())]
+        );
+        assert_eq!(
+            change.steps.get("c"),
+            Some(&ListStep::Move { delta: -40.0 })
+        );
+        assert_eq!(change.steps.get("d"), Some(&ListStep::Move { delta: 40.0 }));
+    }
+
+    #[test]
+    fn replacing_every_row_lets_the_new_ones_enter() {
+        let change = plan_list_change(&ids(&["a"]), &ids(&["b"]), 40.0, false).unwrap();
+        assert_eq!(change.removed, vec![(0, "a".to_owned())]);
+        assert_eq!(change.steps.get("b"), Some(&ListStep::Enter));
+    }
 }

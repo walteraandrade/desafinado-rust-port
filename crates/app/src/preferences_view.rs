@@ -92,7 +92,6 @@ struct LeavingRow {
     serial: u32,
     index: usize,
     label: SharedString,
-    on: bool,
     _done: Task<()>,
 }
 
@@ -175,8 +174,7 @@ impl PreferencesPanel {
             self.leaving_rows.push(LeavingRow {
                 serial,
                 index,
-                label: slot.action.label.clone().into(),
-                on: slot.on,
+                label: format!("Delete “{}”?", slot.action.label).into(),
                 _done: done,
             });
         }
@@ -731,10 +729,8 @@ impl PreferencesPanel {
                     SharedString::from(format!("quick-action-leave-{}", leaving.serial)),
                     ui::row()
                         .h(px(QUICK_ACTION_ROW))
-                        .px(px(8.))
-                        .gap(px(12.))
+                        .pl(px(8.))
                         .overflow_hidden()
-                        .child(ui::check(leaving.on, roles))
                         .child(
                             div()
                                 .min_w_0()
