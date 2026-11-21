@@ -523,6 +523,25 @@ mod tests {
     }
 
     #[test]
+    fn colors_each_block_from_its_own_text_when_a_language_repeats() {
+        let roles = roles_of(&default_theme().tokens);
+        let highlight = code_highlighter(code_theme(&roles));
+        for code in [r#"{"a": "long string here", "b": 2}"#, r#"[1, "x"]"#] {
+            let block = CodeBlock::from_code(code, Some("json"));
+            for (range, style) in highlight(&block) {
+                assert!(range.end <= code.len(), "{code}: {range:?}");
+                let text = &code[range];
+                if style.color == Some(roles.success) {
+                    assert!(
+                        text.starts_with('"') && text.ends_with('"'),
+                        "{code}: {text}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
     fn maps_a_light_palette_to_light_roles() {
         let light = desafinado_features::theme::catalog::themes_of_mode(ThemeMode::Light)[0];
         let roles = roles_of(&light.tokens);
