@@ -200,13 +200,23 @@ pub fn reading_code(cx: &App) -> Arc<CodeHighlighter> {
 
 fn code_highlighter(theme: HighlightTheme) -> Arc<CodeHighlighter> {
     Arc::new(move |block: &CodeBlock| {
+        thread_local! {
+            static HIGHLIGHTERS: std::cell::RefCell<std::collections::HashMap<String, SyntaxHighlighter>> =
+                Default::default();
+        }
         let Some(lang) = block.lang() else {
             return Vec::new();
         };
+        let lang = lang.to_lowercase();
         let code = block.code();
-        let mut highlighter = SyntaxHighlighter::new(lang.as_ref());
-        highlighter.update(None, &Rope::from_str(code.as_ref()), None);
-        highlighter.styles(&(0..code.len()), &theme)
+        HIGHLIGHTERS.with(|cache| {
+            let mut cache = cache.borrow_mut();
+            let highlighter = cache
+                .entry(lang.clone())
+                .or_insert_with(|| SyntaxHighlighter::new(&lang));
+            highlighter.update(None, &Rope::from_str(code.as_ref()), None);
+            highlighter.styles(&(0..code.len()), &theme)
+        })
     })
 }
 
@@ -433,6 +443,32 @@ fn code_theme(roles: &Roles) -> HighlightTheme {
             syntax.insert((*key).into(), color(hsla));
         }
     }
+    for key in ["link_text", "link_uri", "text.uri", "text.reference"] {
+        syntax.insert(key.into(), color(roles.accent));
+    }
+    for key in ["text.literal", "text.code.span"] {
+        syntax.insert(key.into(), color(roles.success));
+    }
+    let styled = |hsla: Hsla, extra: serde_json::Value| {
+        let mut style = serde_json::json!({ "color": css(hsla) });
+        style
+            .as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().unwrap().clone());
+        style
+    };
+    syntax.insert(
+        "title".into(),
+        styled(roles.heading, serde_json::json!({ "font_weight": 700 })),
+    );
+    syntax.insert(
+        "emphasis".into(),
+        styled(roles.ink, serde_json::json!({ "font_style": "italic" })),
+    );
+    syntax.insert(
+        "emphasis.strong".into(),
+        styled(roles.ink, serde_json::json!({ "font_weight": 700 })),
+    );
     for key in ["comment", "comment_doc"] {
         syntax.insert(
             key.into(),
@@ -467,6 +503,23 @@ mod tests {
         assert_eq!(color("keyword"), Some(roles.accent));
         assert_eq!(color("punctuation.bracket"), Some(roles.muted));
         assert_eq!(color("property"), Some(roles.ink));
+        assert_eq!(color("title"), Some(roles.heading));
+        assert_eq!(color("link_text"), Some(roles.accent));
+    }
+
+    #[test]
+    fn colors_json_strings_whatever_the_fence_case() {
+        let roles = roles_of(&default_theme().tokens);
+        let highlight = code_highlighter(code_theme(&roles));
+        for lang in ["json", "JSON"] {
+            let block = CodeBlock::from_code(r#"{"key": "value", "n": 1}"#, Some(lang));
+            let styles = highlight(&block);
+            let string_color = styles
+                .iter()
+                .find(|(range, _)| &block.code()[range.clone()] == "\"value\"")
+                .and_then(|(_, style)| style.color);
+            assert_eq!(string_color, Some(roles.success), "{lang}");
+        }
     }
 
     #[test]
