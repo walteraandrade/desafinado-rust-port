@@ -3,7 +3,7 @@ use desafinado_ai::quick_action_settings::{
     add_user_quick_action, check_quick_action_draft, draft_is_valid, is_user_quick_action,
     move_quick_action, remove_user_quick_action, toggle_quick_action, update_user_quick_action,
 };
-use desafinado_ai::ui::list_motion::{ListStep, plan_list_motion};
+use desafinado_ai::ui::list_motion::{ListStep, plan_list_change};
 use desafinado_features::theme::{
     catalog::{ThemeOption, themes_of_mode},
     tokens::ThemeMode,
@@ -89,8 +89,10 @@ fn draft_of(slot: &QuickActionSlot) -> QuickActionDraft {
 }
 
 struct LeavingRow {
+    serial: u32,
     index: usize,
     label: SharedString,
+    on: bool,
     _done: Task<()>,
 }
 
@@ -98,7 +100,8 @@ pub struct PreferencesPanel {
     settings: QuickActionSettings,
     motion: std::collections::BTreeMap<String, ListStep>,
     motion_round: u32,
-    leaving_row: Option<LeavingRow>,
+    leaving_rows: Vec<LeavingRow>,
+    leaving_serial: u32,
     editing: Editing,
     draft: Option<Draft>,
     created: u32,
@@ -114,7 +117,8 @@ impl PreferencesPanel {
             settings,
             motion: std::collections::BTreeMap::new(),
             motion_round: 0,
-            leaving_row: None,
+            leaving_rows: Vec::new(),
+            leaving_serial: 0,
             editing: Editing::None,
             draft: None,
             created: 0,
@@ -139,36 +143,40 @@ impl PreferencesPanel {
     }
 
     fn plan_motion(&mut self, next: &QuickActionSettings, cx: &mut Context<Self>) {
-        let tops = |settings: &QuickActionSettings| {
+        let ids = |settings: &QuickActionSettings| {
             settings
                 .iter()
-                .enumerate()
-                .map(|(index, slot)| {
-                    (
-                        slot.action.id.clone(),
-                        f64::from(QUICK_ACTION_ROW) * index as f64,
-                    )
-                })
-                .collect::<std::collections::BTreeMap<_, _>>()
+                .map(|slot| slot.action.id.clone())
+                .collect::<Vec<_>>()
         };
-        self.motion = plan_list_motion(&tops(&self.settings), &tops(next), cx.reduce_motion());
+        let Some(change) = plan_list_change(
+            &ids(&self.settings),
+            &ids(next),
+            f64::from(QUICK_ACTION_ROW),
+            cx.reduce_motion(),
+        ) else {
+            return;
+        };
+        self.motion = change.steps;
         self.motion_round += 1;
-        let gone = self
-            .settings
-            .iter()
-            .enumerate()
-            .find(|(_, slot)| !next.iter().any(|kept| kept.action.id == slot.action.id));
-        if let Some((index, slot)) = gone.filter(|_| !cx.reduce_motion()) {
+        for (index, id) in change.removed {
+            let Some(slot) = self.settings.iter().find(|slot| slot.action.id == id) else {
+                continue;
+            };
+            self.leaving_serial += 1;
+            let serial = self.leaving_serial;
             let done = cx.spawn(async move |this, cx| {
                 cx.background_executor().timer(ui::MOTION_LEAVE).await;
                 let _ = this.update(cx, |this, cx| {
-                    this.leaving_row = None;
+                    this.leaving_rows.retain(|row| row.serial != serial);
                     cx.notify();
                 });
             });
-            self.leaving_row = Some(LeavingRow {
+            self.leaving_rows.push(LeavingRow {
+                serial,
                 index,
                 label: slot.action.label.clone().into(),
+                on: slot.on,
                 _done: done,
             });
         }
@@ -716,16 +724,24 @@ impl PreferencesPanel {
                 self.with_list_motion(&slot.action.id, row)
             })
             .collect::<Vec<_>>();
-        if let Some(leaving) = &self.leaving_row {
+        for leaving in &self.leaving_rows {
             quick_actions.insert(
                 leaving.index.min(quick_actions.len()),
                 ui::collapse(
-                    SharedString::from(format!("quick-action-leave-{}", self.motion_round)),
+                    SharedString::from(format!("quick-action-leave-{}", leaving.serial)),
                     ui::row()
                         .h(px(QUICK_ACTION_ROW))
-                        .pl(px(8.))
+                        .px(px(8.))
+                        .gap(px(12.))
                         .overflow_hidden()
-                        .child(leaving.label.clone()),
+                        .child(ui::check(leaving.on, roles))
+                        .child(
+                            div()
+                                .min_w_0()
+                                .flex_1()
+                                .truncate()
+                                .child(leaving.label.clone()),
+                        ),
                     px(QUICK_ACTION_ROW),
                 )
                 .into_any_element(),
