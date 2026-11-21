@@ -14,7 +14,7 @@ use desafinado_features::skills::{
     },
     library::{CreateSkillRequest, CreateSkillResult},
     library_view::{open_skill_file, skill_file_label, skill_of_file},
-    scan_skills::SKILL_FILE_NAME,
+    scan_skills::is_skill_file,
 };
 use desafinado_features::{
     evals::{
@@ -851,6 +851,7 @@ impl Workspace {
     fn arrived(&mut self) {
         self.conflict = None;
         self.noticed = None;
+        self.frontmatter_due = true;
         let path = self.session_path().map(Path::to_path_buf);
         self.history.select(path.as_ref(), now_ms());
     }
@@ -1456,7 +1457,7 @@ impl Workspace {
             .as_ref()
             .map(|open| open.file_name.clone())
             .or_else(|| self.session.as_ref().map(|session| session.name.clone()));
-        let folder_name = if file_name.as_deref() != Some(SKILL_FILE_NAME) {
+        let folder_name = if !is_skill_file(file_name.as_deref()) {
             None
         } else {
             open.as_ref()
@@ -1475,9 +1476,8 @@ impl Workspace {
                 folder_name: folder_name.as_deref(),
             },
         );
-        self.pane.update(cx, |pane, _| {
-            pane.is_skill = desafinado_core::blocks::find_frontmatter(&text).is_some()
-        });
+        let is_skill = is_skill_file(file_name.as_deref());
+        self.pane.update(cx, |pane, _| pane.is_skill = is_skill);
         self.frontmatter
             .update(cx, |view, cx| view.refresh(&text, report, window, cx));
     }
