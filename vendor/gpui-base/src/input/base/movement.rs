@@ -126,16 +126,26 @@ impl<M: InputModeKind> InputBaseState<M> {
                     .nearest_visible_display_row(display_point.row)
             });
         let max_display_row = self.display_map.display_row_count().saturating_sub(1);
-        let target_display_row = current_display_row
+        let mut target_display_row = current_display_row
             .saturating_add_signed(move_lines)
             .min(max_display_row);
-        let target_wrap_row = self
-            .display_map
-            .display_row_to_wrap_row(target_display_row)
-            .unwrap_or(display_point.row);
-        let target_wrap_row = self
-            .display_map
-            .skip_zone_row(target_wrap_row, move_lines > 0);
+        // Block zone rows hold no text: going down, step on to the next visible row with
+        // text (in display rows, so folds are honored); going up, land on the zone's line.
+        let target_wrap_row = loop {
+            let wrap_row = self
+                .display_map
+                .display_row_to_wrap_row(target_display_row)
+                .unwrap_or(display_point.row);
+            let text_row = self.display_map.skip_zone_row(wrap_row, false);
+            if text_row == wrap_row {
+                break wrap_row;
+            }
+            if move_lines > 0 && target_display_row < max_display_row {
+                target_display_row += 1;
+            } else {
+                break text_row;
+            }
+        };
 
         display_point.row = target_wrap_row;
         display_point.column = 0;

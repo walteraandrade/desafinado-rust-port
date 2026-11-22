@@ -2,6 +2,10 @@
 //! struck Original, or a block-level Replacement in rows reserved below it (ADR 0003).
 use desafinado_core::diff::{AdaptiveDiff, DiffHunk, DiffMode};
 
+/// A line break inside a word-level insertion. The editor cannot break a line inside
+/// inserted text, so the break shows as a mark instead.
+pub const LINE_BREAK_MARK: &str = "\u{21b5} ";
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InlineInsert {
     pub offset: usize,
@@ -22,7 +26,7 @@ pub fn inline_inserts(from: usize, diff: &AdaptiveDiff) -> Vec<InlineInsert> {
         .filter_map(|(index, hunk)| match hunk {
             DiffHunk::Inserted { text, at } if !text.is_empty() => Some(InlineInsert {
                 offset: from + at,
-                text: text.replace('\n', " "),
+                text: text.replace('\n', LINE_BREAK_MARK),
                 separated: index > 0
                     && matches!(diff.hunks.get(index - 1), Some(DiffHunk::Deleted { .. })),
             }),
@@ -42,6 +46,28 @@ pub fn block_replacement(diff: &AdaptiveDiff) -> Option<&str> {
     })
 }
 
+/// Zones on one line stack: given each zone's line and rows, in the order the editor
+/// reserves them, the rows above each zone within its line's zones.
+pub fn rows_before(zones: &[(usize, usize)]) -> Vec<usize> {
+    let mut above = 0;
+    let mut line = None;
+    zones
+        .iter()
+        .map(|&(zone_line, rows)| {
+            if line != Some(zone_line) {
+                line = Some(zone_line);
+                above = 0;
+            }
+            let before = above;
+            above += rows;
+            before
+        })
+        .collect()
+}
+
+/// Measured heights carry float noise; a height a hair over whole rows takes no extra row.
+const ROW_SLACK: f32 = 0.01;
+
 /// Whole editor rows that fit an element `height` tall.
 pub fn zone_rows(height: f32, line_height: f32) -> usize {
     if line_height <= 0. || height <= 0. {
@@ -52,7 +78,7 @@ pub fn zone_rows(height: f32, line_height: f32) -> usize {
         clippy::cast_sign_loss,
         reason = "a positive height in rows of a positive line height is a small count"
     )]
-    let rows = (height / line_height).ceil() as usize;
+    let rows = (height / line_height - ROW_SLACK).ceil().max(0.) as usize;
     rows
 }
 
@@ -85,7 +111,33 @@ mod tests {
         let inserts = inline_inserts(0, &diff);
         assert_eq!(inserts.len(), 1);
         assert!(!inserts[0].separated);
-        assert!(inserts[0].text.contains("brown"));
+        assert_eq!(inserts[0].text.trim(), "brown");
+        let at = inserts[0].offset;
+        let original = "The quick fox jumps over it.";
+        let shown = format!("{}{}{}", &original[..at], inserts[0].text, &original[at..]);
+        assert_eq!(shown, "The quick brown fox jumps over it.");
+    }
+
+    #[test]
+    fn each_insertion_of_several_changes_sits_after_its_own_deletion() {
+        let original = "Hello there my friend, how are you doing today?";
+        let replacement = "Hi there my dear friend, how are you feeling today?";
+        let diff = adaptive_diff(original, replacement);
+        assert_eq!(diff.mode, DiffMode::Word);
+        let inserts = inline_inserts(10, &diff);
+        assert_eq!(inserts.len(), 3);
+        for insert in &inserts {
+            let before = &original[..insert.offset - 10];
+            let deleted = diff.hunks.iter().find_map(|hunk| match hunk {
+                DiffHunk::Deleted { to, .. } if *to == insert.offset - 10 => Some(*to),
+                _ => None,
+            });
+            assert_eq!(insert.separated, deleted.is_some(), "{before:?}");
+        }
+        assert_eq!(
+            inserts.iter().map(|i| i.text.trim()).collect::<Vec<_>>(),
+            ["Hi", "dear", "feeling"]
+        );
     }
 
     #[test]
@@ -106,13 +158,27 @@ mod tests {
     }
 
     #[test]
-    fn a_deletion_only_block_change_has_no_block_replacement() {
-        let diff = adaptive_diff("Delete all of this.", "");
+    fn an_empty_block_insertion_is_no_block_replacement() {
+        let diff = AdaptiveDiff {
+            mode: DiffMode::Block,
+            hunks: vec![
+                DiffHunk::Deleted {
+                    text: "Delete all of this.".into(),
+                    from: 0,
+                    to: 19,
+                },
+                DiffHunk::Inserted {
+                    text: String::new(),
+                    at: 19,
+                },
+            ],
+            changed_share: 1.,
+        };
         assert_eq!(block_replacement(&diff), None);
     }
 
     #[test]
-    fn line_breaks_in_an_insertion_show_as_spaces() {
+    fn line_breaks_in_an_insertion_show_as_a_mark() {
         let diff = AdaptiveDiff {
             mode: DiffMode::Word,
             hunks: vec![DiffHunk::Inserted {
@@ -121,7 +187,16 @@ mod tests {
             }],
             changed_share: 0.1,
         };
-        assert_eq!(inline_inserts(0, &diff)[0].text, "a b");
+        assert_eq!(inline_inserts(0, &diff)[0].text, "a\u{21b5} b");
+    }
+
+    #[test]
+    fn zones_on_one_line_stack_and_a_new_line_starts_over() {
+        assert_eq!(
+            rows_before(&[(2, 3), (2, 2), (2, 1), (5, 4), (7, 2), (7, 1)]),
+            [0, 3, 5, 0, 0, 2]
+        );
+        assert!(rows_before(&[]).is_empty());
     }
 
     #[test]
@@ -129,6 +204,7 @@ mod tests {
         assert_eq!(zone_rows(0., 20.), 0);
         assert_eq!(zone_rows(20., 20.), 1);
         assert_eq!(zone_rows(21., 20.), 2);
+        assert_eq!(zone_rows(40.0001, 20.), 2);
         assert_eq!(zone_rows(50., 0.), 0);
     }
 }

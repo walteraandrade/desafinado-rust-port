@@ -15,9 +15,9 @@ use gpui::{
     relative, size,
 };
 use ropey::Rope;
-use unicode_segmentation::UnicodeSegmentation as _;
 use smallvec::SmallVec;
 use std::{collections::BTreeSet, ops::Range, rc::Rc};
+use unicode_segmentation::UnicodeSegmentation as _;
 
 use crate::{
     Scrollbar,
@@ -2195,6 +2195,9 @@ impl<M: InputModeKind> TextElement<M> {
             return;
         }
         let inlays = state.display_map.inlays();
+        if inlays.is_empty() && !state.display_map.has_inline_metrics() {
+            return;
+        }
         let font = window.text_style().font();
         let measure = |text: &str, window: &mut Window| {
             window
@@ -2239,7 +2242,11 @@ impl<M: InputModeKind> TextElement<M> {
                 continue;
             };
             let range = line_start + anchor.start..line_start + anchor.end;
-            if metrics.last().is_some_and(|(last, _)| last.end > range.start) {
+            // Two inlays around one grapheme (at its start and its end) share its metric.
+            if let Some((last, last_width)) = metrics.last_mut()
+                && last.end > range.start
+            {
+                *last_width += width;
                 continue;
             }
             let width = width + measure(&line[anchor], window);
@@ -2281,8 +2288,11 @@ impl<M: InputModeKind> TextElement<M> {
                 }
                 return Default::default();
             }
+            // Inlays own the inline metrics while tokens are hidden.
             self.state.update(cx, |state, cx| {
-                state.display_map.set_inline_metrics(Rc::from([]), cx)
+                if state.display_map.inlays().is_empty() {
+                    state.display_map.set_inline_metrics(Rc::from([]), cx);
+                }
             });
             let mut exit = self.state.update(cx, |state, _| {
                 state.token_bounds.clear();
@@ -2674,7 +2684,6 @@ impl<M: InputModeKind> TextElement<M> {
         out
     }
 
-    #[allow(clippy::too_many_arguments)]
     /// Shape one wrapped row that holds inlays: its text in pieces between the inlays, and
     /// each inlay in its own style, as inline fragments that keep source byte offsets.
     #[allow(clippy::too_many_arguments)]
@@ -2722,7 +2731,10 @@ impl<M: InputModeKind> TextElement<M> {
             }
             if let Some(inlay) = inlay {
                 let text = inlay.text().clone();
-                let run = window.text_style().highlight(*inlay.style()).to_run(text.len());
+                let run = window
+                    .text_style()
+                    .highlight(*inlay.style())
+                    .to_run(text.len());
                 let shaped = window
                     .text_system()
                     .shape_line(text, font_size, &[run], None);
@@ -2739,6 +2751,7 @@ impl<M: InputModeKind> TextElement<M> {
         InputLine::inline(sub_line.clone(), fragments)
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn layout_lines(
         state: &InputBaseState<M>,
         display_text: &Rope,
@@ -2845,6 +2858,9 @@ impl<M: InputModeKind> TextElement<M> {
                     .filter(|(local, _)| inlay_row_holds(*local, row, range))
                     .map(|(_, inlay)| *inlay)
                     .collect();
+                line_has_background |= row_inlays
+                    .iter()
+                    .any(|inlay| inlay.style().background_color.is_some());
                 if !row_inlays.is_empty() || !inline_rows.is_empty() {
                     if inline_rows.is_empty() {
                         inline_rows.extend(wrapped_lines.drain(..).map(InputLine::from));
@@ -4328,9 +4344,6 @@ fn placeholder_line_runs<'a>(
     result
 }
 
-/// Get the runs for the given range.
-///
-/// The range is the byte range of the wrapped line.
 /// The inlays of one buffer line, with their offsets local to the line.
 fn line_inlays(inlays: &[Inlay], line_start: usize, line_len: usize) -> Vec<(usize, &Inlay)> {
     let first = inlays.partition_point(|inlay| inlay.offset() < line_start);
@@ -4352,6 +4365,9 @@ fn inlay_row_holds(local: usize, row: usize, range: &Range<usize>) -> bool {
     }
 }
 
+/// Get the runs for the given range.
+///
+/// The range is the byte range of the wrapped line.
 pub(super) fn runs_for_range(
     runs: &[TextRun],
     line_offset: usize,
@@ -6858,5 +6874,137 @@ mod tests {
             reveal_row(offset, px(80.), px(20.), px(10.), px(60.)),
             offset
         );
+    }
+
+    #[gpui::test]
+    fn an_inlay_background_paints_its_line_background(cx: &mut TestAppContext) {
+        let (editor, window) = decoration_editor(cx, "hello world", false);
+        let mut cx = VisualTestContext::from_window(window.into(), cx);
+        cx.update(|window, cx| {
+            editor.update(cx, |state, cx| {
+                let style = gpui::HighlightStyle {
+                    background_color: Some(gpui::red()),
+                    ..Default::default()
+                };
+                state.set_inlays(vec![crate::input::Inlay::new(5, "XX", style)], cx);
+            });
+            window.draw(cx).clear(cx);
+            window.draw(cx).clear(cx);
+            let state = editor.read(cx);
+            let layout = state.last_layout.as_ref().unwrap();
+            assert!(layout.lines[0].has_background());
+        });
+    }
+
+    #[gpui::test]
+    fn block_zones_are_clamped_sorted_and_empty_ones_dropped(cx: &mut TestAppContext) {
+        let (editor, window) = decoration_editor(cx, "a\nb\nc", false);
+        let mut cx = VisualTestContext::from_window(window.into(), cx);
+        cx.update(|window, cx| {
+            window.draw(cx).clear(cx);
+            editor.update(cx, |state, cx| {
+                let rows = state.display_map.wrap_row_count();
+                state.set_block_zones(
+                    vec![
+                        crate::input::BlockZone::new(99, 2),
+                        crate::input::BlockZone::new(0, 0),
+                        crate::input::BlockZone::new(0, 1),
+                    ],
+                    cx,
+                );
+                assert_eq!(state.display_map.wrap_row_count(), rows + 3);
+                assert_eq!(state.display_map.display_row_to_buffer_line(1), 0);
+                assert_eq!(state.display_map.display_row_to_buffer_line(4), 2);
+            });
+        });
+    }
+
+    #[gpui::test]
+    fn inlays_follow_edits_before_them_and_drop_inside_them(cx: &mut TestAppContext) {
+        let (editor, window) = decoration_editor(cx, "hello world", false);
+        let mut cx = VisualTestContext::from_window(window.into(), cx);
+        cx.update(|window, cx| {
+            window.draw(cx).clear(cx);
+            editor.update(cx, |state, cx| {
+                let style = gpui::HighlightStyle::default();
+                state.set_inlays(
+                    vec![
+                        crate::input::Inlay::new(8, "B", style),
+                        crate::input::Inlay::new(5, "A", style),
+                    ],
+                    cx,
+                );
+                assert_eq!(state.inlays()[0].offset(), 5);
+                state.replace_text_in_range(Some(0..0), "oh ", window, cx);
+                let offsets: Vec<usize> = state.inlays().iter().map(|i| i.offset()).collect();
+                assert_eq!(offsets, [8, 11]);
+                state.replace_text_in_range(Some(9..13), "", window, cx);
+                let offsets: Vec<usize> = state.inlays().iter().map(|i| i.offset()).collect();
+                assert_eq!(offsets, [8]);
+            });
+        });
+    }
+
+    #[gpui::test]
+    fn moving_down_from_a_folded_line_with_a_zone_skips_the_fold(cx: &mut TestAppContext) {
+        let (editor, window) = decoration_editor(cx, "a\nb\nc\nd\ne", false);
+        let mut cx = VisualTestContext::from_window(window.into(), cx);
+        cx.update(|window, cx| {
+            window.draw(cx).clear(cx);
+            editor.update(cx, |state, cx| {
+                state.apply_highlighter_fold_candidates(vec![FoldRange::new(0, 3)], cx);
+                state.display_map.set_folded(0, true);
+                state.set_block_zones(vec![crate::input::BlockZone::new(1, 1)], cx);
+            });
+            window.draw(cx).clear(cx);
+            window.draw(cx).clear(cx);
+            let state = editor.read(cx);
+            assert!(state.display_map.is_buffer_line_hidden(1));
+            assert_eq!(state.vertical_target(0, None, false, 1).0, 6);
+            assert_eq!(state.vertical_target(6, None, false, -1).0, 0);
+        });
+    }
+
+    #[gpui::test]
+    fn moving_a_zone_keeps_the_folded_lines_hidden(cx: &mut TestAppContext) {
+        let (editor, window) = decoration_editor(cx, "a\nb\nc\nd\ne\nf", false);
+        let mut cx = VisualTestContext::from_window(window.into(), cx);
+        cx.update(|window, cx| {
+            window.draw(cx).clear(cx);
+            editor.update(cx, |state, cx| {
+                state.set_block_zones(vec![crate::input::BlockZone::new(1, 1)], cx);
+                state.apply_highlighter_fold_candidates(vec![FoldRange::new(2, 5)], cx);
+                state.display_map.set_folded(2, true);
+                state.set_block_zones(vec![crate::input::BlockZone::new(11, 1)], cx);
+                assert!(state.display_map.is_buffer_line_hidden(3));
+                assert!(state.display_map.is_buffer_line_hidden(4));
+                assert!(!state.display_map.is_buffer_line_hidden(5));
+            });
+        });
+    }
+
+    #[test]
+    fn an_inlay_on_a_row_boundary_belongs_to_the_row_that_ends_there() {
+        assert!(inlay_row_holds(0, 0, &(0..5)));
+        assert!(!inlay_row_holds(0, 1, &(5..9)));
+        assert!(inlay_row_holds(5, 0, &(0..5)));
+        assert!(!inlay_row_holds(5, 1, &(5..9)));
+        assert!(inlay_row_holds(9, 1, &(5..9)));
+    }
+
+    #[test]
+    fn line_inlays_keep_the_line_s_own_inlays_with_local_offsets() {
+        let style = gpui::HighlightStyle::default();
+        let inlays = [
+            crate::input::Inlay::new(2, "x", style),
+            crate::input::Inlay::new(6, "y", style),
+            crate::input::Inlay::new(9, "z", style),
+            crate::input::Inlay::new(12, "w", style),
+        ];
+        let local: Vec<(usize, &str)> = line_inlays(&inlays, 6, 3)
+            .into_iter()
+            .map(|(at, inlay)| (at, inlay.text().as_ref()))
+            .collect();
+        assert_eq!(local, [(0, "y"), (3, "z")]);
     }
 }

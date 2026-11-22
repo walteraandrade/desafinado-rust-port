@@ -13,7 +13,7 @@ The AI proposes; your voice wins. Every change it suggests sits in your text as 
 **Write with the AI.**
 
 - Select text, or put the cursor in a paragraph, and press `Ctrl+K`. Pick a Quick action (Shorter, Clearer, Fix grammar, or one of your own) or type any instruction.
-- The answer shows in place: the old text struck through, the new text and a one-line rationale on a card in the margin. Accept (`Ctrl+Enter`), Reject (`Esc`), or Refine it ("shorter", then "now more formal") and step between versions with `Ctrl+H` and `Ctrl+L`.
+- The answer shows in place: the old text struck through and the new text next to it, or in a block under the paragraph when most of it changes, with a one-line rationale on a card in the margin. Accept (`Ctrl+Enter`), Reject (`Esc`), or Refine it ("shorter", then "now more formal") and step between versions with `Ctrl+H` and `Ctrl+L`.
 - Accept is a normal edit, so `Ctrl+Z` undoes it.
 - **Edit → Review…** reads the whole document, optionally with a focus such as "tone only", and streams up to six suggestions, with Accept all and Reject all.
 
@@ -137,7 +137,7 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all
 ```
 
-Rules for changes, for people and coding agents alike, are in [AGENTS.md](AGENTS.md). CI runs those three checks on every pull request and push to `main`, builds the app and starts it off-screen under Xvfb ([`scripts/smoke.sh`](scripts/smoke.sh)). A separate `deny` job runs [`cargo deny`](deny.toml) for known vulnerabilities, licenses and crate sources. A pull request should pass both jobs before it merges.
+Rules for changes, for people and coding agents alike, are in [AGENTS.md](AGENTS.md). CI runs those three checks on every pull request and push to `main`, builds the app and starts it off-screen under Xvfb ([`scripts/smoke.sh`](scripts/smoke.sh)). A separate `deny` job runs [`cargo deny`](deny.toml) for known vulnerabilities, licenses and crate sources, and a `gpui-base` job checks the format of the vendored, patched `gpui-base` and runs its tests. A pull request should pass all three jobs before it merges.
 
 To check a change against the real model, `cargo run -p desafinado-runtime --bin ai-check` sends one suggestion and one review pass to OpenRouter and prints what they cost. It spends real money (a fraction of a cent).
 
@@ -152,7 +152,7 @@ To check a change against the real model, `cargo run -p desafinado-runtime --bin
 | [`runtime`](crates/runtime) | Wires the services and the AI backend together; the `ai-check` binary |
 | [`app`](crates/app) | The GPUI window and every view; the `desafinado` binary |
 
-[`spikes/gpui-editor`](spikes/gpui-editor) is the throwaway spike behind ADR 0001 and is not part of the workspace.
+[`spikes/gpui-editor`](spikes/gpui-editor) is the throwaway spike behind ADR 0001 and is not part of the workspace. [`vendor/gpui-base`](vendor/gpui-base) is gpui-kit's `gpui-base` crate, patched with inlays and block zones so Suggestions show in the text ([ADR 0003](docs/adr/0003-inline-suggestions-on-patched-gpui-base.md)); it replaces the published crate through `[patch.crates-io]`.
 
 **Environment variables.** All optional; mostly for development and scripted checks.
 

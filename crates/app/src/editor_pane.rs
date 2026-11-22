@@ -20,7 +20,7 @@ use desafinado_ai::{
         card_placement::{CardPlacement, MARGIN_CARD_WIDTH, placement_for},
         focus_cycle::cycle_index,
         geometry::{Rect, Viewport},
-        inline_diff::{block_replacement, inline_inserts, zone_rows},
+        inline_diff::{block_replacement, inline_inserts, rows_before, zone_rows},
         popover_place::{Placed, PopoverInput, Side, place_popover, span_anchor},
         shown_cards::{CardKind, CardStatus, shown_cards},
     },
@@ -108,7 +108,7 @@ const BUBBLE_KEY: &str = "\u{0}bubble";
 const ZONE_TOP: f32 = 4.;
 const ZONE_BOTTOM: f32 = 4.;
 /// A thin space between struck text and the insertion that follows it.
-const ZONE_GAP_TEXT: &str = "\u{2009}";
+const INLAY_GAP_TEXT: &str = "\u{2009}";
 
 fn zone_key(id: &str) -> String {
     format!("\u{0}zone-{id}")
@@ -719,7 +719,7 @@ impl EditorPane {
             .flat_map(|insert| {
                 let gap = insert
                     .separated
-                    .then(|| Inlay::new(insert.offset, ZONE_GAP_TEXT, HighlightStyle::default()));
+                    .then(|| Inlay::new(insert.offset, INLAY_GAP_TEXT, HighlightStyle::default()));
                 gap.into_iter()
                     .chain([Inlay::new(insert.offset, insert.text, inserted)])
             })
@@ -739,10 +739,12 @@ impl EditorPane {
             .collect()
     }
 
-    fn block_zones(&self, cx: &App) -> Vec<BlockZone> {
+    /// Each zone's Suggestion and the rows it reserves, in the order zones stack under a line.
+    fn zone_layout(&self, cx: &App) -> Vec<(&Suggestion, usize)> {
         let line_height = self.line_height(cx);
         let heights = self.heights.borrow();
-        self.zone_items()
+        let mut layout: Vec<(&Suggestion, usize)> = self
+            .zone_items()
             .into_iter()
             .map(|item| {
                 let height = heights
@@ -753,9 +755,56 @@ impl EditorPane {
                     f32::from(height + px(ZONE_TOP + ZONE_BOTTOM)),
                     f32::from(line_height),
                 );
-                BlockZone::new(item.to, rows)
+                (item, rows)
             })
+            .collect();
+        layout.sort_by_key(|(item, _)| item.to);
+        layout
+    }
+
+    fn block_zones(&self, cx: &App) -> Vec<BlockZone> {
+        self.zone_layout(cx)
+            .into_iter()
+            .map(|(item, rows)| BlockZone::new(item.to, rows))
             .collect()
+    }
+
+    /// The buffer line holding `offset`.
+    fn line_of(&self, offset: usize, cx: &App) -> usize {
+        let text = self.editor.read(cx).text();
+        component::RopeExt::offset_to_point(text, offset.min(text.len())).row
+    }
+
+    /// The bottom of the zones reserved under the line holding `offset`, if it has any, so
+    /// a floating Card does not cover them.
+    fn below_zones(&self, offset: usize, cx: &App) -> Option<Pixels> {
+        let line = self.line_of(offset, cx);
+        let rows: usize = self
+            .zone_layout(cx)
+            .into_iter()
+            .filter(|(item, _)| self.line_of(item.to, cx) == line)
+            .map(|(_, rows)| rows)
+            .sum();
+        if rows == 0 {
+            return None;
+        }
+        let (line_end, _) = self.line_bounds(line, cx)?;
+        Some(line_end.bottom() + self.rows_height(rows, cx))
+    }
+
+    fn rows_height(&self, rows: usize, cx: &App) -> Pixels {
+        self.line_height(cx) * f32::from(u16::try_from(rows).unwrap_or(u16::MAX))
+    }
+
+    /// The bounds of the last and first rows of a buffer line.
+    fn line_bounds(&self, line: usize, cx: &App) -> Option<(Bounds<Pixels>, Bounds<Pixels>)> {
+        let state = self.editor.read(cx);
+        let text = state.text();
+        let start = component::RopeExt::line_start_offset(text, line);
+        let end = component::RopeExt::line_end_offset(text, line);
+        let line_end = state.range_to_bounds(&(end..end))?;
+        let line_start = state.range_to_bounds(&(start..start)).unwrap_or(line_end);
+        Some((line_end, line_start))
     }
 
     fn line_height(&self, cx: &App) -> Pixels {
@@ -1773,7 +1822,10 @@ impl EditorPane {
         roles: Roles,
         cx: &mut Context<Self>,
     ) -> Option<(AnyElement, Pixels)> {
-        if item.is_pending() || kind == CardKind::Failed || self.above_view(item.to, cx) {
+        let Suggestion::Ready(ready) = item else {
+            return None;
+        };
+        if self.above_view(item.to, cx) {
             return None;
         }
         let (bounds, height) = self.place_card(item, floor, cx)?;
@@ -1783,15 +1835,7 @@ impl EditorPane {
             .card_frame(&item.id, bounds.size.width, roles, cx)
             .left(bounds.origin.x - origin.x)
             .top(bounds.origin.y - origin.y);
-        let card = match item {
-            Suggestion::Pending(_) => return None,
-            Suggestion::Failed(failed) => {
-                self.render_failed_card(frame, &item.id, describe_error(&failed.error), roles, cx)
-            }
-            Suggestion::Ready(ready) => {
-                self.render_ready_card(frame, ready, kind, card_focused, roles, cx)
-            }
-        };
+        let card = self.render_ready_card(frame, ready, kind, card_focused, roles, cx);
         let element = ui::enter_after(
             SharedString::from(format!("card-in-{}", item.id)),
             card,
@@ -1865,7 +1909,7 @@ impl EditorPane {
                 self.content_right() - width - origin.x,
                 true,
                 8.,
-                end.bottom() - origin.y,
+                self.below_zones(item.to, cx).unwrap_or(end.bottom()) - origin.y,
             ),
         };
         let placed = place_popover(&PopoverInput {
@@ -2283,13 +2327,26 @@ impl EditorPane {
 
     /// The block-level Replacements and the errors of failed Suggestions, each in the rows
     /// the editor reserves below the line its range ends on.
+    /// Zones on one line stack in the order the editor reserves their rows. A zone whose
+    /// line is above the view is skipped, since the editor has no bounds for it.
     fn render_zones(&self, roles: Roles, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let line_height = self.line_height(cx);
         let mut zones = Vec::new();
-        for item in self.zone_items() {
-            let Some((left, top, width)) = self.zone_place(item.to, cx) else {
+        let layout: Vec<(&Suggestion, usize, usize)> = self
+            .zone_layout(cx)
+            .into_iter()
+            .map(|(item, rows)| (item, self.line_of(item.to, cx), rows))
+            .collect();
+        let lines_and_rows: Vec<(usize, usize)> =
+            layout.iter().map(|&(_, line, rows)| (line, rows)).collect();
+        for ((item, line, _), before) in layout.into_iter().zip(rows_before(&lines_and_rows)) {
+            if self.above_view(item.to, cx) {
+                continue;
+            }
+            let Some((left, top, width)) = self.zone_place(line, cx) else {
                 continue;
             };
+            let top = top + self.rows_height(before, cx);
             let key = zone_key(&item.id);
             let measure = self.measure_zone(key.clone(), cx);
             let element = match item {
@@ -2335,16 +2392,11 @@ impl EditorPane {
         zones
     }
 
-    /// Where a zone's element goes, relative to the pane: under the last row of the line
-    /// holding `offset`, from the text's left edge to the column's right edge.
-    fn zone_place(&self, offset: usize, cx: &App) -> Option<(Pixels, Pixels, Pixels)> {
-        let state = self.editor.read(cx);
-        let text = state.text();
-        let row = component::RopeExt::offset_to_point(text, offset.min(text.len())).row;
-        let start = component::RopeExt::line_start_offset(text, row);
-        let end = component::RopeExt::line_end_offset(text, row);
-        let line_end = state.range_to_bounds(&(end..end))?;
-        let line_start = state.range_to_bounds(&(start..start)).unwrap_or(line_end);
+    /// Where the first zone under a buffer line goes, relative to the pane: under its last
+    /// row, from the text's left edge to the column's right edge less the same inset, so an
+    /// indented line's zone stays centered on its text.
+    fn zone_place(&self, line: usize, cx: &App) -> Option<(Pixels, Pixels, Pixels)> {
+        let (line_end, line_start) = self.line_bounds(line, cx)?;
         let origin = self.origin();
         let left = line_start.left();
         let pane = self.bounds.get();
@@ -2368,7 +2420,10 @@ impl EditorPane {
             if previous != Some(size.height)
                 && let Some(entity) = entity.upgrade()
             {
-                entity.update(cx, |_, cx| cx.notify());
+                entity.update(cx, |this, cx| {
+                    this.sync_zones(cx);
+                    cx.notify();
+                });
             }
         })
     }
@@ -2809,7 +2864,6 @@ impl Render for EditorPane {
             self.bubble_leaving = None;
         }
         self.bubble_shown = shown;
-        self.sync_zones(cx);
         let zones = self.render_zones(roles, cx);
         let cards = self.render_cards(window, roles, cx);
         let caret = self.render_caret(roles, cx);
@@ -2856,7 +2910,9 @@ impl Render for EditorPane {
                         .child(Editor::new(&self.editor).h_full().bordered(false)),
                 ),
             )
-            .children(zones)
+            .when(!zones.is_empty(), |this| {
+                this.child(div().absolute().inset_0().overflow_hidden().children(zones))
+            })
             .children(caret)
             .children(cards)
             .children(bubble)

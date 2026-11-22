@@ -59,11 +59,13 @@ jobs:
       - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
         with:
           toolchain: 1.97.0
+          components: rustfmt
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           workspaces: vendor/gpui-base
+      - run: cargo fmt --manifest-path vendor/gpui-base/Cargo.toml --check
       - name: Test the patched gpui-base (ADR 0003)
-        run: cargo test --locked --manifest-path vendor/gpui-base/Cargo.toml --features test-support --lib -- display_map inlays
+        run: cargo test --locked --manifest-path vendor/gpui-base/Cargo.toml --features test-support --lib
 
   deny:
     name: deny

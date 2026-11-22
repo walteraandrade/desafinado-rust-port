@@ -131,8 +131,12 @@ impl WrapMap {
         &mut self,
         metrics: std::rc::Rc<[(std::ops::Range<usize>, Pixels)]>,
         cx: &mut App,
-    ) {
-        self.wrapper.set_inline_metrics(metrics, cx);
+    ) -> bool {
+        self.wrapper.set_inline_metrics(metrics, cx)
+    }
+
+    pub(super) fn has_inline_metrics(&self) -> bool {
+        self.wrapper.has_inline_metrics()
     }
 
     pub(super) fn on_layout_changed(&mut self, wrap_width: Option<Pixels>, cx: &mut App) {

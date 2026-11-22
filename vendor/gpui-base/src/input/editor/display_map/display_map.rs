@@ -239,8 +239,13 @@ impl DisplayMap {
                 .inlays
                 .iter()
                 .filter_map(|inlay| {
-                    let offset = super::inlays::shift_offset(inlay.offset(), range, new_text.len())?;
-                    Some(super::Inlay::new(offset, inlay.text().clone(), *inlay.style()))
+                    let offset =
+                        super::inlays::shift_offset(inlay.offset(), range, new_text.len())?;
+                    Some(super::Inlay::new(
+                        offset,
+                        inlay.text().clone(),
+                        *inlay.style(),
+                    ))
                 })
                 .collect();
         }
@@ -255,14 +260,21 @@ impl DisplayMap {
         metrics: std::rc::Rc<[(std::ops::Range<usize>, Pixels)]>,
         cx: &mut App,
     ) {
-        self.wrap_map.set_inline_metrics(metrics, cx);
-        self.rebuild_fold_projection();
+        if self.wrap_map.set_inline_metrics(metrics, cx) {
+            self.fold_map.mark_dirty();
+            self.rebuild_fold_projection();
+        }
+    }
+
+    pub(crate) fn has_inline_metrics(&self) -> bool {
+        self.wrap_map.has_inline_metrics()
     }
 
     /// Reserve empty rows after lines, as (byte offset in the line, rows), for block zones.
     pub(crate) fn set_zones(&mut self, zones: std::rc::Rc<[(usize, usize)]>, cx: &mut App) -> bool {
         let changed = self.wrap_map.set_zones(zones, cx);
         if changed {
+            self.fold_map.mark_dirty();
             self.rebuild_fold_projection();
         }
         changed

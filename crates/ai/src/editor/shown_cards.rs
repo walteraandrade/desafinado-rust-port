@@ -9,7 +9,6 @@ pub enum CardStatus {
 pub enum CardKind {
     Active,
     Hover,
-    Failed,
 }
 
 pub fn shown_cards<'a>(
@@ -20,7 +19,6 @@ pub fn shown_cards<'a>(
     items
         .into_iter()
         .filter_map(|(id, status)| match status {
-            CardStatus::Failed => Some((id, CardKind::Failed)),
             CardStatus::Ready if Some(id) == active_id => Some((id, CardKind::Active)),
             CardStatus::Ready if Some(id) == hovered_id => Some((id, CardKind::Hover)),
             _ => None,
@@ -40,10 +38,10 @@ mod tests {
     ];
 
     #[test]
-    fn shows_only_the_active_ready_card_and_failed_ones() {
+    fn shows_only_the_active_ready_card() {
         assert_eq!(
             shown_cards(ITEMS, Some("b"), None),
-            vec![("b", CardKind::Active), ("d", CardKind::Failed)]
+            vec![("b", CardKind::Active)]
         );
     }
 
@@ -51,11 +49,7 @@ mod tests {
     fn adds_a_hover_card_for_another_ready_suggestion() {
         assert_eq!(
             shown_cards(ITEMS, Some("b"), Some("a")),
-            vec![
-                ("a", CardKind::Hover),
-                ("b", CardKind::Active),
-                ("d", CardKind::Failed)
-            ]
+            vec![("a", CardKind::Hover), ("b", CardKind::Active)]
         );
     }
 
@@ -63,15 +57,12 @@ mod tests {
     fn hovering_the_active_suggestion_adds_no_second_card() {
         assert_eq!(
             shown_cards(ITEMS, Some("b"), Some("b")),
-            vec![("b", CardKind::Active), ("d", CardKind::Failed)]
+            vec![("b", CardKind::Active)]
         );
     }
 
     #[test]
-    fn pending_suggestions_have_no_card() {
-        assert_eq!(
-            shown_cards(ITEMS, Some("c"), Some("c")),
-            vec![("d", CardKind::Failed)]
-        );
+    fn pending_and_failed_suggestions_have_no_card() {
+        assert!(shown_cards(ITEMS, Some("c"), Some("d")).is_empty());
     }
 }

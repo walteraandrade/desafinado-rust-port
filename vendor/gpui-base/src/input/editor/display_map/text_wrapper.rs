@@ -728,9 +728,9 @@ impl TextWrapper {
         &mut self,
         metrics: Rc<[(Range<usize>, Pixels)]>,
         cx: &mut App,
-    ) {
+    ) -> bool {
         if self.inline_metrics == metrics {
-            return;
+            return false;
         }
         // Only rows whose element geometry changed need another wrap pass.
         let mut affected = Vec::new();
@@ -777,6 +777,11 @@ impl TextWrapper {
                 cx,
             );
         }
+        true
+    }
+
+    pub(crate) fn has_inline_metrics(&self) -> bool {
+        !self.inline_metrics.is_empty()
     }
 
     /// Keep the existing synthetic edit tests independent of native glyph measurement.
@@ -1074,6 +1079,11 @@ impl LineLayout {
     }
 
     /// Record whether any run of this line carries a background color.
+    #[cfg(test)]
+    pub(crate) fn has_background(&self) -> bool {
+        self.has_background
+    }
+
     pub(crate) fn with_background(mut self, has_background: bool) -> Self {
         self.has_background = has_background;
         self
@@ -1337,7 +1347,10 @@ impl LineLayout {
             .map(|(ix, line)| line.width + self.line_indent(ix))
             .max()
             .unwrap_or(self.longest_width);
-        size(width, (self.wrapped_lines.len() + self.zone_rows) * line_height)
+        size(
+            width,
+            (self.wrapped_lines.len() + self.zone_rows) * line_height,
+        )
     }
 
     /// Paint only the glyph background quads of this line.
@@ -1603,8 +1616,14 @@ mod tests {
     #[test]
     fn a_zone_row_maps_to_the_end_of_its_line() {
         let wrapper = zoned_wrapper("aa\nbbbb\nc", &[(0, 2)]);
-        assert_eq!(wrapper.display_point_to_offset(WrapDisplayPoint::new(1, 0, 0)), 2);
-        assert_eq!(wrapper.display_point_to_offset(WrapDisplayPoint::new(2, 0, 1)), 2);
+        assert_eq!(
+            wrapper.display_point_to_offset(WrapDisplayPoint::new(1, 0, 0)),
+            2
+        );
+        assert_eq!(
+            wrapper.display_point_to_offset(WrapDisplayPoint::new(2, 0, 1)),
+            2
+        );
     }
 
     #[test]

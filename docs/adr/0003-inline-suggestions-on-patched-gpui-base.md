@@ -33,5 +33,5 @@ What else was looked at:
 
 - Each gpui-kit bump has to re-apply the patch; `PATCH.md` says how. The patch touches the wrapper, the display map, the element, movement and state, about 500 changed lines.
 - The vendored crate's own tests are not in the workspace (`exclude`), so `cargo test --workspace` does not run them; the `gpui-base` CI job does.
-- Zone height is measured after the first draw, so a new zone may show one frame at one row before it grows.
+- Zone height is measured after the first draw, so a new zone may show for a frame at its default height (two rows) before it fits its content.
 - Offering inlays and block zones upstream remains open. If gpui-kit ships them, this folder goes away.

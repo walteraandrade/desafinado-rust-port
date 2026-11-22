@@ -48,7 +48,7 @@ CI also builds the app and starts it off-screen with [`scripts/smoke.sh`](script
 ## Git
 
 - Commit messages: short, imperative, conventional prefix (`feat:`, `fix:`, `refactor:`, ...).
-- Pull requests pass the `checks` and `deny` jobs before merging.
+- Pull requests pass the `checks`, `deny` and `gpui-base` jobs before merging.
 
 ## Reference
 

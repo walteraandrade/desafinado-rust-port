@@ -47,6 +47,10 @@ impl InputLine {
             Content::Text(line) => line.x_for_index(ix),
             Content::Inline(fragments) => {
                 for f in fragments {
+                    // The caret at an inlay's offset sits before it, where typed text goes.
+                    if f.range.is_empty() && ix == f.range.start {
+                        return f.x;
+                    }
                     if ix < f.range.end {
                         return f.x
                             + f.text.as_ref().map_or(
@@ -156,5 +160,42 @@ impl InputLine {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn fragment(range: Range<usize>, x: f32, width: f32) -> InlineFragment {
+        InlineFragment {
+            range,
+            x: px(x),
+            width: px(width),
+            text: None,
+        }
+    }
+
+    fn row_with_inlay() -> InputLine {
+        InputLine::inline(
+            "abcdef".into(),
+            vec![
+                fragment(0..3, 0., 30.),
+                fragment(3..3, 30., 20.),
+                fragment(3..6, 50., 30.),
+            ],
+        )
+    }
+
+    #[test]
+    fn the_caret_at_an_inlay_sits_before_it() {
+        let row = row_with_inlay();
+        assert_eq!(row.x_for_index(3), px(30.));
+        assert_eq!(row.x_for_index(6), px(80.));
+    }
+
+    #[test]
+    fn a_click_on_an_inlay_lands_at_its_offset() {
+        assert_eq!(row_with_inlay().closest_index_for_x(px(40.)), 3);
     }
 }

@@ -1,6 +1,6 @@
 # 0001. Native app on Rust and GPUI
 
-- Status: Accepted (2026-11-14)
+- Status: Accepted (2026-11-14); the Suggestions point is superseded by [ADR 0003](0003-inline-suggestions-on-patched-gpui-base.md)
 - Source: maintainer request: a lighter, faster native app without Electron, and curiosity about GPUI. Spike in [`spikes/gpui-editor/`](../../spikes/gpui-editor/). Links named "desafinado NNNN" point to [the ADRs of the Electron and Web app](https://github.com/walteraandrade/desafinado/blob/main/docs/adr/).
 
 ## Context

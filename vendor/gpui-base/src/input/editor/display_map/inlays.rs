@@ -37,7 +37,7 @@ impl Inlay {
 /// application draws its own element, as Monaco's view zones.
 ///
 /// The text below moves down by the rows, the caret skips them, and a click in them lands on
-/// the end of the line above.
+/// the last text row of the line above, at the clicked column.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct BlockZone {
     offset: usize,
