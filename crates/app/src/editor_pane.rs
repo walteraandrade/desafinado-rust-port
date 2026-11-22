@@ -67,6 +67,7 @@ use gpui_kit::{
 use desafinado_runtime::ai_backend::{AiBackend, ReviewCall, ReviewEvent, TargetCall};
 
 use crate::{
+    caret::{self, CaretMarks},
     theme::{self, Roles},
     ui::{self, ButtonKind, ButtonSize, ToastTone, Type as _},
 };
@@ -235,6 +236,8 @@ pub struct EditorPane {
     pub suggestions: SuggestionsState,
     strike: TextDecorationCollection,
     fills: RangeDecorationCollection,
+    pub(crate) caret: CaretMarks,
+    _caret_blink: Task<()>,
     bubble_input: Entity<InputState>,
     bubble: BubbleState,
     menu: AskMenu,
@@ -314,6 +317,7 @@ impl EditorPane {
                 state.create_range_decorations_collection(vec![], cx),
             )
         });
+        let caret = CaretMarks::new(&editor, cx);
         let edits = cx.subscribe(&editor, |this, editor, event: &InputEditsEvent, cx| {
             this.on_edits(&editor, event, cx);
         });
@@ -334,6 +338,8 @@ impl EditorPane {
             suggestions: empty_suggestions(),
             strike,
             fills,
+            caret,
+            _caret_blink: caret::start_blink(window, cx),
             bubble_input,
             bubble: BubbleState::default(),
             menu: AskMenu::default(),
@@ -370,6 +376,7 @@ impl EditorPane {
         event: &InputEditsEvent,
         cx: &mut Context<Self>,
     ) {
+        self.caret.restart(editor, cx);
         let frontmatter = find_frontmatter(&editor.read(cx).value());
         let applying = self.applying.take();
         let mut next = self.suggestions.clone();
@@ -409,6 +416,7 @@ impl EditorPane {
             return;
         }
         self.last_selection = selection.clone();
+        self.caret.restart(editor, cx);
         self.bubble = next_bubble(
             self.bubble,
             BubbleChange {
@@ -2913,6 +2921,15 @@ impl Render for EditorPane {
             .when(!zones.is_empty(), |this| {
                 this.child(div().absolute().inset_0().overflow_hidden().children(zones))
             })
+            .child(ui::caret_layer(
+                self.editor.clone(),
+                caret::settings(cx),
+                (
+                    self.caret.shown(),
+                    suggestion_at(&self.suggestions, self.cursor(cx)).is_some(),
+                ),
+                roles,
+            ))
             .children(caret)
             .children(cards)
             .children(bubble)

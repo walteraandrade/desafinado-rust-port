@@ -232,8 +232,10 @@ pub fn apply(roles: Roles, cx: &mut App) {
         None,
         cx,
     );
+    let caret = crate::caret::settings(cx);
     Theme::update(cx, |theme| {
         theme.scrollbar_mode = gpui_kit::component::scroll::ScrollbarMode::Always;
+        crate::caret::apply_to_theme(theme, caret);
         let c = &mut theme.colors;
         c.background = roles.canvas;
         c.foreground = roles.ink;
@@ -242,7 +244,7 @@ pub fn apply(roles: Roles, cx: &mut App) {
         c.border = roles.hairline;
         c.input = roles.hairline;
         c.ring = roles.accent;
-        c.caret = roles.ink;
+        c.caret = roles.accent;
         c.selection = roles.selection;
         c.popover = roles.overlay;
         c.popover_foreground = roles.ink;
