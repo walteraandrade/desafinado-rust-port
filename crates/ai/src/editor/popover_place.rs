@@ -66,6 +66,31 @@ pub fn span_anchor(first: Rect, last: Rect, left: f64) -> Rect {
     }
 }
 
+/// Where a line sits against the visible area: laid out on screen, or past
+/// one of its edges.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum LineAt {
+    Above,
+    Shown(Rect),
+    Below,
+}
+
+/// The rect to anchor on for a line, with a line past an edge of the area
+/// pinned to that edge, so a span that runs off screen still anchors inside.
+pub fn pinned_line(line: LineAt, left: f64, area: &Viewport) -> Rect {
+    let edge = |y: f64| Rect {
+        left,
+        right: left,
+        top: y,
+        bottom: y,
+    };
+    match line {
+        LineAt::Above => edge(0.0),
+        LineAt::Shown(rect) => rect,
+        LineAt::Below => edge(area.height),
+    }
+}
+
 pub fn anchor_visible(anchor: &Rect, area: &Viewport) -> bool {
     anchor.bottom > 0.0 && anchor.top < area.height
 }
@@ -215,6 +240,49 @@ mod tests {
         let placed = place_popover(&strict).unwrap();
         assert_eq!(placed.side, Side::Below);
         assert_eq!(placed.top, 600.0 - 8.0 - 200.0);
+    }
+
+    fn span_of(first: LineAt, last: LineAt, side: Side) -> Option<Placed> {
+        let span = span_anchor(
+            pinned_line(first, 40.0, &AREA),
+            pinned_line(last, 40.0, &AREA),
+            40.0,
+        );
+        place_popover(&input(span, side))
+    }
+
+    fn inside(placed: Placed) -> bool {
+        placed.top >= EDGE_GAP && placed.top + 200.0 <= AREA.height - EDGE_GAP
+    }
+
+    #[test]
+    fn a_selection_past_both_edges_shows_at_the_edge_of_its_head() {
+        let forward = span_of(LineAt::Above, LineAt::Below, Side::Below).unwrap();
+        assert!(inside(forward));
+        assert_eq!(forward.top, AREA.height - EDGE_GAP - 200.0);
+        let reversed = span_of(LineAt::Above, LineAt::Below, Side::Above).unwrap();
+        assert!(inside(reversed));
+        assert_eq!(reversed.top, EDGE_GAP);
+    }
+
+    #[test]
+    fn a_selection_running_past_the_bottom_shows_above_its_start() {
+        let placed = span_of(LineAt::Shown(line(40.0, 300.0)), LineAt::Below, Side::Below).unwrap();
+        assert_eq!(placed.side, Side::Above);
+        assert_eq!(placed.top, 300.0 - 6.0 - 200.0);
+    }
+
+    #[test]
+    fn a_selection_running_past_the_top_shows_below_its_end() {
+        let placed = span_of(LineAt::Above, LineAt::Shown(line(40.0, 200.0)), Side::Above).unwrap();
+        assert_eq!(placed.side, Side::Below);
+        assert_eq!(placed.top, 220.0 + 6.0);
+    }
+
+    #[test]
+    fn a_selection_wholly_past_one_edge_hides() {
+        assert_eq!(span_of(LineAt::Below, LineAt::Below, Side::Below), None);
+        assert_eq!(span_of(LineAt::Above, LineAt::Above, Side::Above), None);
     }
 
     #[test]

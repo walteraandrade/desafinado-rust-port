@@ -21,7 +21,9 @@ use desafinado_ai::{
         focus_cycle::cycle_index,
         geometry::{Rect, Viewport},
         inline_diff::{block_replacement, inline_inserts, rows_before, zone_rows},
-        popover_place::{Placed, PopoverInput, Side, place_popover, span_anchor},
+        popover_place::{
+            LineAt, Placed, PopoverInput, Side, pinned_line, place_popover, span_anchor,
+        },
         shown_cards::{CardKind, CardStatus, shown_cards},
     },
     edits::{MAX_REVIEW_EDITS, ReviewValidationContext},
@@ -1809,6 +1811,12 @@ impl EditorPane {
         self.bounds.get().origin
     }
 
+    fn content_left(&self) -> Pixels {
+        let pane = self.bounds.get();
+        let column = px(COLUMN_WIDTH).min(pane.size.width);
+        pane.origin.x + (pane.size.width - column) / 2. + px(COLUMN_PADDING)
+    }
+
     fn content_right(&self) -> Pixels {
         let pane = self.bounds.get();
         let column = px(COLUMN_WIDTH).min(pane.size.width);
@@ -2436,6 +2444,24 @@ impl EditorPane {
         })
     }
 
+    fn line_at(&self, offset: usize, cx: &App) -> LineAt {
+        if self.above_view(offset, cx) {
+            return LineAt::Above;
+        }
+        let origin = self.bounds.get().origin;
+        self.editor
+            .read(cx)
+            .range_to_bounds(&(offset..offset))
+            .map_or(LineAt::Below, |line| {
+                LineAt::Shown(Rect {
+                    left: to_f64(line.left() - origin.x),
+                    right: to_f64(line.left() - origin.x),
+                    top: to_f64(line.top() - origin.y),
+                    bottom: to_f64(line.bottom() - origin.y),
+                })
+            })
+    }
+
     fn above_view(&self, offset: usize, cx: &App) -> bool {
         let state = self.editor.read(cx);
         state.visible_row_range().is_some_and(|rows| {
@@ -2454,9 +2480,7 @@ impl EditorPane {
             return None;
         }
         let state = self.editor.read(cx);
-        let pane = self.bounds.get();
-        let column = px(COLUMN_WIDTH).min(pane.size.width);
-        let column_left = pane.origin.x + (pane.size.width - column) / 2. + px(COLUMN_PADDING);
+        let column_left = self.content_left();
         let column_right = self.content_right();
         self.suggestions
             .items
@@ -2577,26 +2601,15 @@ impl EditorPane {
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
         self.last_bubble.replace(None);
-        let state = self.editor.read(cx);
-        let head = state.range_to_bounds(&(anchor.head..anchor.head))?;
-        let first = if self.above_view(anchor.span.start, cx) {
-            Bounds::new(point(head.left(), px(-1.)), size(px(0.), px(1.)))
-        } else {
-            state
-                .range_to_bounds(&(anchor.span.start..anchor.span.start))
-                .unwrap_or(head)
-        };
-        let last = state
-            .range_to_bounds(&(anchor.span.end..anchor.span.end))
-            .unwrap_or(head);
+        self.editor.read(cx).visible_row_range()?;
         let pane = self.bounds.get();
         let origin = pane.origin;
-        let line_rect = |line: Bounds<Pixels>| Rect {
-            left: to_f64(line.left() - origin.x),
-            right: to_f64(line.left() - origin.x),
-            top: to_f64(line.top() - origin.y),
-            bottom: to_f64(line.bottom() - origin.y),
+        let area = area_of(pane);
+        let head_left = match self.line_at(anchor.head, cx) {
+            LineAt::Shown(rect) => rect.left,
+            LineAt::Above | LineAt::Below => to_f64(self.content_left() - origin.x),
         };
+        let pinned = |offset: usize| pinned_line(self.line_at(offset, cx), head_left, &area);
         let height = self
             .heights
             .borrow()
@@ -2605,13 +2618,13 @@ impl EditorPane {
             .unwrap_or(px(120.));
         let placed = place_popover(&PopoverInput {
             anchor: span_anchor(
-                line_rect(first),
-                line_rect(last),
-                to_f64(head.left() - origin.x - px(12.)),
+                pinned(anchor.span.start),
+                pinned(anchor.span.end),
+                head_left - 12.,
             ),
             width: f64::from(BUBBLE_WIDTH),
             height: to_f64(height),
-            area: area_of(pane),
+            area,
             side: if anchor.above {
                 Side::Above
             } else {
