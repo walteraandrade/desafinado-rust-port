@@ -16,7 +16,7 @@ use desafinado_ai::{
         DEFAULT_STALL_MS, DEFAULT_TIMEOUTS_MS, OutputShape, chat_request_body,
         target_output_tokens,
     },
-    review_mode::{ModeChoice, mode_decision_body, parse_mode_decision},
+    review_mode::{ModeChoice, decision_observation, mode_decision_body, parse_mode_decision},
     review_stream::ReviewStream,
     schemas::parse_suggestion,
     text::utf16_len,
@@ -110,14 +110,13 @@ impl AiBackend for OpenRouterAi {
         let client = self.client(DECISION_TIMEOUT_MS)?;
         let started_at = now_iso();
         let clock = Instant::now();
-        let result = client
-            .decide(&mode_decision_body(&call.focus))
-            .and_then(|body| parse_mode_decision(&body));
-        let failure = result.as_ref().err();
-        let observation = result
+        let answer = client.decide(&mode_decision_body(&call.focus));
+        let observation = answer
             .as_ref()
-            .map(|decision| decision.observation.clone())
+            .map(decision_observation)
             .unwrap_or_default();
+        let result = answer.and_then(|body| parse_mode_decision(&body));
+        let failure = result.as_ref().err();
         self.record(
             &call.task,
             1,

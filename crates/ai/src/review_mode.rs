@@ -52,7 +52,7 @@ impl ReviewMode {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ModeSource {
     Default,
-    Decided { probability: f64 },
+    Decided { probability: Option<f64> },
     Writer,
 }
 
@@ -74,11 +74,14 @@ impl ModeChoice {
     pub fn chip_label(&self) -> String {
         match self.source {
             ModeSource::Default => format!("{} · default", self.mode.label()),
-            ModeSource::Decided { probability } => format!(
+            ModeSource::Decided {
+                probability: Some(probability),
+            } => format!(
                 "{} · Jev {}%",
                 self.mode.label(),
                 (probability * 100.0).round() as i64
             ),
+            ModeSource::Decided { probability: None } => format!("{} · Jev", self.mode.label()),
             ModeSource::Writer => format!("{} · your choice", self.mode.label()),
         }
     }
@@ -134,8 +137,7 @@ pub fn parse_mode_decision(body: &Value) -> Result<ModeDecision, ClientError> {
     let probability = answer
         .pointer(&format!("/probabilities/{}", mode.key()))
         .and_then(Value::as_f64)
-        .unwrap_or(0.0)
-        .clamp(0.0, 1.0);
+        .map(|probability| probability.clamp(0.0, 1.0));
     Ok(ModeDecision {
         choice: ModeChoice {
             mode,
@@ -217,7 +219,9 @@ mod tests {
         assert_eq!(decision.choice.mode, ReviewMode::Revise);
         assert_eq!(
             decision.choice.source,
-            ModeSource::Decided { probability: 0.93 }
+            ModeSource::Decided {
+                probability: Some(0.93)
+            }
         );
         let observation = decision.observation;
         assert_eq!(observation.requested_model, DECISION_MODEL);
@@ -248,6 +252,11 @@ mod tests {
             .unwrap()
             .choice;
         assert_eq!(decided.chip_label(), "Comment · Jev 96%");
+        let unsure = ModeChoice {
+            mode: ReviewMode::Revise,
+            source: ModeSource::Decided { probability: None },
+        };
+        assert_eq!(unsure.chip_label(), "Revise · Jev");
         assert_eq!(
             ModeChoice::by_writer(ReviewMode::Revise).chip_label(),
             "Revise · your choice"

@@ -59,6 +59,7 @@ impl EditorPane {
             return;
         }
         let focus = focus.trim().to_string();
+        self.mode = None;
         if let Some(choice) = mode_without_decision(&focus) {
             self.run_mode(choice, focus, cx);
             return;
@@ -108,7 +109,7 @@ impl EditorPane {
             choice,
             focus: focus.clone(),
         });
-        self.notes = None;
+        self.set_notes(None, cx);
         match choice.mode {
             ReviewMode::Revise => self.start_revise(focus, cx),
             ReviewMode::Comment => self.start_comment(focus, cx),
@@ -180,6 +181,32 @@ impl EditorPane {
         }
         cx.emit(PaneEvent::Changed);
         cx.notify();
+    }
+
+    /// Runs a failed Review again in the mode it ran in, which may be the writer's choice,
+    /// without asking the decision model again.
+    pub fn retry_review(&mut self, focus: String, cx: &mut Context<Self>) {
+        let focus = focus.trim().to_string();
+        match self.mode.clone() {
+            Some(state) if state.focus == focus && self.busy().is_none() => {
+                self.run_mode(state.choice, focus, cx);
+            }
+            _ => self.start_review(focus, cx),
+        }
+    }
+
+    /// Takes a Note off the board once the Suggestion asked for from it is accepted.
+    pub(crate) fn resolve_rewritten_note(&mut self, suggestion: &str, cx: &mut Context<Self>) {
+        let Some(index) = self
+            .note_rewrites
+            .iter()
+            .position(|(id, _)| id == suggestion)
+        else {
+            return;
+        };
+        let (_, number) = self.note_rewrites.remove(index);
+        let next = self.notes.as_ref().map(|board| board.without(number));
+        self.set_notes(next, cx);
     }
 
     /// `Some` while a Review runs, with the number of Suggestions it added so far.
@@ -271,10 +298,20 @@ impl EditorPane {
         let Some(note) = board.note(number).cloned() else {
             return;
         };
+        if note.from >= note.to {
+            cx.emit(PaneEvent::Toast {
+                text: "The text of this Note was deleted".to_owned(),
+                tone: ui::ToastTone::Neutral,
+                actions: Vec::new(),
+            });
+            self.dismiss_note(number, window, cx);
+            return;
+        }
         self.set_notes(Some(board.pick(None)), cx);
         let range = note.from..note.to;
         self.editor
             .update(cx, |state, cx| state.set_selected_range(range, cx));
+        let asked = self.next_id;
         self.ask_with(
             Instruction::FreeText {
                 text: rewrite_instruction(&note),
@@ -282,6 +319,10 @@ impl EditorPane {
             window,
             cx,
         );
+        if self.next_id > asked {
+            self.note_rewrites
+                .push((format!("s{}", self.next_id), number));
+        }
         self.focus(window, cx);
     }
 
@@ -317,8 +358,11 @@ impl EditorPane {
                     ui::note_mark(
                         SharedString::from(format!("note-mark-{number}")),
                         number,
-                        board.active == Some(number),
-                        note.stale,
+                        match (board.active == Some(number), note.stale) {
+                            (true, _) => ui::MarkState::Open,
+                            (false, true) => ui::MarkState::Stale,
+                            (false, false) => ui::MarkState::Plain,
+                        },
                         roles,
                     )
                     .absolute()

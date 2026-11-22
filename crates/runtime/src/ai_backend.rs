@@ -185,7 +185,7 @@ fn fake_mode(focus: &str) -> ModeDecision {
                 ReviewMode::Comment
             },
             source: ModeSource::Decided {
-                probability: if revise { 0.91 } else { 0.96 },
+                probability: Some(if revise { 0.91 } else { 0.96 }),
             },
         },
         observation: desafinado_ai::records::CallObservation {

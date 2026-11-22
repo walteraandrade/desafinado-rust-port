@@ -1356,7 +1356,7 @@ impl Workspace {
                     PaneToastAction::RetryReview(focus) => {
                         let focus = focus.clone();
                         self.pane
-                            .update(cx, |pane, cx| pane.start_review(focus, cx));
+                            .update(cx, |pane, cx| pane.retry_review(focus, cx));
                     }
                 }
             }

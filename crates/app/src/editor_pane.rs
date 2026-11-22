@@ -253,7 +253,7 @@ pub struct EditorPane {
     card_index: usize,
     applying: Option<Applying>,
     tasks: HashMap<String, Task<()>>,
-    next_id: usize,
+    pub(crate) next_id: usize,
     next_review_id: usize,
     rejected: Vec<ReadySuggestion>,
     restored: Vec<ReadySuggestion>,
@@ -269,6 +269,8 @@ pub struct EditorPane {
     pub(crate) mode: Option<crate::comment_review::ReviewModeState>,
     pub notes: Option<desafinado_ai::notes::NoteBoard>,
     pub(crate) notes_scroll: ScrollHandle,
+    /// Suggestions asked for from a Note, by Suggestion id, so accepting one resolves its Note.
+    pub(crate) note_rewrites: Vec<(String, usize)>,
     reveal_pending: bool,
     _subscriptions: Vec<Subscription>,
 }
@@ -375,6 +377,7 @@ impl EditorPane {
             mode: None,
             notes: None,
             notes_scroll: ScrollHandle::new(),
+            note_rewrites: Vec::new(),
             reveal_pending: false,
             _subscriptions: vec![edits, moves, typing],
         }
@@ -485,6 +488,7 @@ impl EditorPane {
         self.pending = None;
         self.mode = None;
         self.notes = None;
+        self.note_rewrites.clear();
         self.tasks.clear();
         self.suggestions = empty_suggestions();
         self.bubble = BubbleState::default();
@@ -1255,6 +1259,7 @@ impl EditorPane {
             let next = reject_suggestion(&self.suggestions, &ready.id);
             self.set_suggestions(next, cx);
         }
+        self.resolve_rewritten_note(&ready.id, cx);
         self.emit_accepted(before, vec![accepted_change(&ready)], cx);
     }
 
@@ -1494,11 +1499,13 @@ impl EditorPane {
     pub fn stop_review(&mut self, cx: &mut Context<Self>) {
         if self.stop_pending() {
             cx.emit(PaneEvent::Toast {
-                text: review_summary(0, true),
+                text: "Review stopped".to_owned(),
                 tone: ToastTone::Neutral,
                 actions: Vec::new(),
             });
-            self.review_ended(cx);
+            cx.emit(PaneEvent::Changed);
+            self.refresh_decorations(cx);
+            cx.notify();
             return;
         }
         let Some(run) = self.review.take() else {
@@ -2549,7 +2556,7 @@ impl EditorPane {
     }
 
     fn render_caret(&self, roles: Roles, cx: &App) -> Option<AnyElement> {
-        let caret = ai_caret_of(&self.suggestions, self.review.is_some())?;
+        let caret = ai_caret_of(&self.suggestions, self.busy().is_some())?;
         if self.above_view(caret.pos, cx) {
             return None;
         }

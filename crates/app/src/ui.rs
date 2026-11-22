@@ -399,17 +399,23 @@ pub fn dot_button(
 
 /// A Note's mark in the margin: its number on the AI tint, the AI color once open, and plain
 /// fill when the text under it changed since the AI read it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MarkState {
+    Plain,
+    Open,
+    Stale,
+}
+
 pub fn note_mark(
     id: impl Into<ElementId>,
     number: usize,
-    open: bool,
-    stale: bool,
+    state: MarkState,
     roles: Roles,
 ) -> Stateful<Div> {
-    let (background, text) = match (open, stale) {
-        (true, _) => (roles.ai, roles.canvas),
-        (false, true) => (roles.fill, roles.muted),
-        (false, false) => (roles.ai_fill, roles.ai),
+    let (background, text) = match state {
+        MarkState::Open => (roles.ai, roles.canvas),
+        MarkState::Stale => (roles.fill, roles.muted),
+        MarkState::Plain => (roles.ai_fill, roles.ai),
     };
     div()
         .id(id)
