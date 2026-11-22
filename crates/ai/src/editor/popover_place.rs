@@ -205,7 +205,7 @@ mod tests {
     fn input(anchor: Rect, side: Side) -> PopoverInput {
         PopoverInput {
             anchor,
-            width: 360.0,
+            width: WIDTH,
             height: HEIGHT,
             area: AREA,
             side,
@@ -279,6 +279,7 @@ mod tests {
         assert_eq!(placed.top, 600.0 - 8.0 - 200.0);
     }
 
+    const WIDTH: f64 = 360.0;
     const HEIGHT: f64 = 200.0;
     const GAP: f64 = 6.0;
     const COLUMN_LEFT: f64 = 60.0;
@@ -325,14 +326,14 @@ mod tests {
     }
 
     #[test]
-    fn select_all_shows_the_bubble_inside_the_smallest_window() {
+    fn select_all_keeps_the_bubble_inside_a_pane_barely_wider_than_it() {
         let small = Viewport {
             width: 380.0,
             height: 300.0,
         };
         let placed = select_all(small).unwrap();
         assert!(placed.top >= EDGE_GAP && placed.top + HEIGHT <= small.height - EDGE_GAP);
-        assert!(placed.left >= EDGE_GAP && placed.left + 360.0 <= small.width - EDGE_GAP);
+        assert!(placed.left >= EDGE_GAP && placed.left + WIDTH <= small.width - EDGE_GAP);
     }
 
     #[test]
@@ -344,17 +345,32 @@ mod tests {
     #[test]
     fn a_shown_head_keeps_the_bubble_at_the_caret() {
         let head = line(300.0, 200.0);
-        let placed = bubble(head_at(head), LineAt::Above, head_at(head), AREA).unwrap();
+        let placed = bubble(
+            LineAt::Shown(head),
+            LineAt::Above,
+            LineAt::Shown(head),
+            AREA,
+        )
+        .unwrap();
         assert_eq!(placed.left, 300.0 - BUBBLE_INSET);
         assert_eq!(placed.top, 220.0 + GAP);
     }
 
     #[test]
     fn a_selection_running_past_the_bottom_shows_the_bubble_above_its_start() {
-        let start = head_at(line(40.0, 300.0));
+        let start = LineAt::Shown(line(40.0, 300.0));
         let placed = bubble(LineAt::Below, start, LineAt::Below, AREA).unwrap();
         assert_eq!(placed.side, Side::Above);
         assert_eq!(placed.top, 300.0 - GAP - HEIGHT);
+    }
+
+    #[test]
+    fn a_block_starting_above_the_view_shows_the_bubble_below_its_end() {
+        let end = LineAt::Shown(line(40.0, 100.0));
+        let placed = bubble(LineAt::Above, LineAt::Above, end, AREA).unwrap();
+        assert_eq!(placed.side, Side::Below);
+        assert_eq!(placed.top, 120.0 + GAP);
+        assert_eq!(placed.left, COLUMN_LEFT - BUBBLE_INSET);
     }
 
     #[test]
@@ -368,11 +384,6 @@ mod tests {
             None
         );
     }
-
-    fn head_at(rect: Rect) -> LineAt {
-        LineAt::Shown(rect)
-    }
-
     #[test]
     fn hides_when_the_anchor_is_out_of_the_area() {
         assert_eq!(place_popover(&input(line(100.0, 620.0), Side::Below)), None);
