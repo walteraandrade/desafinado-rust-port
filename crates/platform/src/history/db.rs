@@ -172,9 +172,10 @@ impl HistoryDb {
     }
 
     pub fn close(&self) {
-        if let Ok(mut guard) = self.connection.lock() {
-            *guard = None;
-        }
+        *self
+            .connection
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = None;
     }
 
     fn with<T>(&self, run: impl FnOnce(&Connection) -> Result<T>) -> Result<T> {

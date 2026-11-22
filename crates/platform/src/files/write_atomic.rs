@@ -1,4 +1,4 @@
-use desafinado_core::log_err::LogErr;
+use desafinado_core::log_err::{LogErr, MissingIsRemoved};
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
@@ -73,7 +73,7 @@ pub fn write_atomic(
         Ok(AtomicOutcome::Written)
     })();
     if !matches!(attempt, Ok(AtomicOutcome::Written)) {
-        fs::remove_file(&temporary).log_warn();
+        fs::remove_file(&temporary).missing_is_removed().log_warn();
     }
     attempt
 }

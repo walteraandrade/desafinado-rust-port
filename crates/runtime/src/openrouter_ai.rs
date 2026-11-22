@@ -71,6 +71,7 @@ impl OpenRouterAi {
         let held = services.hold_record(shape(None));
         std::thread::spawn(move || {
             let generation = OpenRouterClient::from_env(services.keys.current())
+                .inspect_err(|error| log::warn!("No client to price the call: {error:?}"))
                 .ok()
                 .and_then(|client| {
                     fetch_generation(

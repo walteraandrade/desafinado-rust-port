@@ -1,4 +1,4 @@
-use desafinado_core::log_err::LogErr;
+use desafinado_core::log_err::{LogErr, MissingIsRemoved};
 use std::collections::HashSet;
 use std::fs;
 use std::io;
@@ -154,7 +154,7 @@ fn build(
     }
     if let Some(text) = skill_text_override {
         let skill_file = dir.join(SKILL_FILE_NAME);
-        fs::remove_file(&skill_file).log_warn();
+        fs::remove_file(&skill_file).missing_is_removed().log_warn();
         fs::write(&skill_file, text)?;
     }
     let skill_text = fs::read_to_string(dir.join(SKILL_FILE_NAME))?;

@@ -1,4 +1,4 @@
-use desafinado_core::log_err::LogErr;
+use desafinado_core::log_err::{LogErr, MissingIsRemoved};
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -117,7 +117,7 @@ impl ResultsStore {
         rename: &dyn Fn(&Path, &Path) -> io::Result<()>,
     ) -> io::Result<()> {
         let retired = self.retired_dir(key);
-        fs::remove_dir_all(&retired).log_warn();
+        fs::remove_dir_all(&retired).missing_is_removed().log_warn();
         let had_last = rename(&self.last_dir(key), &retired).is_ok();
         if let Err(error) = rename(&self.next_dir(key), &self.last_dir(key)) {
             if had_last {
@@ -125,7 +125,7 @@ impl ResultsStore {
             }
             return Err(error);
         }
-        fs::remove_dir_all(&retired).log_warn();
+        fs::remove_dir_all(&retired).missing_is_removed().log_warn();
         Ok(())
     }
 

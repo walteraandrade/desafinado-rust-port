@@ -48,7 +48,7 @@ use desafinado_platform::{
     watch::{ExternalChanges, ExternalChangesController, WatchConfig},
 };
 use desafinado_runtime::services::Services;
-use futures::{StreamExt as _, channel::mpsc::UnboundedReceiver};
+use futures::{FutureExt as _, StreamExt as _, channel::mpsc::UnboundedReceiver, future::Shared};
 use gpui_kit::{component::TitleBar, prelude::FluentBuilder as _, *};
 
 use crate::{
@@ -282,7 +282,7 @@ fn with_reason(text: String, reason: Option<&str>) -> String {
 }
 
 fn load_unsaved(db: Option<&HistoryDb>, key: &str) -> Option<Unsaved> {
-    db.and_then(|db| db.load_unsaved(key).ok().flatten())
+    db.and_then(|db| db.load_unsaved(key).log_err().flatten())
 }
 
 fn reopen(db: Option<&HistoryDb>, path: &Path, failure_text: &str) -> Reopened {
@@ -328,6 +328,29 @@ fn touches(path: &Path, changed: &str) -> bool {
     path == changed || path.starts_with(&format!("{changed}/"))
 }
 
+/// Which save the user asked for. A Save as asked for during a running save wins over a Save.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum SaveKind {
+    Save,
+    SaveAs,
+}
+
+/// The running save's write, a save asked for while it runs, and a serial of the open
+/// document that tells a late result whether the document it saved is still open.
+#[derive(Default)]
+struct Saves {
+    task: Option<Shared<Task<FileSaveResult>>>,
+    queued: Option<SaveKind>,
+    document: u64,
+}
+
+/// The text a save writes, the name it reports, and the document it was started from.
+struct Saving {
+    text: String,
+    name: String,
+    document: u64,
+}
+
 /// What fills the window under the header while the AI spend page is closed.
 /// Evals show only while a Skill is open; otherwise the text does.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -360,7 +383,7 @@ pub struct Workspace {
     session: Option<FileSession>,
     conflict: Option<Conflict>,
     writing: Option<String>,
-    save_again: bool,
+    saves: Saves,
     noticed: Option<DiskState<String>>,
     last_text: String,
     pub(crate) history: SwitchableHistory<PathBuf>,
@@ -459,7 +482,7 @@ impl Workspace {
             session,
             conflict,
             writing: None,
-            save_again: false,
+            saves: Saves::default(),
             noticed: None,
             last_text: initial,
             history,
@@ -549,7 +572,7 @@ impl Workspace {
             )
         });
         let quick_actions = load_quick_actions(&services.user_data)
-            .ok()
+            .log_warn()
             .flatten()
             .and_then(|text| parse_quick_action_settings(&text))
             .unwrap_or_else(default_quick_action_settings);
@@ -602,7 +625,12 @@ impl Workspace {
             cx.on_app_quit(|this, _| {
                 this.flush_all();
                 this.services.flush_records();
-                async {}
+                let write = this.saves.task.clone();
+                async move {
+                    if let Some(write) = write {
+                        write.await;
+                    }
+                }
             }),
         ]
     }
@@ -680,7 +708,16 @@ impl Workspace {
         }
         if let Some(watcher) = &self.watcher {
             let file = match &watching {
-                Watching::File(path) => path.to_str(),
+                Watching::File(path) => {
+                    let file = path.to_str();
+                    if file.is_none() {
+                        log::warn!(
+                            "Not following outside changes to {}: its name is not UTF-8",
+                            path.display()
+                        );
+                    }
+                    file
+                }
                 Watching::Nothing => None,
             };
             watcher.watch_file(file);
@@ -929,6 +966,7 @@ impl Workspace {
         };
         let arrived = restore_unsaved(&text, stored.as_ref());
         self.settle_before(&arrived.text, cx);
+        self.saves.document += 1;
         self.session = Some(opened_session(
             &name,
             &path,
@@ -1004,6 +1042,7 @@ impl Workspace {
     fn reload_from(&mut self, opened: Opened, window: &mut Window, cx: &mut Context<Self>) {
         let Opened { name, path, text } = opened;
         self.settle_before(&text, cx);
+        self.saves.document += 1;
         self.session = Some(opened_session(&name, &path, &text, &text));
         let change = minimal_change(&self.text(cx), &text);
         self.last_text.clone_from(&text);
@@ -1639,7 +1678,7 @@ impl Workspace {
             }
             LeaveChoice::Save => {
                 self.after_save = Some(intent);
-                self.save(false, window, cx);
+                self.save(SaveKind::Save, window, cx);
             }
         }
         cx.notify();
@@ -1651,6 +1690,7 @@ impl Workspace {
 
     fn clear_document(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.settle_before("", cx);
+        self.saves.document += 1;
         self.session = None;
         self.last_text = String::new();
         self.pane
@@ -1687,7 +1727,7 @@ impl Workspace {
     }
 
     fn save_document(&mut self, _: &SaveDocument, window: &mut Window, cx: &mut Context<Self>) {
-        self.save(false, window, cx);
+        self.save(SaveKind::Save, window, cx);
     }
 
     fn save_document_as(
@@ -1696,15 +1736,16 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.save(true, window, cx);
+        self.save(SaveKind::SaveAs, window, cx);
     }
 
-    fn save(&mut self, save_as: bool, window: &mut Window, cx: &mut Context<Self>) {
+    fn save(&mut self, kind: SaveKind, window: &mut Window, cx: &mut Context<Self>) {
         self.open_menu = None;
         if self.writing.is_some() {
-            self.save_again = true;
+            self.saves.queued = Some(kind.max(self.saves.queued.unwrap_or(SaveKind::Save)));
             return;
         }
+        let document = self.saves.document;
         let text = self.text(cx);
         self.writing = Some(text.clone());
         self.history.saving(text.clone(), now_ms());
@@ -1718,51 +1759,65 @@ impl Workspace {
                 path: Some(path),
                 saved_text,
                 ..
-            }) if !save_as => {
+            }) if kind == SaveKind::Save => {
                 let request = SaveRequest {
                     path,
                     text: text.clone(),
                     expected: saved_text,
                 };
-                let write = cx.background_spawn(async move { save_markdown(&request) });
+                let write = cx
+                    .background_spawn(async move { save_markdown(&request) })
+                    .shared();
+                self.saves.task = Some(write.clone());
                 cx.spawn_in(window, async move |this, cx| {
                     let result = write.await;
                     this.update_in(cx, |this, window, cx| {
-                        this.finish_save(result, text, name, window, cx);
+                        this.finish_save(
+                            result,
+                            Saving {
+                                text,
+                                name,
+                                document,
+                            },
+                            window,
+                            cx,
+                        );
                     })
                     .log_warn();
                 })
                 .detach();
             }
-            _ => self.prompt_save_as(text, name, window, cx),
+            _ => self.prompt_save_as(
+                Saving {
+                    text,
+                    name,
+                    document,
+                },
+                window,
+                cx,
+            ),
         }
     }
 
-    fn prompt_save_as(
-        &mut self,
-        text: String,
-        name: String,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
+    fn prompt_save_as(&mut self, saving: Saving, window: &mut Window, cx: &mut Context<Self>) {
         let directory = self
             .session_path()
             .and_then(Path::parent)
             .map(PathBuf::from)
             .or_else(dirs_home)
             .unwrap_or_else(|| PathBuf::from("."));
-        let target = cx.prompt_for_new_path(&directory, Some(&name));
+        let target = cx.prompt_for_new_path(&directory, Some(&saving.name));
         cx.spawn_in(window, async move |this, cx| {
             let result = match target.await {
                 Ok(Ok(Some(chosen))) => {
-                    let text = text.clone();
+                    let text = saving.text.clone();
                     cx.background_spawn(async move { save_as_target(&chosen, &text) })
                         .await
                 }
                 _ => FileSaveResult::Cancelled,
             };
             this.update_in(cx, |this, window, cx| {
-                this.finish_save(result, text, name, window, cx);
+                this.finish_save(result, saving, window, cx);
             })
             .log_warn();
         })
@@ -1772,13 +1827,26 @@ impl Workspace {
     fn finish_save(
         &mut self,
         result: FileSaveResult,
-        text: String,
-        name: String,
+        saving: Saving,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         self.writing = None;
+        self.saves.task = None;
+        let Saving {
+            text,
+            name,
+            document,
+        } = saving;
+        if document != self.saves.document {
+            self.finish_save_elsewhere(result, &name, cx);
+            return;
+        }
         let saved = matches!(result, FileSaveResult::Saved { .. });
+        let replay = matches!(
+            result,
+            FileSaveResult::Saved { .. } | FileSaveResult::Cancelled
+        );
         match result {
             FileSaveResult::Cancelled => {}
             FileSaveResult::Failed { reason } => self.notify_failure(
@@ -1808,14 +1876,41 @@ impl Workspace {
                 self.watch();
             }
         }
-        if std::mem::take(&mut self.save_again) && saved {
-            self.save(false, window, cx);
+        if let Some(kind) = self.saves.queued.take()
+            && replay
+        {
+            self.save(kind, window, cx);
             cx.notify();
             return;
         }
         match self.after_save.take() {
             Some(intent) if saved => self.continue_with(intent, window, cx),
             _ => {}
+        }
+        cx.notify();
+    }
+
+    /// A save that ends after another document was opened only reports how it went:
+    /// the session, History and watcher now belong to the new document.
+    fn finish_save_elsewhere(
+        &mut self,
+        result: FileSaveResult,
+        name: &str,
+        cx: &mut Context<Self>,
+    ) {
+        self.saves.queued = None;
+        self.after_save = None;
+        match result {
+            FileSaveResult::Saved { name, .. } => self.notify_success(format!("Saved {name}"), cx),
+            FileSaveResult::Failed { reason } => self.notify_failure(
+                with_reason(format!("Could not save {name}"), Some(&reason)),
+                cx,
+            ),
+            FileSaveResult::Conflict => self.notify_failure(
+                format!("Could not save {name}: the file changed on disk"),
+                cx,
+            ),
+            FileSaveResult::Cancelled => {}
         }
         cx.notify();
     }
@@ -2779,14 +2874,13 @@ fn dirs_home() -> Option<PathBuf> {
 }
 
 fn save_as_target(chosen: &Path, text: &str) -> FileSaveResult {
-    let chosen_text = chosen.to_string_lossy().into_owned();
-    let target = with_markdown_extension(&chosen_text);
-    if target != chosen_text && std::fs::symlink_metadata(&target).is_ok() {
+    let target = with_markdown_extension(chosen);
+    if target != chosen && std::fs::symlink_metadata(&target).is_ok() {
         return FileSaveResult::Failed {
-            reason: format!("{} already exists", name_of(Path::new(&target))),
+            reason: format!("{} already exists", name_of(&target)),
         };
     }
-    save_markdown_as(Path::new(&target), text)
+    save_markdown_as(&target, text)
 }
 
 fn preferences_motion(panel: Entity<PreferencesPanel>, open: bool) -> AnyElement {

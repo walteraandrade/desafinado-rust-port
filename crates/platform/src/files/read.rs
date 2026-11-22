@@ -22,7 +22,7 @@ pub fn read_markdown_limited(path: &Path, max_bytes: u64) -> FileReadResult {
         Ok(real) => real,
         Err(error) => return failed(describe_failure(&error)),
     };
-    if !is_markdown_path(&real.to_string_lossy()) {
+    if !is_markdown_path(&real) {
         return failed("Not a Markdown file");
     }
     let info = match fs::metadata(&real) {

@@ -6,6 +6,7 @@ publish.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+log.workspace = true
 desafinado-core = { path = "../core" }
 desafinado-ai = { path = "../ai" }
 desafinado-platform = { path = "../platform" }

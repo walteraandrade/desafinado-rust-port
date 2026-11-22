@@ -138,7 +138,7 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all
 ```
 
-Rules for changes, for people and coding agents alike, are in [AGENTS.md](AGENTS.md). CI runs those three checks on every pull request and push to `main`, builds the app and starts it off-screen under Xvfb ([`scripts/smoke.sh`](scripts/smoke.sh)). A pull request should pass the `checks` job before it merges.
+Rules for changes, for people and coding agents alike, are in [AGENTS.md](AGENTS.md). CI runs those three checks on every pull request and push to `main`, builds the app and starts it off-screen under Xvfb ([`scripts/smoke.sh`](scripts/smoke.sh)). A separate `deny` job runs [`cargo deny`](deny.toml) for known vulnerabilities, licenses and crate sources. A pull request should pass both jobs before it merges.
 
 To check a change against the real model, `cargo run -p desafinado-runtime --bin ai-check` sends one suggestion and one review pass to OpenRouter and prints what they cost. It spends real money (a fraction of a cent).
 
@@ -166,6 +166,7 @@ To check a change against the real model, `cargo run -p desafinado-runtime --bin
 | `DESAFINADO_DEV_PICK_FILE` | Path of a text file. Open, Save as and the Library's Add skip the file dialog and use the path written in it, read each time. For scripted checks. |
 | `DESAFINADO_OPENROUTER_BASE_URL` | Another OpenRouter-compatible base URL, such as a local stub. |
 | `DESAFINADO_COMMIT` | The commit shown in Preferences, for builds outside a git checkout. |
+| `DESAFINADO_LOG` | Log level for the app's own messages on stderr: `error`, `warn`, `info` (default), `debug` or `trace`. Other libraries log warnings and errors only. |
 | `HTTPS_PROXY`, `SSL_CERT_FILE` | Proxy for OpenRouter calls, and extra CA certificates trusted on top of the bundled ones. |
 
 The product's vocabulary (Suggestion, Block, Review pass, Version and so on) follows Desafinado's [GLOSSARY](https://github.com/walteraandrade/desafinado/blob/main/GLOSSARY.md), and its look and behavior follow [PRODUCT](https://github.com/walteraandrade/desafinado/blob/main/PRODUCT.md) and [DESIGN](https://github.com/walteraandrade/desafinado/blob/main/DESIGN.md).

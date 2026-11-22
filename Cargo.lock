@@ -1337,6 +1337,7 @@ dependencies = [
  "desafinado-ai",
  "desafinado-core",
  "desafinado-platform",
+ "log",
  "serde_json",
 ]
 

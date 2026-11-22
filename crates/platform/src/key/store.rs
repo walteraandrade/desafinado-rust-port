@@ -68,7 +68,7 @@ impl StoredFormat {
     }
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Serialize)]
 struct StoredOut<'a> {
     version: u8,
     storage: StoredFormat,
@@ -208,7 +208,7 @@ impl KeyStore {
                 if !state.keyring_available {
                     return Held::unreadable();
                 }
-                self.keyring.get().ok().flatten()
+                self.keyring.get().log_warn().flatten()
             }
         };
         match key {
@@ -220,7 +220,7 @@ impl KeyStore {
     fn persist(&self, state: &mut State, key: &str, format: StoredFormat) -> Option<Held> {
         let data = match format {
             StoredFormat::Keyring => {
-                self.keyring.set(key).ok()?;
+                self.keyring.set(key).log_warn()?;
                 KEYRING_DATA.to_owned()
             }
             StoredFormat::PlainText => base64::encode(key.as_bytes()),
@@ -236,7 +236,7 @@ impl KeyStore {
     }
 
     fn stored_format(&self) -> Option<StoredFormat> {
-        let text = self.file.read().ok().flatten()?;
+        let text = self.file.read().log_warn().flatten()?;
         parse_stored(&text).map(|(format, _)| format)
     }
 

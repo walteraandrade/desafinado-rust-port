@@ -1,3 +1,4 @@
+use desafinado_core::log_err::LogErr;
 use std::rc::Rc;
 
 use desafinado_features::{
@@ -181,7 +182,7 @@ impl Workspace {
     }
 
     fn version_text(&mut self, id: VersionId) -> Option<String> {
-        self.history.text(id).ok().flatten()
+        self.history.text(id).log_err().flatten()
     }
 
     pub(crate) fn render_timeline(

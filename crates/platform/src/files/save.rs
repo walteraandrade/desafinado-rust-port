@@ -65,10 +65,6 @@ fn resolve_existing(path: &Path) -> io::Result<Option<PathBuf>> {
     }
 }
 
-fn path_text(path: &Path) -> String {
-    path.to_string_lossy().into_owned()
-}
-
 pub fn save_markdown(request: &SaveRequest) -> FileSaveResult {
     match save_markdown_inner(request) {
         Ok(result) => result,
@@ -83,7 +79,7 @@ fn save_markdown_inner(request: &SaveRequest) -> io::Result<FileSaveResult> {
     let Some(real) = resolve_existing(Path::new(&request.path))? else {
         return Ok(FileSaveResult::Conflict);
     };
-    if !is_markdown_path(&path_text(&real)) {
+    if !is_markdown_path(&real) {
         return Ok(failed("Not a Markdown file"));
     }
     let holds = || -> io::Result<bool> {
@@ -111,7 +107,7 @@ fn save_markdown_as_inner(path: &Path, text: &str) -> io::Result<FileSaveResult>
         return Ok(failed("Too large to save (over 5 MiB)"));
     }
     let target = resolve_existing(path)?.unwrap_or_else(|| path.to_path_buf());
-    if !is_markdown_path(&path_text(&target)) {
+    if !is_markdown_path(&target) {
         return Ok(failed("Not a Markdown file"));
     }
     write_atomic(&target, text, &|| Ok(true))?;

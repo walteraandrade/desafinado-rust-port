@@ -4,6 +4,7 @@
 //! the same way but leave a line in the log, at the caller's location.
 
 use std::fmt::Display;
+use std::io;
 use std::panic::Location;
 
 pub trait LogErr<T> {
@@ -37,6 +38,20 @@ fn log_at<T, E: Display>(
         .ok()
 }
 
+/// For removing something that may not be there: a missing file or folder counts as removed.
+pub trait MissingIsRemoved {
+    fn missing_is_removed(self) -> io::Result<()>;
+}
+
+impl MissingIsRemoved for io::Result<()> {
+    fn missing_is_removed(self) -> io::Result<()> {
+        match self {
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+            other => other,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -51,5 +66,20 @@ mod tests {
     fn turns_a_failure_into_none() {
         let result: Result<u8, String> = Err("disk full".into());
         assert_eq!(result.log_warn(), None);
+    }
+
+    #[test]
+    fn counts_a_missing_file_as_removed() {
+        let missing = std::fs::remove_file("/nonexistent/desafinado/file");
+        assert!(missing.missing_is_removed().is_ok());
+    }
+
+    #[test]
+    fn keeps_other_removal_failures() {
+        let denied: io::Result<()> = Err(io::Error::from(io::ErrorKind::PermissionDenied));
+        assert_eq!(
+            denied.missing_is_removed().map_err(|error| error.kind()),
+            Err(io::ErrorKind::PermissionDenied)
+        );
     }
 }

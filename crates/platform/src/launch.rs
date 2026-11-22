@@ -1,5 +1,5 @@
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Mutex, PoisonError};
 
 use crate::files::is_markdown_path;
 
@@ -86,7 +86,7 @@ pub fn launch_file_of(argv: &[String], cwd: &Path) -> Option<PathBuf> {
     argv.iter()
         .skip(1)
         .filter_map(|arg| path_of(arg, cwd))
-        .find(|path| is_markdown_path(&path.to_string_lossy()))
+        .find(|path| is_markdown_path(path))
 }
 
 #[derive(Debug, Default)]
@@ -104,17 +104,15 @@ impl LaunchQueue {
             return false;
         };
         let real = std::fs::canonicalize(&path).unwrap_or(path);
-        if let Ok(mut pending) = self.pending.lock() {
-            *pending = Some(real);
-        }
+        *self.pending.lock().unwrap_or_else(PoisonError::into_inner) = Some(real);
         true
     }
 
     pub fn take(&self) -> Option<PathBuf> {
         self.pending
             .lock()
-            .ok()
-            .and_then(|mut pending| pending.take())
+            .unwrap_or_else(PoisonError::into_inner)
+            .take()
     }
 }
 

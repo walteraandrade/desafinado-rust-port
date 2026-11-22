@@ -1,6 +1,7 @@
-use desafinado_core::log_err::LogErr;
+use desafinado_core::log_err::{LogErr, MissingIsRemoved};
 use std::{
     collections::BTreeMap,
+    io,
     path::PathBuf,
     sync::{
         Arc, Mutex, PoisonError,
@@ -12,6 +13,7 @@ use desafinado_ai::records::AiCallRecord;
 
 use desafinado_ai::default_model::resolve_model;
 use desafinado_platform::{
+    files::write_atomic_unconditionally,
     key::{FsKeyFile, KeyStore, SecretServiceKeyring, key_file_path},
     records::AiCallLog,
     user_data::user_data_dir,
@@ -95,16 +97,15 @@ impl Services {
     pub fn model(&self) -> String {
         self.model
             .lock()
-            .map(|model| model.clone())
-            .unwrap_or_default()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
     }
 
-    pub fn set_model(&self, model: &str) {
+    pub fn set_model(&self, model: &str) -> io::Result<()> {
         let model = resolve_model(Some(model));
-        std::fs::write(self.user_data.join(MODEL_FILE), &model).log_err();
-        if let Ok(mut current) = self.model.lock() {
-            *current = model;
-        }
+        write_atomic_unconditionally(&self.user_data.join(MODEL_FILE), &model)?;
+        *self.model.lock().unwrap_or_else(PoisonError::into_inner) = model;
+        Ok(())
     }
 
     pub fn default_model(&self) -> String {
@@ -118,10 +119,9 @@ impl Services {
             .filter(|text| !text.is_empty())
     }
 
-    pub fn use_default_model(&self) {
-        std::fs::remove_file(self.user_data.join(MODEL_FILE)).log_err();
-        if let Ok(mut current) = self.model.lock() {
-            *current = self.default_model();
-        }
+    pub fn use_default_model(&self) -> io::Result<()> {
+        std::fs::remove_file(self.user_data.join(MODEL_FILE)).missing_is_removed()?;
+        *self.model.lock().unwrap_or_else(PoisonError::into_inner) = self.default_model();
+        Ok(())
     }
 }

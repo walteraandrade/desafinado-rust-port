@@ -1,4 +1,4 @@
-use desafinado_core::log_err::LogErr;
+use desafinado_core::log_err::{LogErr, MissingIsRemoved};
 use std::path::{Path, PathBuf};
 
 use desafinado_platform::files::write_atomic_unconditionally;
@@ -20,7 +20,9 @@ pub fn save_last_file(dir: &Path, path: &Path) {
 }
 
 pub fn clear_last_file(dir: &Path) {
-    std::fs::remove_file(file_in(dir)).log_err();
+    std::fs::remove_file(file_in(dir))
+        .missing_is_removed()
+        .log_err();
 }
 
 #[cfg(test)]

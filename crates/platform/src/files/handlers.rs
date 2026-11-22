@@ -76,10 +76,9 @@ pub fn save_file_as_request(
     let Some(chosen) = dialogs.pick_save_path(&request.suggested_name) else {
         return FileSaveResult::Cancelled;
     };
-    let chosen_text = chosen.to_string_lossy().into_owned();
-    let target = with_markdown_extension(&chosen_text);
-    if target != chosen_text && fs::symlink_metadata(&target).is_ok() {
-        let name = Path::new(&target)
+    let target = with_markdown_extension(&chosen);
+    if target != chosen && fs::symlink_metadata(&target).is_ok() {
+        let name = target
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_default();
@@ -87,7 +86,7 @@ pub fn save_file_as_request(
             reason: format!("{name} already exists"),
         };
     }
-    save_markdown_as(Path::new(&target), &request.text)
+    save_markdown_as(&target, &request.text)
 }
 
 #[cfg(test)]
@@ -202,6 +201,17 @@ mod tests {
         let result = save_file_as_request("x", "n.md", &Fake::new(Some(dir.join("notes"))));
         assert!(matches!(result, FileSaveResult::Saved { .. }));
         assert_eq!(fs::read_to_string(dir.join("notes.md")).unwrap(), "x");
+    }
+
+    #[test]
+    fn save_as_keeps_a_name_that_is_not_utf8() {
+        use std::os::unix::ffi::OsStrExt;
+        let (_d, dir) = real_dir();
+        let name = std::ffi::OsStr::from_bytes(b"caf\xe9");
+        let result = save_file_as_request("x", "n.md", &Fake::new(Some(dir.join(name))));
+        assert!(matches!(result, FileSaveResult::Saved { .. }));
+        let written = std::ffi::OsStr::from_bytes(b"caf\xe9.md");
+        assert_eq!(fs::read_to_string(dir.join(written)).unwrap(), "x");
     }
 
     #[test]

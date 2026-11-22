@@ -1,5 +1,5 @@
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Mutex, PoisonError};
 
 pub trait FileDialogs: Send + Sync {
     fn pick_file(&self) -> Option<PathBuf>;
@@ -18,16 +18,20 @@ impl NativeDialogs {
     }
 
     fn remember(&self, path: PathBuf) -> PathBuf {
-        if let Some(parent) = path.parent()
-            && let Ok(mut directory) = self.directory.lock()
-        {
-            *directory = Some(parent.to_path_buf());
+        if let Some(parent) = path.parent() {
+            *self
+                .directory
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner) = Some(parent.to_path_buf());
         }
         path
     }
 
     fn start_directory(&self) -> Option<PathBuf> {
-        self.directory.lock().ok().and_then(|d| d.clone())
+        self.directory
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
     }
 }
 

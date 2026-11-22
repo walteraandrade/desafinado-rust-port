@@ -1,4 +1,4 @@
-use desafinado_core::log_err::LogErr;
+use desafinado_core::log_err::{LogErr, MissingIsRemoved};
 use std::{
     fs::{File, OpenOptions},
     io::{self, Read, Write},
@@ -49,7 +49,9 @@ pub struct PrimaryInstance {
 
 impl Drop for PrimaryInstance {
     fn drop(&mut self) {
-        std::fs::remove_file(&self.socket).log_warn();
+        std::fs::remove_file(&self.socket)
+            .missing_is_removed()
+            .log_warn();
     }
 }
 
@@ -112,11 +114,9 @@ pub fn claim(
         hand_over(&socket, message)?;
         return Ok(Claim::HandedOver);
     }
-    if let Err(error) = std::fs::remove_file(&socket)
-        && error.kind() != io::ErrorKind::NotFound
-    {
-        log::warn!("Could not remove the old instance socket: {error}");
-    }
+    std::fs::remove_file(&socket)
+        .missing_is_removed()
+        .log_warn();
     let listener = UnixListener::bind(&socket)?;
     serve(listener, deliver);
     Ok(Claim::Primary(PrimaryInstance {

@@ -17,12 +17,13 @@ CI also builds the app and starts it off-screen with [`scripts/smoke.sh`](script
 ## Rust
 
 - Lints live in `[workspace.lints]` in the root `Cargo.toml`, clippy pedantic included. Fix the code; when a lint is wrong for one item, use `#[expect(lint, reason = "...")]`, never a bare `#[allow]`.
-- Never drop a `Result` with `let _ =` or `.ok()`. Use `?`, a `match`, or `desafinado_core::log_err::LogErr` (`.log_err()` for failures the user should not see silently, `.log_warn()` for best-effort work).
+- Never drop a `Result` with `let _ =`. Use `?`, a `match`, or `desafinado_core::log_err::LogErr` (`.log_err()` for failures that matter, `.log_warn()` for best-effort work). Use `.ok()` only where the error is the expected answer (a value that may be absent); when it can also mean a real failure, call `.log_err()` or `.log_warn()` instead.
+- Removing something that may not exist: `.missing_is_removed()` (also in `log_err`) before logging, so a normal "not found" does not show up as a failure.
 - A failure the user caused or can fix (a save, a key, a file) reaches them as a toast or an inline message, not only the log.
 - Logs go through the `log` crate (`log::error!` etc.), never `println!` or `eprintln!` in the app. `DESAFINADO_LOG=debug` shows them.
 - `unwrap()` and `expect()` are for tests and for invariants that cannot fail (a constant regex in a `LazyLock`). Compile regexes once in a `static LazyLock`, never inside a function that runs per line.
-- Paths are `PathBuf` and `&Path`, never `String`. File names need not be UTF-8.
-- Secrets are wrapped: the OpenRouter key is `ApiKey`, whose `Debug` hides it. Do not derive `Debug` on a type that holds a secret, and never log or print one.
+- Paths are `PathBuf` and `&Path` in new code. File names need not be UTF-8. Older code still carries some paths as `String` (the file watcher, the History key, the last-file record); do not add more.
+- Secrets are wrapped: the OpenRouter key is `ApiKey`, whose `Debug` prints `ApiKey(***)`, so a type holding an `ApiKey` may derive `Debug`. Do not derive `Debug` on a type that holds the raw key text, and never log or print a secret.
 - `unsafe` is forbidden. Use `rustix` for system calls.
 - No `std::env::set_var` in tests: tests run in parallel threads. Pass values in instead.
 - Each test asserts something about behavior. No test that only restates a constant or calls code without checking the result.
@@ -31,7 +32,7 @@ CI also builds the app and starts it off-screen with [`scripts/smoke.sh`](script
 ## GPUI
 
 - Only `crates/app` knows about GPUI. Logic goes in the plain crates, with unit tests.
-- Disk, network and process work runs in `cx.background_spawn`; the result comes back through `cx.spawn_in` and a `WeakEntity::update`. A synchronous call on the UI thread freezes the window. Known exceptions still to move: the History store writes and the unsaved-text flush.
+- Disk, network and process work runs in `cx.background_spawn`; the result comes back through `cx.spawn_in` and a `WeakEntity::update`. A synchronous call on the UI thread freezes the window. Known exceptions still to move: the History store writes and the unsaved-text load and flush, reading the file on open and reload, reading Skill files for the unsaved-changes check, path canonicalization during render, and the model choice write. Two places run blocking work on a plain `std::thread::spawn` (pricing an AI call, Evals runs); new code uses `background_spawn`.
 - `WeakEntity::update` returns a `Result` because the entity may be gone. Handle it or `.log_err()` it.
 - Inside `entity.update(cx, |this, cx| ...)` use the inner `cx`, not the outer one.
 - Keep the returned `Task` or call `.detach()`. A dropped `Task` cancels the work.
@@ -39,16 +40,16 @@ CI also builds the app and starts it off-screen with [`scripts/smoke.sh`](script
 
 ## UI
 
-- All styling goes through `crates/app/src/ui.rs` ([docs/ui-rubric.md](docs/ui-rubric.md)); `crates/app/tests/ui_rules.rs` fails CI otherwise. No borders, sizes or hover styles outside it, 4px grid, functions of 100 lines or fewer.
+- All styling goes through `crates/app/src/ui.rs` ([docs/ui-rubric.md](docs/ui-rubric.md)); `crates/app/tests/ui_rules.rs` fails CI otherwise. No borders, type sizes or hover styles outside it, 4px grid, functions of 100 lines or fewer.
 - Hierarchy comes from color, not from size or borders. Every theme defines error and success colors.
 - Names in code and UI follow the Electron repo's GLOSSARY.md (Suggestion, Block, Quick action, Review, Version).
 
 ## Git
 
 - Commit messages: short, imperative, conventional prefix (`feat:`, `fix:`, `refactor:`, ...).
-- Pull requests pass the `checks` job before merging.
+- Pull requests pass the `checks` and `deny` jobs before merging.
 
 ## Reference
 
 - [Pragmatic Rust Guidelines, agent version](https://microsoft.github.io/rust-guidelines/agents/all.txt) (Microsoft): read the section you need, not the whole file.
-- [Zed's AGENTS.md](https://github.com/zed-industries/zed/blob/main/AGENTS.md): GPUI rules from the team that maintains GPUI.
+- [Zed's AGENTS.md](https://github.com/zed-industries/zed/blob/main/AGENTS.md): GPUI rules from the team that maintains GPUI. Its rules about Zed's own repository and README do not apply here.

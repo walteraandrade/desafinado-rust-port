@@ -1,3 +1,4 @@
+use desafinado_core::log_err::LogErr;
 use std::collections::HashMap;
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
@@ -47,7 +48,7 @@ impl AiCallLog {
         match fs::read_to_string(&self.file) {
             Ok(text) => Ok(text
                 .lines()
-                .filter_map(|line| serde_json::from_str(line).ok())
+                .filter_map(|line| serde_json::from_str(line).log_warn())
                 .collect()),
             Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(Vec::new()),
             Err(error) => Err(error),

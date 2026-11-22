@@ -72,7 +72,7 @@ impl ModelDialog {
 
     fn submit(&mut self, _: &SubmitModel, _: &mut Window, cx: &mut Context<Self>) {
         let choice = parse_model_choice(&self.input.read(cx).value());
-        match &choice {
+        let written = match &choice {
             ModelChoice::Invalid { message } => {
                 self.error = Some(message.clone());
                 cx.notify();
@@ -80,6 +80,11 @@ impl ModelDialog {
             }
             ModelChoice::Model { id } => self.services.set_model(id),
             ModelChoice::Default => self.services.use_default_model(),
+        };
+        if let Err(error) = written {
+            self.error = Some(format!("Could not save the model choice: {error}"));
+            cx.notify();
+            return;
         }
         if let Some(message) = saved_model_message(&choice, &self.default_model) {
             cx.emit(ModelEvent::Saved(message));

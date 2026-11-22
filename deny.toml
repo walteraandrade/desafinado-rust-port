@@ -1,4 +1,5 @@
-# cargo deny check: known vulnerabilities, licenses, duplicate or banned crates, and crate sources.
+# cargo deny check: known vulnerabilities, licenses, banned or wildcard dependencies, and crate sources.
+# Duplicate versions are allowed: GPUI's dependency tree pulls several and none are ours to pick.
 # CI runs it on every pull request; run it locally with `cargo deny check` (cargo install cargo-deny).
 
 [graph]
