@@ -104,8 +104,14 @@ const MARGIN_GAP: f32 = 24.;
 const BUBBLE_WIDTH: f32 = 360.;
 const BUBBLE_KEY: &str = "\u{0}bubble";
 
+const CARD_KEYS: &str = "SuggestionCard && !RefineInput";
+
 pub fn init(cx: &mut App) {
-    cx.bind_keys([
+    cx.bind_keys(key_bindings());
+}
+
+fn key_bindings() -> Vec<KeyBinding> {
+    vec![
         KeyBinding::new("ctrl-shift-z", Redo, Some("EditorPane > Input")),
         KeyBinding::new("ctrl-y", Redo, Some("EditorPane > Input")),
         KeyBinding::new("ctrl-z", Undo, Some("EditorPane > Input")),
@@ -133,12 +139,12 @@ pub fn init(cx: &mut App) {
         KeyBinding::new("shift-tab", CardPrevious, Some("RefineInput > Input")),
         KeyBinding::new("tab", CardNext, Some("SuggestionCard")),
         KeyBinding::new("shift-tab", CardPrevious, Some("SuggestionCard")),
-        KeyBinding::new("enter", CardPress, Some("SuggestionCard")),
-        KeyBinding::new("space", CardPress, Some("SuggestionCard")),
+        KeyBinding::new("enter", CardPress, Some(CARD_KEYS)),
+        KeyBinding::new("space", CardPress, Some(CARD_KEYS)),
         KeyBinding::new("escape", CardLeave, Some("SuggestionCard")),
         KeyBinding::new("ctrl-h", PreviousVersion, Some("SuggestionCard")),
         KeyBinding::new("ctrl-l", NextVersion, Some("SuggestionCard")),
-    ]);
+    ]
 }
 
 pub struct AcceptedChange {
@@ -2832,4 +2838,57 @@ fn hits_text_range(
     let start = if on_first { from.left() } else { column.start };
     let end = if on_last { to.left() } else { column.end };
     x >= start && x <= end
+}
+
+#[cfg(test)]
+mod tests {
+    use super::key_bindings;
+    use gpui_kit::{KeyContext, Keymap, Keystroke};
+
+    fn stack(names: &[&str]) -> Vec<KeyContext> {
+        names
+            .iter()
+            .map(|name| KeyContext::parse(name).unwrap())
+            .collect()
+    }
+
+    fn bound(key: &'static str, names: &[&str]) -> Vec<&'static str> {
+        let keymap = Keymap::new(key_bindings());
+        let (bindings, _) =
+            keymap.bindings_for_input(&[Keystroke::parse(key).unwrap()], &stack(names));
+        bindings
+            .iter()
+            .map(|binding| binding.action().name())
+            .collect()
+    }
+
+    const CARD: &[&str] = &["EditorPane", "SuggestionCard"];
+    const REFINE_FIELD: &[&str] = &["EditorPane", "SuggestionCard", "RefineInput", "Input"];
+
+    #[test]
+    fn space_and_enter_press_the_focused_card_control() {
+        assert_eq!(bound("space", CARD), vec!["editor_pane::CardPress"]);
+        assert_eq!(bound("enter", CARD), vec!["editor_pane::CardPress"]);
+    }
+
+    #[test]
+    fn space_types_in_the_refine_field() {
+        assert!(bound("space", REFINE_FIELD).is_empty());
+    }
+
+    #[test]
+    fn refine_field_keys_stay_in_the_field() {
+        assert_eq!(
+            bound("enter", REFINE_FIELD).first(),
+            Some(&"editor_pane::RefineConfirm")
+        );
+        assert_eq!(
+            bound("escape", REFINE_FIELD).first(),
+            Some(&"editor_pane::RefineCancel")
+        );
+        assert!(!bound("enter", REFINE_FIELD).contains(&"editor_pane::CardPress"));
+        for key in ["a", "r", "shift-a"] {
+            assert!(bound(key, REFINE_FIELD).is_empty(), "{key} is bound");
+        }
+    }
 }
