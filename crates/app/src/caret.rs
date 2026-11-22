@@ -11,7 +11,7 @@ use desafinado_features::caret::{
 };
 use desafinado_platform::files::write_atomic_unconditionally;
 use gpui_kit::{
-    App, Context, Entity, Global, Task,
+    App, Context, Entity, Focusable as _, Global, Task, Window,
     base::input::{
         CursorBlink, EditorState, RangeDecoration, RangeDecorationCollection, RangeDecorationStyle,
         TextDecoration, TextDecorationCollection,
@@ -79,6 +79,7 @@ pub struct CaretMarks {
     ink: TextDecorationCollection,
     since: Instant,
     shown: bool,
+    focused: bool,
 }
 
 impl CaretMarks {
@@ -94,6 +95,7 @@ impl CaretMarks {
             ink,
             since: Instant::now(),
             shown: true,
+            focused: false,
         }
     }
 
@@ -108,24 +110,33 @@ impl CaretMarks {
         self.refresh(editor, cx);
     }
 
-    /// Shows or hides the caret for this moment; returns whether that changed
-    /// and how long until it next might.
-    pub fn tick(&mut self, editor: &Entity<EditorState>, cx: &mut App) -> (bool, Duration) {
+    /// Shows or hides the caret for this moment; returns whether the document
+    /// must redraw and how long until it next might. An editor without focus
+    /// shows no caret, so its blink does not redraw anything.
+    pub fn tick(
+        &mut self,
+        editor: &Entity<EditorState>,
+        focused: bool,
+        cx: &mut App,
+    ) -> (bool, Duration) {
         let blink = settings(cx).blink;
         let since = self.since.elapsed();
         let shown = caret_shown(blink, since);
-        let changed = shown != self.shown;
+        let changed = focused != self.focused || (focused && shown != self.shown);
+        self.shown = shown;
+        self.focused = focused;
         if changed {
-            self.shown = shown;
             self.refresh(editor, cx);
         }
-        let wait = until_next_phase(blink, since).unwrap_or(IDLE_CHECK) + PHASE_MARGIN;
+        let wait = until_next_phase(blink, since).map_or(IDLE_CHECK, |left| left.min(IDLE_CHECK))
+            + PHASE_MARGIN;
         (changed, wait)
     }
 
     pub fn refresh(&self, editor: &Entity<EditorState>, cx: &mut App) {
         let state = editor.read(cx);
         let block = settings(cx).shape == CaretShape::Block
+            && self.focused
             && self.shown
             && state.selected_range().is_empty();
         let next = block
@@ -153,13 +164,16 @@ impl CaretMarks {
 const IDLE_CHECK: Duration = Duration::from_millis(500);
 const PHASE_MARGIN: Duration = Duration::from_millis(4);
 
-/// Wakes at each blink phase of the document's caret and redraws it.
-pub fn start_blink(cx: &mut Context<EditorPane>) -> Task<()> {
-    cx.spawn(async move |this, cx| {
+/// Wakes at each blink phase of the document's caret, and often enough to
+/// notice the editor gaining or losing focus, and redraws it.
+pub fn start_blink(window: &Window, cx: &mut Context<EditorPane>) -> Task<()> {
+    cx.spawn_in(window, async move |this, cx| {
         loop {
-            let Ok(wait) = this.update(cx, |pane, cx| {
+            let Ok(wait) = this.update_in(cx, |pane, window, cx| {
                 let editor = pane.editor.clone();
-                let (changed, wait) = pane.caret.tick(&editor, cx);
+                let focused = editor.read(cx).focus_handle(cx).is_focused(window)
+                    && window.is_window_active();
+                let (changed, wait) = pane.caret.tick(&editor, focused, cx);
                 if changed {
                     cx.notify();
                 }

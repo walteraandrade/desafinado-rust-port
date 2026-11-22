@@ -322,7 +322,7 @@ impl EditorPane {
             strike,
             fills,
             caret,
-            _caret_blink: caret::start_blink(cx),
+            _caret_blink: caret::start_blink(window, cx),
             bubble_input,
             bubble: BubbleState::default(),
             menu: AskMenu::default(),
@@ -2730,7 +2730,10 @@ impl Render for EditorPane {
             .child(ui::caret_layer(
                 self.editor.clone(),
                 caret::settings(cx),
-                self.caret.shown(),
+                (
+                    self.caret.shown(),
+                    suggestion_at(&self.suggestions, self.cursor(cx)).is_some(),
+                ),
                 roles,
             ))
             .children(caret)
