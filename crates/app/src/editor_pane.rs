@@ -2533,7 +2533,7 @@ impl EditorPane {
                 this.menu = ask_menu::hover_ask_menu(&this.menu, index);
                 this.bubble_confirm(&BubbleConfirm, window, cx);
             }))
-            .child(text)
+            .child(ui::ask_option_label(text))
             .when(skill, |this| this.child(ui::meta("Skill", roles)))
     }
 }
@@ -2770,7 +2770,7 @@ fn render_bubble_ghost(ghost: &BubbleGhost, roles: Roles) -> AnyElement {
         .enumerate()
         .map(|(index, row)| {
             ui::ask_option_row(("ghost-row", index), index == ghost.active, roles)
-                .child(row.label.clone())
+                .child(ui::ask_option_label(row.label.clone()))
                 .when(row.skill, |this| this.child(ui::meta("Skill", roles)))
                 .into_any_element()
         })
