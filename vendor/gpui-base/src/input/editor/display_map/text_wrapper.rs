@@ -1079,14 +1079,14 @@ impl LineLayout {
     }
 
     /// Record whether any run of this line carries a background color.
-    #[cfg(test)]
-    pub(crate) fn has_background(&self) -> bool {
-        self.has_background
-    }
-
     pub(crate) fn with_background(mut self, has_background: bool) -> Self {
         self.has_background = has_background;
         self
+    }
+
+    #[cfg(test)]
+    pub(crate) fn has_background(&self) -> bool {
+        self.has_background
     }
 
     /// Set the left offset reserved for continuation wrapped lines.
@@ -1592,6 +1592,25 @@ mod tests {
         let text = Rope::from(text);
         wrapper._update(&text, &(0..text.len()), &text, &mut |_, _, _| vec![]);
         wrapper
+    }
+
+    #[test]
+    fn a_zone_on_a_soft_wrapped_line_follows_its_last_row() {
+        let mut wrapper = TextWrapper::new(test_font(), px(14.), Some(px(8.)));
+        wrapper.zones = Rc::from([(11, 2)].as_slice());
+        let text = Rope::from("hello world\nx");
+        wrapper._update(&text, &(0..text.len()), &text, &mut |line, width, _| {
+            measured_wrap_boundaries(line, width, WrappingIndent::None, |s| {
+                px(s.graphemes(true).count() as f32)
+            })
+        });
+        let line = wrapper.line(0).unwrap();
+        assert_eq!(line.text_rows(), 2);
+        assert_eq!(line.lines_len(), 4);
+        assert_eq!(wrapper.offset_to_display_point(11).row, 1);
+        assert_eq!(wrapper.skip_zone_row(2, false), 1);
+        assert_eq!(wrapper.skip_zone_row(3, true), 4);
+        assert_eq!(wrapper.buffer_line_to_first_wrap_row(1), 4);
     }
 
     #[test]

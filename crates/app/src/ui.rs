@@ -1178,8 +1178,7 @@ pub fn caret_layer(
             let Some(caret) = painted_caret_line(state) else {
                 return;
             };
-            let cursor = state.cursor();
-            let next_width = next_character(state.text(), cursor)
+            let next_width = caret_cell(state)
                 .and_then(|range| state.range_to_bounds(&range))
                 .filter(|bounds| (bounds.top() - caret.top()).abs() < px(1.))
                 .map(|bounds| bounds.size.width)
@@ -1236,8 +1235,26 @@ pub fn caret_block_ink(roles: Roles) -> (Hsla, HighlightStyle) {
     )
 }
 
+/// The cell a block or underline caret covers: the character after the cursor, unless
+/// inserted text shows at the cursor, where the caret sits before it.
+pub fn caret_cell(state: &gpui_kit::base::input::EditorState) -> Option<std::ops::Range<usize>> {
+    let cursor = state.cursor();
+    caret_cell_in(state.text(), cursor, state.inlays())
+}
+
+fn caret_cell_in(
+    text: &gpui_kit::base::input::Rope,
+    cursor: usize,
+    inlays: &[gpui_kit::base::input::Inlay],
+) -> Option<std::ops::Range<usize>> {
+    if inlays.iter().any(|inlay| inlay.offset() == cursor) {
+        return None;
+    }
+    next_character(text, cursor)
+}
+
 /// The byte range of the character after `cursor`, unless it ends a line.
-pub fn next_character(
+fn next_character(
     text: &gpui_kit::base::input::Rope,
     cursor: usize,
 ) -> Option<std::ops::Range<usize>> {
@@ -1291,6 +1308,19 @@ mod tests {
             assert_eq!(quads[0].1, CaretInk::Erase);
             assert_eq!(quads[0].0.size.width, px(1.));
         }
+    }
+
+    #[test]
+    fn the_caret_cell_is_the_next_character_unless_inserted_text_shows_there() {
+        let text = gpui_kit::base::input::Rope::from("ab\ncd");
+        let inlay =
+            gpui_kit::base::input::Inlay::new(1, "xyz", gpui_kit::HighlightStyle::default());
+        assert_eq!(
+            super::caret_cell_in(&text, 0, std::slice::from_ref(&inlay)),
+            Some(0..1)
+        );
+        assert_eq!(super::caret_cell_in(&text, 1, &[inlay]), None);
+        assert_eq!(super::caret_cell_in(&text, 2, &[]), None);
     }
 
     #[test]

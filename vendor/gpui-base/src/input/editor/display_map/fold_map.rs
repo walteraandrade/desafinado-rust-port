@@ -69,14 +69,14 @@ impl FoldMap {
         }
     }
 
-    /// Update cached wrap_row_count without full rebuild.
-    /// Used when no folds are active (identity mapping assumed).
     /// Force the next rebuild, for changes that move wrap rows without changing their count
     /// (a block zone moving to another line, an inlay changing width).
     pub(super) fn mark_dirty(&mut self) {
         self.needs_rebuild = true;
     }
 
+    /// Update cached wrap_row_count without full rebuild.
+    /// Used when no folds are active (identity mapping assumed).
     pub(super) fn mark_dirty_with_wrap_count(&mut self, wrap_row_count: usize) {
         self.needs_rebuild = true;
         self.cached_wrap_row_count = wrap_row_count;

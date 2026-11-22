@@ -6935,12 +6935,26 @@ mod tests {
                     cx,
                 );
                 assert_eq!(state.inlays()[0].offset(), 5);
+                state.set_inlays(
+                    vec![
+                        crate::input::Inlay::new(5, " ", style),
+                        crate::input::Inlay::new(5, "A", style),
+                        crate::input::Inlay::new(8, "B", style),
+                    ],
+                    cx,
+                );
+                let texts: Vec<&str> = state.inlays().iter().map(|i| i.text().as_ref()).collect();
+                assert_eq!(
+                    texts,
+                    [" ", "A", "B"],
+                    "inlays at one offset keep their order"
+                );
                 state.replace_text_in_range(Some(0..0), "oh ", window, cx);
                 let offsets: Vec<usize> = state.inlays().iter().map(|i| i.offset()).collect();
-                assert_eq!(offsets, [8, 11]);
+                assert_eq!(offsets, [8, 8, 11]);
                 state.replace_text_in_range(Some(9..13), "", window, cx);
                 let offsets: Vec<usize> = state.inlays().iter().map(|i| i.offset()).collect();
-                assert_eq!(offsets, [8]);
+                assert_eq!(offsets, [8, 8]);
             });
         });
     }
