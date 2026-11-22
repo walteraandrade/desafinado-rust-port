@@ -218,6 +218,7 @@ pub struct EditorPane {
     pub suggestions: SuggestionsState,
     strike: TextDecorationCollection,
     fills: RangeDecorationCollection,
+    caret_mark: RangeDecorationCollection,
     bubble_input: Entity<InputState>,
     bubble: BubbleState,
     menu: AskMenu,
@@ -291,9 +292,10 @@ impl EditorPane {
                 .line_number(false)
                 .soft_wrap(true)
         });
-        let (strike, fills) = editor.update(cx, |state, cx| {
+        let (strike, fills, caret_mark) = editor.update(cx, |state, cx| {
             (
                 state.create_decorations_collection(vec![], cx),
+                state.create_range_decorations_collection(vec![], cx),
                 state.create_range_decorations_collection(vec![], cx),
             )
         });
@@ -317,6 +319,7 @@ impl EditorPane {
             suggestions: empty_suggestions(),
             strike,
             fills,
+            caret_mark,
             bubble_input,
             bubble: BubbleState::default(),
             menu: AskMenu::default(),
@@ -392,6 +395,7 @@ impl EditorPane {
             return;
         }
         self.last_selection = selection.clone();
+        self.mark_caret(cx);
         self.bubble = next_bubble(
             self.bubble,
             BubbleChange {
@@ -2250,6 +2254,23 @@ impl EditorPane {
         }
     }
 
+    fn mark_caret(&self, cx: &mut Context<Self>) {
+        let state = self.editor.read(cx);
+        let next = (ui::caret_style(cx).fills_next_character()
+            && state.selected_range().is_empty())
+        .then(|| ui::next_character(state.text(), state.cursor()))
+        .flatten();
+        let marks = next
+            .map(|range| {
+                RangeDecoration::new(range)
+                    .with_style(RangeDecorationStyle::Fill)
+                    .with_color(theme::roles(cx).caret_fill)
+            })
+            .into_iter()
+            .collect();
+        self.caret_mark.set(marks, cx);
+    }
+
     fn render_caret(&self, roles: Roles, cx: &App) -> Option<AnyElement> {
         let caret = ai_caret_of(&self.suggestions, self.review.is_some())?;
         if self.above_view(caret.pos, cx) {
@@ -2719,6 +2740,7 @@ impl Render for EditorPane {
                         .child(Editor::new(&self.editor).h_full().bordered(false)),
                 ),
             )
+            .children(ui::caret_layer(self.editor.clone(), roles, cx))
             .children(caret)
             .children(cards)
             .children(bubble)
