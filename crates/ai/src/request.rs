@@ -90,6 +90,7 @@ pub fn timeout_error(kind: RequestKind, limits: &RequestKindLimits) -> ClientErr
 pub enum OutputShape {
     Suggestion,
     ReviewEdits,
+    Notes,
 }
 
 #[derive(Debug, Clone)]
@@ -105,6 +106,7 @@ pub fn chat_request_body(request: &ChatRequest<'_>) -> Value {
     let response_format = match request.shape {
         OutputShape::Suggestion => suggestion_response_format(),
         OutputShape::ReviewEdits => review_response_format(),
+        OutputShape::Notes => crate::notes::comment_response_format(),
     };
     let mut body = json!({
         "model": request.model,

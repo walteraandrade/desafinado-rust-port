@@ -1356,7 +1356,7 @@ impl Workspace {
                     PaneToastAction::RetryReview(focus) => {
                         let focus = focus.clone();
                         self.pane
-                            .update(cx, |pane, cx| pane.start_review(focus, cx));
+                            .update(cx, |pane, cx| pane.retry_review(focus, cx));
                     }
                 }
             }
@@ -2353,7 +2353,7 @@ impl Workspace {
                 rows
             }
             MenuKind::Edit => vec![
-                if self.pane.read(cx).review.is_some() {
+                if self.pane.read(cx).busy().is_some() {
                     row("Stop Review", None, Box::new(StopReview), false)
                 } else {
                     row("Review…", None, Box::new(StartReview), false)
@@ -2522,7 +2522,7 @@ impl Workspace {
     fn open_review(&mut self, _: &StartReview, window: &mut Window, cx: &mut Context<Self>) {
         self.open_menu = None;
         self.leave_reading();
-        if self.pane.read(cx).review.is_some() {
+        if self.pane.read(cx).busy().is_some() {
             return;
         }
         let input = cx.new(|cx| {
@@ -3435,7 +3435,8 @@ impl Workspace {
             .file_label(cx)
             .map_or_else(|| self.file_name(), SharedString::from);
         let dirty = self.session.as_ref().is_some_and(|session| session.dirty);
-        let review = self.pane.read(cx).review.as_ref().map(|run| run.added);
+        let review = self.pane.read(cx).busy();
+        let mode = self.pane.read(cx).mode_chip();
         let open = self.pane.read(cx).open_review_count();
         h_flex_row()
             .h(px(48.))
@@ -3500,6 +3501,21 @@ impl Workspace {
                                 cx.listener(|this, _, window, cx| this.reject_all(window, cx)),
                             ),
                         ),
+                )
+            })
+            .when_some(mode, |this, label| {
+                this.child(
+                    ui::chip("header-review-mode", roles)
+                        .tooltip(|window, cx| {
+                            gpui_kit::component::tooltip::Tooltip::new(
+                                "Run the Review again in the other mode",
+                            )
+                            .build(window, cx)
+                        })
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.pane.update(cx, EditorPane::switch_mode);
+                        }))
+                        .child(div().text_color(roles.ai).child(label)),
                 )
             })
             .when_some(review, |this, added| {

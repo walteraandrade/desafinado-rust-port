@@ -6,8 +6,10 @@ use std::{
 
 use desafinado_ai::{
     edits::{DroppedEdit, ReviewValidationContext},
+    notes::{CommentOutput, GeneralNote, NoteBoard, NoteKind, NoteOutput, place_notes},
     prompts::{DescriptionPromptInput, PromptParts, build_description_prompt},
     records::{CallObservation, CallOutcome, CallTiming, ShapeRecordInput, shape_ai_call_record},
+    review_mode::{ModeChoice, ModeDecision, ModeSource, ReviewMode},
     review_stream::{ReviewStream, ReviewStreamEvent, should_retry_review},
 };
 use desafinado_core::suggestions::{ClientError, SuggestionResult, ValidatedEdit};
@@ -25,6 +27,19 @@ pub struct ReviewCall {
     pub task: String,
     pub parts: PromptParts,
     pub context: ReviewValidationContext,
+}
+
+#[derive(Clone, Debug)]
+pub struct CommentCall {
+    pub task: String,
+    pub parts: PromptParts,
+    pub blocks: Vec<desafinado_core::blocks::Block>,
+}
+
+#[derive(Clone, Debug)]
+pub struct ModeCall {
+    pub task: String,
+    pub focus: String,
 }
 
 pub const DESCRIPTION_TASK: &str = "Improve skill description";
@@ -64,6 +79,10 @@ pub trait AiBackend: Send + Sync {
     fn target(&self, call: TargetCall) -> Result<SuggestionResult, ClientError>;
     fn review(&self, call: ReviewCall, emit: &mut dyn FnMut(ReviewEvent) -> bool);
     fn description(&self, call: DescriptionCall) -> Result<SuggestionResult, ClientError>;
+    /// Asks the decision model whether a Focus asks for comments or for changes.
+    fn review_mode(&self, call: ModeCall) -> Result<ModeChoice, ClientError>;
+    /// A Comment review: Notes on the Document, placed on the Blocks that were read.
+    fn comment(&self, call: CommentCall) -> Result<NoteBoard, ClientError>;
 }
 
 pub fn outcome_of(failure: Option<&ClientError>) -> CallOutcome {
@@ -142,6 +161,89 @@ pub struct FakeAi {
 }
 
 const FAKE_MODEL: &str = "fake/desafinado";
+const FAKE_DECISION_MODEL: &str = "fake/jev";
+const REVISE_WORDS: [&str; 9] = [
+    "fix",
+    "shorten",
+    "rewrite",
+    "cut",
+    "translate",
+    "correct",
+    "corrig",
+    "enxug",
+    "reescrev",
+];
+
+fn fake_mode(focus: &str) -> ModeDecision {
+    let lower = focus.to_lowercase();
+    let revise = REVISE_WORDS.iter().any(|word| lower.contains(word));
+    ModeDecision {
+        choice: ModeChoice {
+            mode: if revise {
+                ReviewMode::Revise
+            } else {
+                ReviewMode::Comment
+            },
+            source: ModeSource::Decided {
+                probability: Some(if revise { 0.91 } else { 0.96 }),
+            },
+        },
+        observation: desafinado_ai::records::CallObservation {
+            requested_model: FAKE_DECISION_MODEL.into(),
+            served_model: Some(FAKE_DECISION_MODEL.into()),
+            provider: Some("Fake".into()),
+            input_tokens: Some(210.0),
+            cost_usd: Some(0.000_008_8),
+            ..Default::default()
+        },
+    }
+}
+
+const FAKE_NOTES: [(NoteKind, &str, &str); 3] = [
+    (
+        NoteKind::Structure,
+        "Repeats the opening",
+        "Says again what the first paragraph said. Cut it, or carry the idea forward with an example.",
+    ),
+    (
+        NoteKind::Clarity,
+        "The point arrives late",
+        "A long sentence hides its main idea at the end. Split it in two.",
+    ),
+    (
+        NoteKind::Fact,
+        "Claim without a source",
+        "Say where this comes from, or mark it as an anecdote.",
+    ),
+];
+
+fn fake_comment_output(blocks: &[desafinado_core::blocks::Block]) -> CommentOutput {
+    let paragraphs = blocks
+        .iter()
+        .filter(|block| block.kind == desafinado_core::blocks::BlockKind::Paragraph);
+    CommentOutput {
+        general: vec![
+            GeneralNote {
+                topic: "Structure".into(),
+                text: "The second half returns to the start; the ending repeats the opening instead of closing the argument.".into(),
+            },
+            GeneralNote {
+                topic: "What works".into(),
+                text: "The central image holds the piece together. Come back to it at the end.".into(),
+            },
+        ],
+        notes: paragraphs
+            .skip(1)
+            .zip(FAKE_NOTES)
+            .map(|(block, (kind, title, comment))| NoteOutput {
+                block_id: block.id.clone(),
+                kind,
+                title: title.into(),
+                comment: comment.into(),
+            })
+            .collect(),
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum FakeScript {
@@ -273,6 +375,42 @@ impl FakeAi {
 }
 
 impl AiBackend for FakeAi {
+    fn review_mode(&self, call: ModeCall) -> Result<ModeChoice, ClientError> {
+        let clock = Instant::now();
+        std::thread::sleep(Duration::from_millis(150));
+        let decision = fake_mode(&call.focus);
+        if let Some(log) = self.log.as_ref() {
+            let record = shape_ai_call_record(&ShapeRecordInput {
+                task: call.task,
+                attempt: 1,
+                outcome: CallOutcome::Valid,
+                started_at: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+                observation: decision.observation,
+                generation: None,
+                timing: CallTiming {
+                    client_total_ms: clock.elapsed().as_millis() as u64,
+                    ..Default::default()
+                },
+            });
+            log.append(&record).log_err();
+        }
+        Ok(decision.choice)
+    }
+
+    fn comment(&self, call: CommentCall) -> Result<NoteBoard, ClientError> {
+        let target = TargetCall {
+            task: call.task.clone(),
+            parts: call.parts.clone(),
+            original: String::new(),
+        };
+        self.answer(&target, || SuggestionResult {
+            replacement: String::new(),
+            rationale: String::new(),
+            unchanged: true,
+        })?;
+        Ok(place_notes(fake_comment_output(&call.blocks), &call.blocks))
+    }
+
     fn target(&self, call: TargetCall) -> Result<SuggestionResult, ClientError> {
         self.answer(&call, || {
             let refining = call.parts.prompt.contains("<latest-replacement>");
@@ -546,6 +684,43 @@ mod tests {
             .count();
         assert_eq!(edits, 2);
         assert_eq!(events.last(), Some(&ReviewEvent::Done { error: None }));
+    }
+
+    #[test]
+    fn the_fake_decision_reads_revision_words_in_the_focus() {
+        let ai = FakeAi::new(None);
+        let ask = |focus: &str| {
+            ai.review_mode(ModeCall {
+                task: "mode".into(),
+                focus: focus.into(),
+            })
+            .unwrap()
+            .mode
+        };
+        assert_eq!(ask("corrige a ortografia"), ReviewMode::Revise);
+        assert_eq!(ask("what do you think of the tone?"), ReviewMode::Comment);
+    }
+
+    #[test]
+    fn the_fake_comment_review_leaves_notes_on_paragraphs() {
+        let blocks = extract_blocks("# T\n\nOne.\n\nTwo.\n\nThree.\n");
+        let board = FakeAi::new(None)
+            .comment(CommentCall {
+                task: "comment".into(),
+                parts: PromptParts {
+                    instructions: String::new(),
+                    prompt: String::new(),
+                },
+                blocks,
+            })
+            .unwrap();
+        assert_eq!(board.general.len(), 2);
+        let ids: Vec<&str> = board
+            .notes
+            .iter()
+            .map(|note| note.block_id.as_str())
+            .collect();
+        assert_eq!(ids, ["p3", "p4"]);
     }
 
     #[test]

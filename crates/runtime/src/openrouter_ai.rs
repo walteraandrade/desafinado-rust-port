@@ -9,12 +9,14 @@ use std::{
 use desafinado_ai::{
     edits::{InvalidSuggestion, check_suggestion},
     errors::is_retryable_output_error,
+    notes::{NoteBoard, parse_comment_output, place_notes},
     records::{CallObservation, CallOutcome, CallTiming, ShapeRecordInput, shape_ai_call_record},
     request::{
         ChatRequest, DEFAULT_MAX_OUTPUT_TOKENS, DEFAULT_MAX_RETRIES, DEFAULT_REASONING,
         DEFAULT_STALL_MS, DEFAULT_TIMEOUTS_MS, OutputShape, chat_request_body,
         target_output_tokens,
     },
+    review_mode::{ModeChoice, decision_observation, mode_decision_body, parse_mode_decision},
     review_stream::ReviewStream,
     schemas::parse_suggestion,
     text::utf16_len,
@@ -24,8 +26,8 @@ use desafinado_platform::openrouter::{GenerationSchedule, OpenRouterClient, fetc
 
 use crate::{
     ai_backend::{
-        AiBackend, DescriptionCall, ReviewAttempt, ReviewCall, ReviewEvent, TargetCall,
-        drive_review, feed_review, outcome_of, stopped_error,
+        AiBackend, CommentCall, DescriptionCall, ModeCall, ReviewAttempt, ReviewCall, ReviewEvent,
+        TargetCall, drive_review, feed_review, outcome_of, stopped_error,
     },
     services::Services,
 };
@@ -101,7 +103,86 @@ fn observed(
     observation
 }
 
+const DECISION_TIMEOUT_MS: u64 = 20_000;
+
 impl AiBackend for OpenRouterAi {
+    fn review_mode(&self, call: ModeCall) -> Result<ModeChoice, ClientError> {
+        let client = self.client(DECISION_TIMEOUT_MS)?;
+        let started_at = now_iso();
+        let clock = Instant::now();
+        let answer = client.decide(&mode_decision_body(&call.focus));
+        let observation = answer
+            .as_ref()
+            .map(decision_observation)
+            .unwrap_or_default();
+        let result = answer.and_then(|body| parse_mode_decision(&body));
+        let failure = result.as_ref().err();
+        self.record(
+            &call.task,
+            1,
+            outcome_of(failure),
+            started_at,
+            observed(
+                observation,
+                desafinado_ai::review_mode::DECISION_MODEL,
+                failure,
+            ),
+            CallTiming {
+                client_total_ms: clock.elapsed().as_millis() as u64,
+                ..Default::default()
+            },
+        );
+        result.map(|decision| decision.choice)
+    }
+
+    fn comment(&self, call: CommentCall) -> Result<NoteBoard, ClientError> {
+        let model = self.services.model();
+        let body = chat_request_body(&ChatRequest {
+            model: &model,
+            parts: &call.parts,
+            shape: OutputShape::Notes,
+            reasoning: DEFAULT_REASONING,
+            max_output_tokens: DEFAULT_MAX_OUTPUT_TOKENS.review,
+        });
+        let client = self.client(DEFAULT_TIMEOUTS_MS.review.max(180_000))?;
+        let mut attempt = 1;
+        loop {
+            let started_at = now_iso();
+            let clock = Instant::now();
+            let (result, observation) = match client.chat_completion(&body) {
+                Ok(output) => (
+                    parse_comment_output(&output.content)
+                        .map(|parsed| place_notes(parsed, &call.blocks))
+                        .ok_or_else(|| ClientError::InvalidOutput {
+                            message: "The notes did not match the schema".into(),
+                        }),
+                    output.observation,
+                ),
+                Err(error) => (Err(error), CallObservation::default()),
+            };
+            let failure = result.as_ref().err();
+            self.record(
+                &call.task,
+                attempt,
+                outcome_of(failure),
+                started_at,
+                observed(observation, &model, failure),
+                CallTiming {
+                    client_total_ms: clock.elapsed().as_millis() as u64,
+                    ..Default::default()
+                },
+            );
+            match result {
+                Err(error)
+                    if is_retryable_output_error(&error) && attempt <= DEFAULT_MAX_RETRIES =>
+                {
+                    attempt += 1;
+                }
+                result => return result,
+            }
+        }
+    }
+
     fn target(&self, call: TargetCall) -> Result<SuggestionResult, ClientError> {
         let model = self.services.model();
         let body = chat_request_body(&ChatRequest {
