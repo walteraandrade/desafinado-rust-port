@@ -72,8 +72,10 @@ fn join_side(previous: &str, separator: &str, next: &str) -> String {
 }
 
 fn join_changes(previous: (&str, &str), separator: &str, next: (&str, &str)) -> Chunk {
+    // The separator is in the Original, so the deleted side keeps it even when it starts
+    // empty: hunk offsets are counted from the deleted side and must match the Original.
     Chunk::Change {
-        deleted: join_side(previous.0, separator, next.0),
+        deleted: format!("{}{separator}{}", previous.0, next.0),
         inserted: join_side(previous.1, separator, next.1),
     }
 }
@@ -408,6 +410,25 @@ mod tests {
 
     fn assert_close(actual: f64, expected: f64) {
         assert!((actual - expected).abs() < 0.005, "{actual} vs {expected}");
+    }
+
+    #[test]
+    fn hunk_offsets_match_the_original_when_a_change_joins_an_insertion() {
+        let original = "Quiet morning here now.";
+        let result = adaptive_diff(original, "Quiet morning, gently.");
+        for hunk in &result.hunks {
+            match hunk {
+                DiffHunk::Equal { text, from, to } | DiffHunk::Deleted { text, from, to } => {
+                    assert_eq!(&original[*from..*to], text);
+                }
+                DiffHunk::Inserted { .. } => {}
+            }
+        }
+        assert!(result.hunks.contains(&DiffHunk::Deleted {
+            text: " here now".into(),
+            from: 13,
+            to: 22,
+        }));
     }
 
     mod threshold {

@@ -139,9 +139,7 @@ impl CaretMarks {
             && self.focused
             && self.shown
             && state.selected_range().is_empty();
-        let next = block
-            .then(|| ui::next_character(state.text(), state.cursor()))
-            .flatten();
+        let next = block.then(|| ui::caret_cell(state)).flatten();
         let (color, style) = ui::caret_block_ink(theme::roles(cx));
         let fill = next
             .clone()

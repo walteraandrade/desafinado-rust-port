@@ -37,6 +37,7 @@ CI also builds the app and starts it off-screen with [`scripts/smoke.sh`](script
 - Inside `entity.update(cx, |this, cx| ...)` use the inner `cx`, not the outer one.
 - Keep the returned `Task` or call `.detach()`. A dropped `Task` cancels the work.
 - `gpui-kit` pins the GPUI version (`gpui-pre`). Read its source in `~/.cargo/registry` before guessing an API.
+- `gpui-base` is not the registry copy: `vendor/gpui-base` is patched with inlays and block zones ([ADR 0003](docs/adr/0003-inline-suggestions-on-patched-gpui-base.md)). Read the input module there, and on a gpui-kit bump re-apply the patch as [`vendor/gpui-base/PATCH.md`](vendor/gpui-base/PATCH.md) says.
 
 ## UI
 
@@ -47,7 +48,7 @@ CI also builds the app and starts it off-screen with [`scripts/smoke.sh`](script
 ## Git
 
 - Commit messages: short, imperative, conventional prefix (`feat:`, `fix:`, `refactor:`, ...).
-- Pull requests pass the `checks` and `deny` jobs before merging.
+- Pull requests pass the `checks`, `deny` and `gpui-base` jobs before merging.
 
 ## Reference
 
