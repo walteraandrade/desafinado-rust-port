@@ -288,7 +288,6 @@ fn load_unsaved(db: Option<&HistoryDb>, key: &str) -> Option<Unsaved> {
 fn reopen(db: Option<&HistoryDb>, path: &Path, failure_text: &str) -> Reopened {
     match read_markdown(path) {
         FileReadResult::Opened { path, name, text } => {
-            let path = PathBuf::from(path);
             let stored =
                 load_unsaved(db, &history_key(Some(&path))).map(|unsaved| arrival::Unsaved {
                     text: unsaved.text,
@@ -953,11 +952,7 @@ impl Workspace {
     fn load(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
         match read_markdown(&path) {
             FileReadResult::Opened { path, name, text } => self.arrive(
-                Opened {
-                    name,
-                    path: PathBuf::from(path),
-                    text,
-                },
+                Opened { name, path, text },
                 true,
                 Arrival::Opened,
                 window,
@@ -974,11 +969,7 @@ impl Workspace {
     fn reload(&mut self, conflict: Conflict, window: &mut Window, cx: &mut Context<Self>) {
         match read_markdown(&conflict.path) {
             FileReadResult::Opened { path, name, text } => self.arrive(
-                Opened {
-                    name,
-                    path: PathBuf::from(path),
-                    text,
-                },
+                Opened { name, path, text },
                 false,
                 Arrival::Reloaded,
                 window,
@@ -1689,7 +1680,7 @@ impl Workspace {
                 ..
             }) if !save_as => {
                 let result = save_markdown(&SaveRequest {
-                    path: path.to_string_lossy().into_owned(),
+                    path,
                     text: text.clone(),
                     expected: saved_text,
                 });
@@ -1753,7 +1744,7 @@ impl Workspace {
                 let current = self.text(cx);
                 self.session = Some(FileSession {
                     name: name.clone(),
-                    path: Some(PathBuf::from(path)),
+                    path: Some(path),
                     saved_text: text.clone(),
                     dirty: current != text,
                 });

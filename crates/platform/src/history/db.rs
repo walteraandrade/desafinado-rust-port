@@ -2,6 +2,7 @@ use desafinado_core::log_err::LogErr;
 use std::io::{Read, Write};
 use std::path::Path;
 use std::sync::{Mutex, PoisonError};
+use std::time::{Duration, Instant};
 
 use flate2::Compression;
 use flate2::read::GzDecoder;
@@ -104,9 +105,26 @@ fn in_transaction<T>(connection: &Connection, run: impl FnOnce() -> Result<T>) -
     }
 }
 
+/// Switching to WAL needs a moment alone with the file, and SQLite reports `busy`
+/// at once instead of waiting when another connection opens it at the same time.
+fn use_write_ahead_log(connection: &Connection) -> Result<()> {
+    let deadline = Instant::now() + Duration::from_millis(u64::from(BUSY_TIMEOUT_MS));
+    loop {
+        match connection.query_row("pragma journal_mode = wal", [], |_| Ok(())) {
+            Err(rusqlite::Error::SqliteFailure(failure, _))
+                if failure.code == rusqlite::ErrorCode::DatabaseBusy
+                    && Instant::now() < deadline =>
+            {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            other => return other.map_err(HistoryError::from),
+        }
+    }
+}
+
 fn prepare_schema(connection: &Connection) -> Result<()> {
     connection.execute_batch(&format!("pragma busy_timeout = {BUSY_TIMEOUT_MS}"))?;
-    connection.query_row("pragma journal_mode = wal", [], |_| Ok(()))?;
+    use_write_ahead_log(connection)?;
     connection.execute_batch("pragma synchronous = normal")?;
     in_transaction(connection, || {
         let version: i64 = connection.query_row("pragma user_version", [], |row| row.get(0))?;
@@ -526,10 +544,12 @@ mod tests {
         let handles: Vec<_> = (0..4)
             .map(|_| {
                 let file = file.clone();
-                std::thread::spawn(move || HistoryDb::open(&file).is_ok())
+                std::thread::spawn(move || HistoryDb::open(&file).map(|_| ()))
             })
             .collect();
-        assert!(handles.into_iter().all(|h| h.join().unwrap()));
+        for handle in handles {
+            handle.join().unwrap().unwrap();
+        }
         assert_eq!(
             inspect(&f, |c| c
                 .query_row(

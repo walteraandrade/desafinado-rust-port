@@ -3,7 +3,7 @@ use std::{
     collections::BTreeMap,
     path::PathBuf,
     sync::{
-        Arc, Mutex,
+        Arc, Mutex, PoisonError,
         atomic::{AtomicU64, Ordering},
     },
 };
@@ -24,6 +24,7 @@ pub struct Services {
     pub model: Mutex<String>,
     pending: Mutex<BTreeMap<u64, AiCallRecord>>,
     next_pending: AtomicU64,
+    unrecorded: AtomicU64,
 }
 
 const MODEL_FILE: &str = "model.txt";
@@ -31,9 +32,10 @@ const MODEL_FILE: &str = "model.txt";
 impl Services {
     pub fn hold_record(&self, record: AiCallRecord) -> u64 {
         let id = self.next_pending.fetch_add(1, Ordering::Relaxed);
-        if let Ok(mut pending) = self.pending.lock() {
-            pending.insert(id, record);
-        }
+        self.pending
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(id, record);
         id
     }
 
@@ -41,22 +43,30 @@ impl Services {
         let held = self
             .pending
             .lock()
-            .ok()
-            .and_then(|mut pending| pending.remove(&id));
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(&id);
         if held.is_some() {
-            self.log.append(&record).log_err();
+            self.append_record(&record);
         }
     }
 
     pub fn flush_records(&self) {
-        let held = self
-            .pending
-            .lock()
-            .map(|mut pending| std::mem::take(&mut *pending))
-            .unwrap_or_default();
+        let held =
+            std::mem::take(&mut *self.pending.lock().unwrap_or_else(PoisonError::into_inner));
         for record in held.values() {
-            self.log.append(record).log_err();
+            self.append_record(record);
         }
+    }
+
+    pub fn append_record(&self, record: &AiCallRecord) {
+        if self.log.append(record).log_err().is_none() {
+            self.unrecorded.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    /// AI calls made since launch whose record could not be written, so their cost is missing.
+    pub fn unrecorded_calls(&self) -> u64 {
+        self.unrecorded.load(Ordering::Relaxed)
     }
 
     pub fn load() -> Arc<Self> {
@@ -76,6 +86,7 @@ impl Services {
             model: Mutex::new(resolve_model(configured.as_deref())),
             pending: Mutex::new(BTreeMap::new()),
             next_pending: AtomicU64::new(0),
+            unrecorded: AtomicU64::new(0),
             keys,
             user_data,
         })

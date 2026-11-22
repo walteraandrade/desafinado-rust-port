@@ -12,6 +12,7 @@ pub mod memory_store;
 pub mod recorder;
 pub mod session;
 pub mod store;
+#[cfg(test)]
 pub mod store_contract;
 pub mod story;
 pub mod summary;

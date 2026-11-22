@@ -34,7 +34,7 @@ fn too_large(text: &str) -> bool {
 
 fn saved_at(real: &Path) -> FileSaveResult {
     FileSaveResult::Saved {
-        path: real.to_string_lossy().into_owned(),
+        path: real.to_path_buf(),
         name: real
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
@@ -125,7 +125,7 @@ mod tests {
 
     fn request(path: &Path, text: &str, expected: &str) -> SaveRequest {
         SaveRequest {
-            path: path_text(path),
+            path: path.to_path_buf(),
             text: text.into(),
             expected: expected.into(),
         }
@@ -179,11 +179,27 @@ mod tests {
         assert_eq!(
             save_markdown(&request(&path, "# A, edited\n", "# A\n")),
             FileSaveResult::Saved {
-                path: path_text(&path),
+                path: path.clone(),
                 name: "SKILL.md".into()
             }
         );
         assert_eq!(fs::read_to_string(&path).unwrap(), "# A, edited\n");
+    }
+
+    #[test]
+    fn saves_to_a_file_whose_name_is_not_valid_utf8() {
+        use std::os::unix::ffi::OsStrExt;
+        let (_dir, real) = real_dir();
+        let path = real.join(std::ffi::OsStr::from_bytes(b"caf\xe9.md"));
+        fs::write(&path, "old\n").unwrap();
+        let FileSaveResult::Saved { path: saved, .. } =
+            save_markdown(&request(&path, "new\n", "old\n"))
+        else {
+            panic!("not saved");
+        };
+        assert_eq!(saved, path);
+        assert_eq!(fs::read_to_string(&path).unwrap(), "new\n");
+        assert_eq!(entries(&real).len(), 1);
     }
 
     #[test]
@@ -258,7 +274,7 @@ mod tests {
         assert_eq!(
             result,
             FileSaveResult::Saved {
-                path: path_text(&target),
+                path: target.clone(),
                 name: "SKILL.md".into()
             }
         );
@@ -360,7 +376,7 @@ mod tests {
         assert_eq!(
             save_markdown_as(&path, "# N\n"),
             FileSaveResult::Saved {
-                path: path_text(&path),
+                path: path.clone(),
                 name: "new.md".into()
             }
         );
@@ -389,7 +405,7 @@ mod tests {
         assert_eq!(
             result,
             FileSaveResult::Saved {
-                path: path_text(&target),
+                path: target.clone(),
                 name: "t.md".into()
             }
         );

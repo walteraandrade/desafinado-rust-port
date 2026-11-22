@@ -1,3 +1,4 @@
+use desafinado_ai::api_key::ApiKey;
 use std::collections::VecDeque;
 use std::io::{BufRead, BufReader};
 use std::sync::Arc;
@@ -38,7 +39,7 @@ impl Default for RetryPolicy {
 pub struct OpenRouterClient {
     agent: Agent,
     base_url: String,
-    api_key: Option<String>,
+    api_key: Option<ApiKey>,
     retry: RetryPolicy,
     timeout: Duration,
     stall: Option<Duration>,
@@ -53,7 +54,7 @@ struct Sent {
 impl OpenRouterClient {
     pub fn new(
         base_url: String,
-        api_key: Option<String>,
+        api_key: Option<ApiKey>,
         options: &AgentOptions,
     ) -> Result<Self, ClientError> {
         let agent = build_agent(options).map_err(|e| ClientError::Network {
@@ -62,14 +63,14 @@ impl OpenRouterClient {
         Ok(Self {
             agent,
             base_url: base_url.trim_end_matches('/').to_owned(),
-            api_key: api_key.filter(|key| !key.is_empty()),
+            api_key,
             retry: RetryPolicy::default(),
             timeout: DEFAULT_TIMEOUT,
             stall: None,
         })
     }
 
-    pub fn from_env(api_key: Option<String>) -> Result<Self, ClientError> {
+    pub fn from_env(api_key: Option<ApiKey>) -> Result<Self, ClientError> {
         let read = |name: &str| std::env::var(name).ok();
         Self::new(
             base_url_from_env(&read),
@@ -103,7 +104,9 @@ impl OpenRouterClient {
     fn authorization(&self) -> String {
         format!(
             "Bearer {}",
-            self.api_key.as_deref().unwrap_or(PLACEHOLDER_KEY)
+            self.api_key
+                .as_ref()
+                .map_or(PLACEHOLDER_KEY, ApiKey::expose)
         )
     }
 
@@ -422,7 +425,7 @@ mod tests {
     fn client(server: &TestServer, key: Option<&str>) -> OpenRouterClient {
         OpenRouterClient::new(
             server.base_url(),
-            key.map(str::to_owned),
+            key.and_then(ApiKey::new),
             &AgentOptions::direct(),
         )
         .unwrap()

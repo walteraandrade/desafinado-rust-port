@@ -1,5 +1,5 @@
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
@@ -13,7 +13,7 @@ use super::save::{save_markdown, save_markdown_as};
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum FileReadResult {
     Opened {
-        path: String,
+        path: PathBuf,
         name: String,
         text: String,
     },
@@ -26,7 +26,7 @@ pub enum FileReadResult {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum FileSaveResult {
-    Saved { path: String, name: String },
+    Saved { path: PathBuf, name: String },
     Conflict,
     Cancelled,
     Failed { reason: String },
@@ -147,7 +147,7 @@ mod tests {
         assert_eq!(
             result,
             FileReadResult::Opened {
-                path: path.to_string_lossy().into_owned(),
+                path: path.clone(),
                 name: "a.md".into(),
                 text: "# A\n".into()
             }

@@ -1,4 +1,5 @@
 pub mod description_ai;
+#[cfg(test)]
 pub mod fake_file_system;
 pub mod frontmatter_block;
 pub mod frontmatter_edit;

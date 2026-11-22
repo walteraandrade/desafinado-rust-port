@@ -394,6 +394,22 @@ impl SpendView {
         }))
     }
 
+    fn render_unrecorded(&self, roles: Roles) -> Option<Div> {
+        let missing = self.services.unrecorded_calls();
+        (missing > 0).then(|| {
+            let calls = if missing == 1 { "call" } else { "calls" };
+            ui::meta(
+                format!(
+                    "{missing} AI {calls} since launch could not be written to {}, so their cost is missing here.",
+                    self.services.log.path().display()
+                ),
+                roles,
+            )
+            .text_color(roles.danger)
+            .mt(px(16.))
+        })
+    }
+
     fn render_ready(&self, records: &[AiCallRecord], roles: Roles, cx: &mut Context<Self>) -> Div {
         if records.is_empty() {
             return div().mt(px(24.)).child(
@@ -456,6 +472,7 @@ impl Render for SpendView {
                 self.render_ready(&records, roles, cx)
             }
         };
+        let body = div().children(self.render_unrecorded(roles)).child(body);
         let header = ui::row()
             .pt(px(8.))
             .gap(px(12.))

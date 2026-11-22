@@ -22,8 +22,7 @@ pub fn read_markdown_limited(path: &Path, max_bytes: u64) -> FileReadResult {
         Ok(real) => real,
         Err(error) => return failed(describe_failure(&error)),
     };
-    let real_text = real.to_string_lossy().into_owned();
-    if !is_markdown_path(&real_text) {
+    if !is_markdown_path(&real.to_string_lossy()) {
         return failed("Not a Markdown file");
     }
     let info = match fs::metadata(&real) {
@@ -47,7 +46,7 @@ pub fn read_markdown_limited(path: &Path, max_bytes: u64) -> FileReadResult {
                 .file_name()
                 .map(|n| n.to_string_lossy().into_owned())
                 .unwrap_or_default(),
-            path: real_text,
+            path: real,
             text: decode_markdown(&raw),
         },
     }
@@ -67,7 +66,7 @@ mod tests {
         assert_eq!(
             read_markdown(&path),
             FileReadResult::Opened {
-                path: path.to_string_lossy().into_owned(),
+                path: path.clone(),
                 name: "SKILL.md".into(),
                 text: "# A\n".into()
             }
@@ -96,7 +95,7 @@ mod tests {
         let FileReadResult::Opened { path, name, .. } = read_markdown(&link) else {
             panic!("not opened")
         };
-        assert_eq!(path, target.to_string_lossy());
+        assert_eq!(path, target);
         assert_eq!(name, "target.md");
     }
 

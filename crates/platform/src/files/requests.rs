@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 pub const MAX_FILE_BYTES: usize = 5 * 1024 * 1024;
 pub const MAX_TEXT_CHARS: usize = MAX_FILE_BYTES;
@@ -7,7 +7,7 @@ const MAX_NAME_CHARS: usize = 255;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SaveRequest {
-    pub path: String,
+    pub path: PathBuf,
     pub text: String,
     pub expected: String,
 }
@@ -33,7 +33,7 @@ fn text_ok(text: &str) -> bool {
 pub fn parse_save_request(path: &str, text: &str, expected: &str) -> Option<SaveRequest> {
     let path = parse_path_request(path)?;
     (text_ok(text) && text_ok(expected)).then(|| SaveRequest {
-        path,
+        path: PathBuf::from(path),
         text: text.to_owned(),
         expected: expected.to_owned(),
     })

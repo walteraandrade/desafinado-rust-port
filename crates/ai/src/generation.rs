@@ -1,3 +1,4 @@
+use crate::api_key::ApiKey;
 use serde_json::Value;
 
 use crate::records::OpenRouterGeneration;
@@ -71,17 +72,17 @@ pub fn generation_url(base_url: &str, id: &str) -> String {
 #[derive(Debug, Clone)]
 pub struct FetchGenerationOptions {
     pub base_url: String,
-    pub api_key: String,
+    pub api_key: ApiKey,
     pub id: Option<String>,
     pub initial_delay_ms: u64,
     pub delays_ms: Vec<u64>,
 }
 
 impl FetchGenerationOptions {
-    pub fn new(base_url: &str, api_key: &str, id: Option<&str>) -> Self {
+    pub fn new(base_url: &str, api_key: ApiKey, id: Option<&str>) -> Self {
         Self {
             base_url: base_url.to_owned(),
-            api_key: api_key.to_owned(),
+            api_key,
             id: id.map(str::to_owned),
             initial_delay_ms: DEFAULT_GENERATION_INITIAL_DELAY_MS,
             delays_ms: default_generation_delays_ms(),
@@ -105,7 +106,7 @@ where
 {
     let id = options.id.as_deref()?;
     let url = generation_url(&options.base_url, id);
-    let authorization = format!("Bearer {}", options.api_key);
+    let authorization = format!("Bearer {}", options.api_key.expose());
     if options.initial_delay_ms > 0 {
         sleep(options.initial_delay_ms);
     }
@@ -167,7 +168,7 @@ mod tests {
     ) -> FetchGenerationOptions {
         FetchGenerationOptions {
             base_url: "http://localhost/api/openrouter".into(),
-            api_key: key.into(),
+            api_key: ApiKey::new(key).unwrap(),
             id: id.map(str::to_owned),
             initial_delay_ms: initial,
             delays_ms: delays.to_vec(),
