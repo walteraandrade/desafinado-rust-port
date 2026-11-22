@@ -1,3 +1,4 @@
+use desafinado_core::log_err::LogErr;
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},
@@ -215,7 +216,7 @@ impl LibraryPanel {
             cx.background_spawn(async move { std::panic::catch_unwind(|| list(&user_data)).ok() });
         cx.spawn(async move |this, cx| {
             let listed = task.await;
-            let _ = this.update(cx, |this, cx| {
+            this.update(cx, |this, cx| {
                 if load != this.load {
                     return;
                 }
@@ -224,7 +225,8 @@ impl LibraryPanel {
                     None => LibraryState::Failed,
                 };
                 cx.notify();
-            });
+            })
+            .log_warn();
         })
         .detach();
     }
@@ -440,7 +442,8 @@ impl LibraryPanel {
                 Ok(Ok(Some(paths))) => paths.into_iter().next(),
                 _ => None,
             };
-            let _ = this.update(cx, |this, cx| this.add_picked(picked, cx));
+            this.update(cx, |this, cx| this.add_picked(picked, cx))
+                .log_warn();
         })
         .detach();
     }
@@ -584,16 +587,16 @@ impl LibraryPanel {
                 div()
                     .key_context("LibrarySearch")
                     .on_action(cx.listener(|this, _: &SearchUp, window, cx| {
-                        this.search_key("ArrowUp", window, cx)
+                        this.search_key("ArrowUp", window, cx);
                     }))
                     .on_action(cx.listener(|this, _: &SearchDown, window, cx| {
-                        this.search_key("ArrowDown", window, cx)
+                        this.search_key("ArrowDown", window, cx);
                     }))
                     .on_action(cx.listener(|this, _: &SearchEnter, window, cx| {
-                        this.search_key("Enter", window, cx)
+                        this.search_key("Enter", window, cx);
                     }))
                     .on_action(cx.listener(|this, _: &SearchEscape, window, cx| {
-                        this.search_key("Escape", window, cx)
+                        this.search_key("Escape", window, cx);
                     }))
                     .child(ui::field(
                         Input::new(&self.search).appearance(false),

@@ -43,7 +43,7 @@ impl<Reference> SwitchableHistory<Reference> {
     }
 
     fn notify(&mut self) {
-        for (_, listener) in self.listeners.iter_mut() {
+        for (_, listener) in &mut self.listeners {
             listener();
         }
     }
@@ -184,13 +184,14 @@ mod tests {
             inner: MemoryHistoryStore::new(),
             calls: Mutex::new(Vec::new()),
         });
-        let shared = store.clone();
+        let shared = Arc::clone(&store);
         let hub = SwitchableHistory::new(HubOptions {
             key_of: Box::new(|reference: Option<&String>| {
                 reference.cloned().unwrap_or_else(|| "scratch".to_string())
             }),
             create: Box::new(move |key, initial| {
-                let mut options = DocumentHistoryOptions::new(shared.clone(), key, IDLE_MS);
+                let mut options =
+                    DocumentHistoryOptions::new(Arc::<Logged>::clone(&shared), key, IDLE_MS);
                 options.initial = initial;
                 DocumentHistory::new(options)
             }),
@@ -317,7 +318,7 @@ mod tests {
     fn tells_subscribers_when_it_switches_and_when_the_new_list_arrives() {
         let (mut hub, _) = create_hub(vec![]);
         let calls = Arc::new(AtomicUsize::new(0));
-        let counter = calls.clone();
+        let counter = Arc::clone(&calls);
         hub.subscribe(Box::new(move || {
             counter.fetch_add(1, Ordering::SeqCst);
         }));
@@ -332,7 +333,7 @@ mod tests {
     fn stops_telling_subscribers_who_unsubscribed() {
         let (mut hub, _) = create_hub(vec![]);
         let calls = Arc::new(AtomicUsize::new(0));
-        let counter = calls.clone();
+        let counter = Arc::clone(&calls);
         let id = hub.subscribe(Box::new(move || {
             counter.fetch_add(1, Ordering::SeqCst);
         }));
@@ -348,7 +349,7 @@ mod tests {
         let (mut hub, store) = create_hub(vec![]);
         hub.edited("still pending", 1000);
         let calls_made = Arc::new(AtomicUsize::new(0));
-        let counter = calls_made.clone();
+        let counter = Arc::clone(&calls_made);
         hub.subscribe(Box::new(move || {
             counter.fetch_add(1, Ordering::SeqCst);
         }));

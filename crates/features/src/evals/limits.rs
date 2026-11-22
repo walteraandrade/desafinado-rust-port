@@ -51,7 +51,7 @@ mod tests {
 
     #[test]
     fn never_lets_the_two_runs_add_up_to_more_than_the_limit() {
-        let spent = 0.123456;
+        let spent = 0.123_456;
         let second = second_run_limit(0.3, spent).unwrap_or(0.0);
         assert!(spent + second <= 0.3);
     }

@@ -15,7 +15,7 @@ impl Keyring for SecretServiceKeyring {
     fn available(&self) -> bool {
         matches!(
             entry().map(|e| e.get_password()),
-            Ok(Ok(_)) | Ok(Err(keyring::Error::NoEntry))
+            Ok(Ok(_) | Err(keyring::Error::NoEntry))
         )
     }
 

@@ -1,3 +1,4 @@
+use desafinado_core::log_err::LogErr;
 use std::sync::Arc;
 
 use desafinado_platform::key::{KeyDetails, KeyStorage, parse_key_input};
@@ -123,20 +124,19 @@ impl KeyDialog {
                 if value.trim().is_empty() {
                     return;
                 }
-                match parse_key_input(&value) {
-                    Ok(key) => Some(key),
-                    Err(_) => {
-                        self.error = Some(INVALID_KEY_MESSAGE.into());
-                        cx.notify();
-                        return;
-                    }
+                if let Ok(key) = parse_key_input(&value) {
+                    Some(key)
+                } else {
+                    self.error = Some(INVALID_KEY_MESSAGE.into());
+                    cx.notify();
+                    return;
                 }
             }
             _ => None,
         };
         self.busy = true;
         self.error = None;
-        let services = self.services.clone();
+        let services = Arc::clone(&self.services);
         let work = cx.background_spawn(async move {
             match (command, key) {
                 (KeyCommand::Save, Some(key)) => services.keys.save(&key),
@@ -148,9 +148,12 @@ impl KeyDialog {
         let window_handle = window.window_handle();
         self._task = Some(cx.spawn(async move |this, cx| {
             let next = work.await;
-            let _ = window_handle.update(cx, |_, window, cx| {
-                let _ = this.update(cx, |this, cx| this.finish(command, next, window, cx));
-            });
+            window_handle
+                .update(cx, |_, window, cx| {
+                    this.update(cx, |this, cx| this.finish(command, next, window, cx))
+                        .log_warn();
+                })
+                .log_warn();
         }));
         cx.notify();
     }
@@ -215,7 +218,7 @@ impl KeyDialog {
                     )
                     .when(!self.busy, |this| {
                         this.on_click(cx.listener(|this, _, window, cx| {
-                            this.run(KeyCommand::PlainText, window, cx)
+                            this.run(KeyCommand::PlainText, window, cx);
                         }))
                     }),
                 ),
@@ -243,7 +246,7 @@ impl KeyDialog {
                     )
                     .when(!self.busy, |this| {
                         this.on_click(cx.listener(|this, _, window, cx| {
-                            this.run(KeyCommand::Clear, window, cx)
+                            this.run(KeyCommand::Clear, window, cx);
                         }))
                     }),
                 )

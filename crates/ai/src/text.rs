@@ -48,12 +48,30 @@ pub fn utf16_len(text: &str) -> usize {
     text.encode_utf16().count()
 }
 
+fn hex_digit(value: u8, upper: bool) -> char {
+    let digits = if upper {
+        b"0123456789ABCDEF"
+    } else {
+        b"0123456789abcdef"
+    };
+    char::from(digits[usize::from(value & 0x0f)])
+}
+
+pub fn lower_hex(bytes: &[u8]) -> String {
+    bytes
+        .iter()
+        .flat_map(|byte| [hex_digit(byte >> 4, false), hex_digit(*byte, false)])
+        .collect()
+}
+
 pub fn percent_encode_component(text: &str) -> String {
     text.bytes().fold(String::new(), |mut out, byte| {
         if byte.is_ascii_alphanumeric() || b"-_.!~*'()".contains(&byte) {
             out.push(byte as char);
         } else {
-            out.push_str(&format!("%{byte:02X}"));
+            out.push('%');
+            out.push(hex_digit(byte >> 4, true));
+            out.push(hex_digit(byte, true));
         }
         out
     })

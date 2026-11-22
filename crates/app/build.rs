@@ -51,8 +51,7 @@ fn main() {
             return Some(head);
         };
         let refs_dir = read_text(&git_dir.join("commondir"))
-            .map(|common| git_dir.join(common))
-            .unwrap_or_else(|| git_dir.clone());
+            .map_or_else(|| git_dir.clone(), |common| git_dir.join(common));
         let ref_path = refs_dir.join(name);
         println!("cargo:rerun-if-changed={}", ref_path.display());
         println!(
@@ -66,8 +65,10 @@ fn main() {
     let commit = std::env::var("DESAFINADO_COMMIT")
         .ok()
         .filter(|value| !value.trim().is_empty())
-        .map(|value| short_commit(Some(value.trim().to_string())))
-        .unwrap_or_else(|| short_commit(commit));
+        .map_or_else(
+            || short_commit(commit),
+            |value| short_commit(Some(value.trim().to_string())),
+        );
     println!("cargo:rerun-if-env-changed=DESAFINADO_COMMIT");
     println!("cargo:rustc-env=DESAFINADO_COMMIT={commit}");
 }

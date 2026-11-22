@@ -37,7 +37,7 @@ pub fn line_runs(before: &str, after: &str) -> Vec<LineRun> {
                 runs.push(LineRun::Same {
                     lines: old[old_index..old_index + len]
                         .iter()
-                        .map(|line| line.to_string())
+                        .map(std::string::ToString::to_string)
                         .collect(),
                 });
             }

@@ -1,3 +1,4 @@
+use desafinado_core::log_err::{LogErr, MissingIsRemoved};
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -33,10 +34,7 @@ pub struct LastRun {
 }
 
 pub fn skill_key_of(real_path: &str) -> String {
-    Sha256::digest(real_path.as_bytes())
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect()
+    desafinado_ai::text::lower_hex(&Sha256::digest(real_path.as_bytes()))
 }
 
 fn read_or_none(file: &Path) -> Option<String> {
@@ -119,7 +117,7 @@ impl ResultsStore {
         rename: &dyn Fn(&Path, &Path) -> io::Result<()>,
     ) -> io::Result<()> {
         let retired = self.retired_dir(key);
-        let _ = fs::remove_dir_all(&retired);
+        fs::remove_dir_all(&retired).missing_is_removed().log_warn();
         let had_last = rename(&self.last_dir(key), &retired).is_ok();
         if let Err(error) = rename(&self.next_dir(key), &self.last_dir(key)) {
             if had_last {
@@ -127,7 +125,7 @@ impl ResultsStore {
             }
             return Err(error);
         }
-        let _ = fs::remove_dir_all(&retired);
+        fs::remove_dir_all(&retired).missing_is_removed().log_warn();
         Ok(())
     }
 

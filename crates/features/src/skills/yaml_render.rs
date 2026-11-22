@@ -148,7 +148,8 @@ fn block_string(value: &str, style: Style, comment: Option<&str>) -> String {
     let mut header = format!("{}{chomp}", if starts_with_space { "2" } else { "" });
     if let Some(comment) = comment {
         let flat = comment.replace(['\r', '\n'], " ");
-        header.push_str(&format!(" #{flat}"));
+        header.push_str(" #");
+        header.push_str(&flat);
     }
     if literal {
         let body = after_newline_runs(rest, INDENT);
@@ -225,7 +226,8 @@ fn assemble(field: &str, text: &str, carried: &Carried, trailing_comment: bool) 
         _ => format!("{field}: {props}{text}"),
     };
     if let (Some(comment), true) = (&carried.comment, trailing_comment) {
-        line.push_str(&format!(" #{comment}"));
+        line.push_str(" #");
+        line.push_str(comment);
     }
     line.push('\n');
     line

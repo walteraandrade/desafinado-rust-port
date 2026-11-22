@@ -108,8 +108,7 @@ impl HistoryStore for DbHistoryStore {
         let first = self
             .thinned
             .lock()
-            .map(|mut thinned| thinned.insert(key.to_string()))
-            .unwrap_or(false);
+            .is_ok_and(|mut thinned| thinned.insert(key.to_string()));
         if first {
             self.db.thin(key, (self.now)()).map_err(failed)?;
         }

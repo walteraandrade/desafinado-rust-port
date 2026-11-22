@@ -1,4 +1,4 @@
-pub const SAMPLE_DOCUMENT: &str = r####"# Release process update: weekday deploys
+pub const SAMPLE_DOCUMENT: &str = r"# Release process update: weekday deploys
 
 ## Why we are changing
 
@@ -29,4 +29,4 @@ To start a canary rollout, run the deploy script from the repository root:
 Once the canary looks healthy, you will recieve a prompt to promote it to all traffic. If anything looks wrong, the rollback happens automatically and the on-call engineer is notified.
 
 If you have questions about the new process, ask in the #releases channel or contact Priya on the platform team.
-"####;
+";

@@ -287,6 +287,10 @@ mod tests {
             .collect()
     }
 
+    #[expect(
+        clippy::unnecessary_wraps,
+        reason = "builds the Option the assertions compare against"
+    )]
     fn range(start: usize, end: usize) -> Option<MatchRange> {
         Some(MatchRange { start, end })
     }

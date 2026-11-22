@@ -1,3 +1,4 @@
+use desafinado_core::log_err::LogErr;
 use std::{
     cell::{Cell, RefCell},
     collections::HashMap,
@@ -297,7 +298,7 @@ impl EditorPane {
             )
         });
         let edits = cx.subscribe(&editor, |this, editor, event: &InputEditsEvent, cx| {
-            this.on_edits(&editor, event, cx)
+            this.on_edits(&editor, event, cx);
         });
         let moves = cx.observe(&editor, |this, editor, cx| this.on_moved(&editor, cx));
         let bubble_input =
@@ -456,7 +457,7 @@ impl EditorPane {
     pub fn set_text(&mut self, text: &str, window: &mut Window, cx: &mut Context<Self>) {
         self.reset(cx);
         self.editor.update(cx, |state, cx| {
-            state.set_value(text.to_string(), window, cx)
+            state.set_value(text.to_string(), window, cx);
         });
         self.suggestions = empty_suggestions();
         self.refresh_decorations(cx);
@@ -495,7 +496,7 @@ impl EditorPane {
     pub fn restore_text(&mut self, text: &str, window: &mut Window, cx: &mut Context<Self>) {
         self.reset(cx);
         self.editor.update(cx, |state, cx| {
-            state.replace_all(text.to_string(), window, cx)
+            state.replace_all(text.to_string(), window, cx);
         });
         self.suggestions = empty_suggestions();
         self.refresh_decorations(cx);
@@ -872,14 +873,15 @@ impl EditorPane {
     }
 
     fn run(&mut self, id: String, call: TargetCall, refine: bool, cx: &mut Context<Self>) {
-        let ai = self.ai.clone();
+        let ai = Arc::clone(&self.ai);
         let task_id = id.clone();
         let work = cx.background_spawn(async move { ai.target(call) });
         let task = cx.spawn(async move |this, cx| {
             let result = work.await;
-            let _ = this.update(cx, |this, cx| {
+            this.update(cx, |this, cx| {
                 this.finish(&task_id, result, refine, cx);
-            });
+            })
+            .log_warn();
         });
         self.tasks.insert(id, task);
         self.refresh_decorations(cx);
@@ -1188,8 +1190,8 @@ impl EditorPane {
         };
         let stop = Arc::new(AtomicBool::new(false));
         let (sender, mut receiver) = mpsc::unbounded::<ReviewEvent>();
-        let ai = self.ai.clone();
-        let flag = stop.clone();
+        let ai = Arc::clone(&self.ai);
+        let flag = Arc::clone(&stop);
         cx.background_spawn(async move {
             ai.review(call, &mut |event| {
                 let open = sender.unbounded_send(event).is_ok();
@@ -1523,7 +1525,7 @@ impl EditorPane {
         self.card_index = index;
         match (control, self.refine.as_ref()) {
             (CardControl::RefineField, Some(refine)) => {
-                refine.input.update(cx, |state, cx| state.focus(window, cx))
+                refine.input.update(cx, |state, cx| state.focus(window, cx));
             }
             _ => window.focus(&self.card_focus, cx),
         }
@@ -1669,8 +1671,8 @@ impl EditorPane {
 
     fn card_placement(&self) -> CardPlacement {
         let pane = self.bounds.get();
-        let right = f32::from(self.content_right() - pane.origin.x) as f64;
-        placement_for(right, f32::from(pane.size.width) as f64)
+        let right = f64::from(f32::from(self.content_right() - pane.origin.x));
+        placement_for(right, f64::from(f32::from(pane.size.width)))
     }
 
     fn render_card(
@@ -1809,7 +1811,7 @@ impl EditorPane {
         roles: Roles,
         cx: &mut Context<Self>,
     ) -> Stateful<Div> {
-        let heights = self.heights.clone();
+        let heights = Rc::clone(&self.heights);
         let measured_id = id.to_string();
         let entity = cx.entity().downgrade();
         ui::dialog_frame(SharedString::from(format!("card-{id}")), width, roles)
@@ -1851,11 +1853,11 @@ impl EditorPane {
                             ButtonKind::Default,
                             roles,
                         )
-                        .on_click(
-                            cx.listener(move |this, _, window, cx| {
-                                this.retry(&retry_id, window, cx)
-                            }),
-                        ),
+                        .on_click(cx.listener(
+                            move |this, _, window, cx| {
+                                this.retry(&retry_id, window, cx);
+                            },
+                        )),
                     )
                     .child(
                         ui::small_button(
@@ -2159,7 +2161,7 @@ impl EditorPane {
                 )
                 .child(ui::shortcut_hint(shortcut_hint("K"), false, roles))
                 .on_click(cx.listener(move |this, _, window, cx| {
-                    this.toggle_refine(&refine_id, window, cx)
+                    this.toggle_refine(&refine_id, window, cx);
                 }))
             })
     }
@@ -2382,7 +2384,7 @@ impl EditorPane {
             flip: true,
             gap: 8.,
         })?;
-        let heights = self.heights.clone();
+        let heights = Rc::clone(&self.heights);
         let entity = cx.entity().downgrade();
         let actions = self.visible_actions();
         let rows = ask_menu::menu_rows(&actions, &self.menu);
@@ -2482,10 +2484,11 @@ impl EditorPane {
         };
         let done = cx.spawn(async move |this, cx| {
             cx.background_executor().timer(ui::MOTION_LEAVE).await;
-            let _ = this.update(cx, |this, cx| {
+            this.update(cx, |this, cx| {
                 this.bubble_leaving = None;
                 cx.notify();
-            });
+            })
+            .log_warn();
         });
         self.bubble_leaving = Some((ghost, done));
     }
@@ -2624,9 +2627,9 @@ impl EditorPane {
     }
 
     fn track_bounds(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let bounds = self.bounds.clone();
+        let bounds = Rc::clone(&self.bounds);
         let entity = cx.entity().downgrade();
-        let release = self.pointer_down.clone();
+        let release = Rc::clone(&self.pointer_down);
         let release_entity = entity.clone();
         canvas(
             move |next, _, cx| {
@@ -2637,8 +2640,8 @@ impl EditorPane {
                     }
                 }
             },
-            move |_, _, window, _| {
-                let release = release.clone();
+            move |_, (), window, _| {
+                let release = Rc::clone(&release);
                 let entity = release_entity.clone();
                 window.on_mouse_event(move |_: &MouseUpEvent, phase, _, cx| {
                     if phase == DispatchPhase::Capture
@@ -2680,7 +2683,7 @@ impl Render for EditorPane {
                     .as_ref()
                     .map(|(ghost, _)| render_bubble_ghost(ghost, roles))
             });
-        let press = self.pointer_down.clone();
+        let press = Rc::clone(&self.pointer_down);
         div()
             .id("editor-pane")
             .key_context("EditorPane")
@@ -2696,10 +2699,10 @@ impl Render for EditorPane {
             .on_action(cx.listener(Self::pane_undo))
             .on_action(cx.listener(Self::pane_redo))
             .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _, cx| {
-                this.track_hover(Some(event.position), cx)
+                this.track_hover(Some(event.position), cx);
             }))
             .on_hover(cx.listener(|this, _: &bool, window, cx| {
-                this.track_hover(Some(window.mouse_position()), cx)
+                this.track_hover(Some(window.mouse_position()), cx);
             }))
             .relative()
             .size_full()

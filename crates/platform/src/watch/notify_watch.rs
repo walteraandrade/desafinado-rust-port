@@ -20,12 +20,12 @@ impl WatchHandle for NotifyHandle {
     }
 }
 
-fn kind_of(kind: &EventKind) -> Option<WatchEventKind> {
+fn kind_of(kind: EventKind) -> Option<WatchEventKind> {
     match kind {
-        EventKind::Create(_) | EventKind::Remove(_) => Some(WatchEventKind::Rename),
-        EventKind::Modify(ModifyKind::Name(_)) => Some(WatchEventKind::Rename),
-        EventKind::Modify(_) => Some(WatchEventKind::Change),
-        EventKind::Any | EventKind::Other => Some(WatchEventKind::Change),
+        EventKind::Create(_) | EventKind::Remove(_) | EventKind::Modify(ModifyKind::Name(_)) => {
+            Some(WatchEventKind::Rename)
+        }
+        EventKind::Modify(_) | EventKind::Any | EventKind::Other => Some(WatchEventKind::Change),
         EventKind::Access(_) => None,
     }
 }
@@ -36,7 +36,7 @@ impl DirectoryWatch for NotifyDirectoryWatch {
         let mut watcher = notify::recommended_watcher(
             move |result: notify::Result<notify::Event>| match result {
                 Ok(event) => {
-                    let Some(kind) = kind_of(&event.kind) else {
+                    let Some(kind) = kind_of(event.kind) else {
                         return;
                     };
                     for path in &event.paths {
@@ -72,6 +72,7 @@ impl DirectoryWatch for NotifyDirectoryWatch {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use desafinado_core::log_err::LogErr;
     use std::sync::mpsc::channel;
     use std::time::{Duration, Instant};
 
@@ -98,7 +99,7 @@ mod tests {
             .watch(
                 dir.path(),
                 Box::new(move |m| {
-                    let _ = tx.send(m);
+                    tx.send(m).log_warn();
                 }),
             )
             .unwrap();

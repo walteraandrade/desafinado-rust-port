@@ -190,7 +190,7 @@ mod tests {
 
     #[test]
     fn cost_estimate_marks_the_cli_figure_as_an_estimate() {
-        assert_eq!(cost_estimate(0.00265497), "about US$0.0027");
+        assert_eq!(cost_estimate(0.002_654_97), "about US$0.0027");
         assert_eq!(cost_estimate(0.5), "about US$0.50");
         assert_eq!(cost_estimate(0.0), "about US$0");
     }

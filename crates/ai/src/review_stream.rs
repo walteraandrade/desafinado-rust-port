@@ -217,7 +217,7 @@ mod tests {
             parse_review_output(r#"{"elements":[{"blockId":"p1"}]}"#),
             None
         );
-        assert_eq!(parse_review_output(r#"[]"#), None);
+        assert_eq!(parse_review_output(r"[]"), None);
     }
 
     #[test]

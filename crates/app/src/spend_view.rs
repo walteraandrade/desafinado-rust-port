@@ -1,3 +1,4 @@
+use desafinado_core::log_err::LogErr;
 use std::sync::Arc;
 
 use chrono::{FixedOffset, Utc};
@@ -52,11 +53,11 @@ impl SpendView {
     }
 
     pub fn reload(&mut self, cx: &mut Context<Self>) {
-        let services = self.services.clone();
+        let services = Arc::clone(&self.services);
         let work = cx.background_spawn(async move { services.log.read_all() });
         self._task = Some(cx.spawn(async move |this, cx| {
             let result = work.await;
-            let _ = this.update(cx, |this, cx| {
+            this.update(cx, |this, cx| {
                 this.loaded = match result {
                     Ok(records) => Loaded::Ready(records),
                     Err(error) => {
@@ -64,7 +65,8 @@ impl SpendView {
                     }
                 };
                 cx.notify();
-            });
+            })
+            .log_warn();
         }));
     }
 }
@@ -162,7 +164,7 @@ fn share_bar(id: SharedString, index: usize, share: f64, roles: Roles) -> Div {
 }
 
 fn tokens(input: Option<f64>, output: Option<f64>) -> String {
-    let count = |value: Option<f64>| value.map(format_count).unwrap_or_else(|| "–".into());
+    let count = |value: Option<f64>| value.map_or_else(|| "–".into(), format_count);
     format!("{} / {}", count(input), count(output))
 }
 
@@ -251,10 +253,7 @@ fn recent_table(
                     record.task.clone(),
                     served_by(record),
                     tokens(record.tokens.input, record.tokens.output),
-                    record
-                        .cost_usd
-                        .map(format_usd)
-                        .unwrap_or_else(|| "–".into()),
+                    record.cost_usd.map_or_else(|| "–".into(), format_usd),
                     format_latency(record.latency_ms.client),
                     finish_of(record),
                 ],
@@ -356,9 +355,7 @@ fn tiles(report: &SpendReport, roles: Roles) -> Div {
         ))
         .child(tile(
             "Per call",
-            average_cost(total)
-                .map(format_usd)
-                .unwrap_or_else(|| "–".into()),
+            average_cost(total).map_or_else(|| "–".into(), format_usd),
             Some("Average of priced calls".into()),
             roles,
         ))
@@ -395,6 +392,22 @@ impl SpendView {
                 cx.notify();
             }))
         }))
+    }
+
+    fn render_unrecorded(&self, roles: Roles) -> Option<Div> {
+        let missing = self.services.unrecorded_calls();
+        (missing > 0).then(|| {
+            let calls = if missing == 1 { "call" } else { "calls" };
+            ui::meta(
+                format!(
+                    "{missing} AI {calls} since launch could not be written to {}, so their cost is missing here.",
+                    self.services.log.path().display()
+                ),
+                roles,
+            )
+            .text_color(roles.danger)
+            .mt(px(16.))
+        })
     }
 
     fn render_ready(&self, records: &[AiCallRecord], roles: Roles, cx: &mut Context<Self>) -> Div {
@@ -459,6 +472,7 @@ impl Render for SpendView {
                 self.render_ready(&records, roles, cx)
             }
         };
+        let body = div().children(self.render_unrecorded(roles)).child(body);
         let header = ui::row()
             .pt(px(8.))
             .gap(px(12.))

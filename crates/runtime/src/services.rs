@@ -1,8 +1,10 @@
+use desafinado_core::log_err::{LogErr, MissingIsRemoved};
 use std::{
     collections::BTreeMap,
+    io,
     path::PathBuf,
     sync::{
-        Arc, Mutex,
+        Arc, Mutex, PoisonError,
         atomic::{AtomicU64, Ordering},
     },
 };
@@ -11,6 +13,7 @@ use desafinado_ai::records::AiCallRecord;
 
 use desafinado_ai::default_model::resolve_model;
 use desafinado_platform::{
+    files::write_atomic_unconditionally,
     key::{FsKeyFile, KeyStore, SecretServiceKeyring, key_file_path},
     records::AiCallLog,
     user_data::user_data_dir,
@@ -23,6 +26,7 @@ pub struct Services {
     pub model: Mutex<String>,
     pending: Mutex<BTreeMap<u64, AiCallRecord>>,
     next_pending: AtomicU64,
+    unrecorded: AtomicU64,
 }
 
 const MODEL_FILE: &str = "model.txt";
@@ -30,9 +34,10 @@ const MODEL_FILE: &str = "model.txt";
 impl Services {
     pub fn hold_record(&self, record: AiCallRecord) -> u64 {
         let id = self.next_pending.fetch_add(1, Ordering::Relaxed);
-        if let Ok(mut pending) = self.pending.lock() {
-            pending.insert(id, record);
-        }
+        self.pending
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(id, record);
         id
     }
 
@@ -40,27 +45,35 @@ impl Services {
         let held = self
             .pending
             .lock()
-            .ok()
-            .and_then(|mut pending| pending.remove(&id));
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(&id);
         if held.is_some() {
-            let _ = self.log.append(&record);
+            self.append_record(&record);
         }
     }
 
     pub fn flush_records(&self) {
-        let held = self
-            .pending
-            .lock()
-            .map(|mut pending| std::mem::take(&mut *pending))
-            .unwrap_or_default();
+        let held =
+            std::mem::take(&mut *self.pending.lock().unwrap_or_else(PoisonError::into_inner));
         for record in held.values() {
-            let _ = self.log.append(record);
+            self.append_record(record);
         }
+    }
+
+    pub fn append_record(&self, record: &AiCallRecord) {
+        if self.log.append(record).log_err().is_none() {
+            self.unrecorded.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    /// AI calls made since launch whose record could not be written, so their cost is missing.
+    pub fn unrecorded_calls(&self) -> u64 {
+        self.unrecorded.load(Ordering::Relaxed)
     }
 
     pub fn load() -> Arc<Self> {
         let user_data = user_data_dir();
-        let _ = std::fs::create_dir_all(&user_data);
+        std::fs::create_dir_all(&user_data).log_err();
         let keys = KeyStore::new(
             Box::new(SecretServiceKeyring),
             Box::new(FsKeyFile::new(key_file_path(&user_data))),
@@ -75,6 +88,7 @@ impl Services {
             model: Mutex::new(resolve_model(configured.as_deref())),
             pending: Mutex::new(BTreeMap::new()),
             next_pending: AtomicU64::new(0),
+            unrecorded: AtomicU64::new(0),
             keys,
             user_data,
         })
@@ -83,16 +97,15 @@ impl Services {
     pub fn model(&self) -> String {
         self.model
             .lock()
-            .map(|model| model.clone())
-            .unwrap_or_default()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
     }
 
-    pub fn set_model(&self, model: &str) {
+    pub fn set_model(&self, model: &str) -> io::Result<()> {
         let model = resolve_model(Some(model));
-        let _ = std::fs::write(self.user_data.join(MODEL_FILE), &model);
-        if let Ok(mut current) = self.model.lock() {
-            *current = model;
-        }
+        write_atomic_unconditionally(&self.user_data.join(MODEL_FILE), &model)?;
+        *self.model.lock().unwrap_or_else(PoisonError::into_inner) = model;
+        Ok(())
     }
 
     pub fn default_model(&self) -> String {
@@ -106,10 +119,9 @@ impl Services {
             .filter(|text| !text.is_empty())
     }
 
-    pub fn use_default_model(&self) {
-        let _ = std::fs::remove_file(self.user_data.join(MODEL_FILE));
-        if let Ok(mut current) = self.model.lock() {
-            *current = self.default_model();
-        }
+    pub fn use_default_model(&self) -> io::Result<()> {
+        std::fs::remove_file(self.user_data.join(MODEL_FILE)).missing_is_removed()?;
+        *self.model.lock().unwrap_or_else(PoisonError::into_inner) = self.default_model();
+        Ok(())
     }
 }

@@ -68,6 +68,10 @@ fn texts_of(store: &dyn HistoryStore, key: &str) -> Vec<Option<String>> {
         .collect()
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "one table of contract cases, read top to bottom"
+)]
 fn base_cases<'a>() -> Vec<Case<'a>> {
     vec![
         (
@@ -143,7 +147,7 @@ fn base_cases<'a>() -> Vec<Case<'a>> {
                 );
                 let ids: Vec<_> = versions.iter().map(|v| v.id).collect();
                 let mut sorted = ids.clone();
-                sorted.sort();
+                sorted.sort_unstable();
                 sorted.dedup();
                 assert_eq!(sorted, ids);
             }),

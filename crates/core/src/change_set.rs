@@ -235,6 +235,7 @@ impl ChangeSet {
         Self { length, changes }
     }
 
+    #[must_use]
     pub fn compose(&self, other: &ChangeSet) -> ChangeSet {
         let mut first = self.ops();
         let mut second = other.ops();

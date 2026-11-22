@@ -69,7 +69,7 @@ mod tests {
     fn client(server: &TestServer, key: Option<&str>) -> OpenRouterClient {
         OpenRouterClient::new(
             server.base_url(),
-            key.map(str::to_owned),
+            key.and_then(desafinado_ai::api_key::ApiKey::new),
             &AgentOptions::direct(),
         )
         .unwrap()

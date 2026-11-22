@@ -1,3 +1,5 @@
+use std::sync::LazyLock;
+
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 
@@ -18,19 +20,21 @@ pub struct RiskInput {
 const MAX_LINES: usize = 5;
 const MAX_LINE_CHARS: usize = 100;
 
+static FRONTMATTER: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^\u{feff}?---\r?\n([\s\S]*?)\r?\n---").expect("frontmatter"));
+static HOOKS: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?m)^hooks\s*:").expect("hooks"));
+static INLINE_SHELL: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"!`[^`\n]+`").expect("inline"));
+static SHELL_FENCE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^\s*```!").expect("fence"));
+
 fn has_hooks_field(text: &str) -> bool {
-    let frontmatter = Regex::new(r"^\u{feff}?---\r?\n([\s\S]*?)\r?\n---").expect("frontmatter");
-    let hooks = Regex::new(r"(?m)^hooks\s*:").expect("hooks");
-    frontmatter
+    FRONTMATTER
         .captures(text)
         .and_then(|captures| captures.get(1))
-        .is_some_and(|block| hooks.is_match(block.as_str()))
+        .is_some_and(|block| HOOKS.is_match(block.as_str()))
 }
 
 fn runs_shell(line: &str) -> bool {
-    let inline = Regex::new(r"!`[^`\n]+`").expect("inline");
-    let fence = Regex::new(r"^\s*```!").expect("fence");
-    inline.is_match(line) || fence.is_match(line)
+    INLINE_SHELL.is_match(line) || SHELL_FENCE.is_match(line)
 }
 
 fn clip(line: &str) -> String {
@@ -98,7 +102,10 @@ mod tests {
     fn find(text: String, left_out: &[&str]) -> Vec<Risk> {
         find_risks(&RiskInput {
             skill_text: text,
-            left_out: left_out.iter().map(|s| s.to_string()).collect(),
+            left_out: left_out
+                .iter()
+                .map(std::string::ToString::to_string)
+                .collect(),
         })
     }
 

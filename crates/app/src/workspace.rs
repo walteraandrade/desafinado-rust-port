@@ -1,6 +1,8 @@
+use desafinado_core::log_err::LogErr;
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},
+    rc::Rc,
     sync::Arc,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
@@ -46,14 +48,14 @@ use desafinado_platform::{
     watch::{ExternalChanges, ExternalChangesController, WatchConfig},
 };
 use desafinado_runtime::services::Services;
-use futures::{StreamExt as _, channel::mpsc::UnboundedReceiver};
+use futures::{FutureExt as _, StreamExt as _, channel::mpsc::UnboundedReceiver, future::Shared};
 use gpui_kit::{component::TitleBar, prelude::FluentBuilder as _, *};
 
 use crate::{
     document::{
-        Conflict, ExternalFacts, ExternalVerdict, FileSession, SCRATCH_KEY, UNTITLED_NAME,
-        decide_external_change, edited_session, has_unsaved_changes, history_key, minimal_change,
-        name_of, opened_session, suggested_file_name,
+        Conflict, DiskState, ExternalFacts, ExternalVerdict, FileSession, SCRATCH_KEY,
+        UNTITLED_NAME, decide_external_change, edited_session, has_unsaved_changes, history_key,
+        minimal_change, name_of, opened_session, suggested_file_name,
     },
     editor_pane::{EditorPane, PaneEvent, PaneToastAction},
     evals_view::{self, EvalSkill, EvalsEvent, EvalsView},
@@ -81,7 +83,7 @@ use desafinado_platform::quick_actions::{load_quick_actions, save_quick_actions}
 const HISTORY_IDLE_MS: i64 = 30_000;
 const UNSAVED_DELAY: Duration = Duration::from_millis(400);
 const TOAST_DURATION: Duration = Duration::from_millis(4500);
-const ACTION_TOAST_DURATION: Duration = Duration::from_millis(12000);
+const ACTION_TOAST_DURATION: Duration = Duration::from_secs(12);
 const FLASH_DURATION: Duration = Duration::from_millis(1200);
 const HISTORY_FILE: &str = "history.sqlite";
 
@@ -167,8 +169,7 @@ pub fn init(cx: &mut App) {
 pub fn now_ms() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map(|elapsed| elapsed.as_millis() as i64)
-        .unwrap_or(0)
+        .map_or(0, |elapsed| elapsed.as_millis() as i64)
 }
 
 pub(crate) fn utc_offset_minutes() -> i64 {
@@ -238,11 +239,10 @@ pub(crate) enum ToastAction {
 impl ToastAction {
     fn label(&self) -> &'static str {
         match self {
-            Self::ShowEvals { .. } => "Show",
+            Self::ShowEvals { .. } | Self::Pane(PaneToastAction::ShowSuggestion(_)) => "Show",
             Self::Pane(PaneToastAction::RetrySuggestion(_) | PaneToastAction::RetryReview(_)) => {
                 "Retry"
             }
-            Self::Pane(PaneToastAction::ShowSuggestion(_)) => "Show",
         }
     }
 }
@@ -282,13 +282,12 @@ fn with_reason(text: String, reason: Option<&str>) -> String {
 }
 
 fn load_unsaved(db: Option<&HistoryDb>, key: &str) -> Option<Unsaved> {
-    db.and_then(|db| db.load_unsaved(key).ok().flatten())
+    db.and_then(|db| db.load_unsaved(key).log_err().flatten())
 }
 
 fn reopen(db: Option<&HistoryDb>, path: &Path, failure_text: &str) -> Reopened {
     match read_markdown(path) {
         FileReadResult::Opened { path, name, text } => {
-            let path = PathBuf::from(path);
             let stored =
                 load_unsaved(db, &history_key(Some(&path))).map(|unsaved| arrival::Unsaved {
                     text: unsaved.text,
@@ -329,6 +328,54 @@ fn touches(path: &Path, changed: &str) -> bool {
     path == changed || path.starts_with(&format!("{changed}/"))
 }
 
+/// Which save the user asked for. A Save as asked for during a running save wins over a Save.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum SaveKind {
+    Save,
+    SaveAs,
+}
+
+/// The running save's write, a save asked for while it runs, and a serial of the open
+/// document that tells a late result whether the document it saved is still open.
+#[derive(Default)]
+struct Saves {
+    task: Option<Shared<Task<FileSaveResult>>>,
+    queued: Option<SaveKind>,
+    document: u64,
+}
+
+/// The text a save writes, the name it reports, and the document it was started from.
+struct Saving {
+    text: String,
+    name: String,
+    document: u64,
+}
+
+/// What fills the window under the header while the AI spend page is closed.
+/// Evals show only while a Skill is open; otherwise the text does.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Page {
+    Text,
+    Reading,
+    Evals,
+}
+
+/// A file the Library asked to open, kept until the open goes through or is cancelled.
+struct LibraryRequest {
+    path: PathBuf,
+    /// Move the focus to the text once the file is open.
+    focus_text: bool,
+    /// The request came from Library search, so a cancel returns there.
+    from_search: bool,
+}
+
+/// The file the watcher was last told to follow.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum Watching {
+    File(PathBuf),
+    Nothing,
+}
+
 pub struct Workspace {
     pane: Entity<EditorPane>,
     services: Arc<Services>,
@@ -336,7 +383,8 @@ pub struct Workspace {
     session: Option<FileSession>,
     conflict: Option<Conflict>,
     writing: Option<String>,
-    noticed: Option<Option<String>>,
+    saves: Saves,
+    noticed: Option<DiskState<String>>,
     last_text: String,
     pub(crate) history: SwitchableHistory<PathBuf>,
     history_tick: Option<Task<()>>,
@@ -344,7 +392,7 @@ pub struct Workspace {
     unsaved_task: Option<Task<()>>,
     remembered: Option<PathBuf>,
     watcher: Option<ExternalChangesController>,
-    watched: Option<Option<PathBuf>>,
+    watched: Option<Watching>,
     toast: Option<Toast>,
     toast_serial: u64,
     pub(crate) mode: HistoryMode,
@@ -369,7 +417,7 @@ pub struct Workspace {
     leaving: Leaving,
     search_unfolded: bool,
     search_opening: bool,
-    library_request: Option<(PathBuf, bool, bool)>,
+    library_request: Option<LibraryRequest>,
     viewport_width: Pixels,
     new_skill: Option<Entity<NewSkillDialog>>,
     frontmatter: Entity<FrontmatterView>,
@@ -377,8 +425,7 @@ pub struct Workspace {
     frontmatter_scrolled: std::rc::Rc<std::cell::Cell<Pixels>>,
     frontmatter_height: std::rc::Rc<std::cell::Cell<Pixels>>,
     evals: Entity<EvalsView>,
-    evals_page: bool,
-    reading: bool,
+    page: Page,
     unsaved_checked: Option<(String, bool)>,
     menu_active: Option<usize>,
     menu_focus: FocusHandle,
@@ -407,19 +454,19 @@ impl Workspace {
             store,
             initial,
             notice,
-            start,
-            start_path,
+            file: start,
+            file_path: start_path,
             remembered,
             first_initial,
         } = open_start(launch, &user_data);
-        let evals_service = evals_view::service(user_data.clone(), store.clone());
+        let evals_service = evals_view::service(user_data.clone(), Arc::clone(&store));
         let history = document_history(store, start_path, first_initial);
         let (pane, quick_actions) = Self::open_pane(&services, &initial, window, cx);
         let key_present = services.keys.status().present;
         let library = cx.new(|cx| LibraryPanel::new(user_data.clone(), window, cx));
         let frontmatter = cx.new(|cx| {
             FrontmatterView::new(
-                desafinado_runtime::ai_backend::backend(services.clone()),
+                desafinado_runtime::ai_backend::backend(Arc::clone(&services)),
                 window,
                 cx,
             )
@@ -435,6 +482,7 @@ impl Workspace {
             session,
             conflict,
             writing: None,
+            saves: Saves::default(),
             noticed: None,
             last_text: initial,
             history,
@@ -476,8 +524,7 @@ impl Workspace {
             frontmatter_scrolled: std::rc::Rc::new(std::cell::Cell::new(px(0.))),
             frontmatter_height: std::rc::Rc::new(std::cell::Cell::new(px(0.))),
             evals,
-            evals_page: false,
-            reading: false,
+            page: Page::Text,
             unsaved_checked: None,
             menu_active: None,
             menu_focus: cx.focus_handle(),
@@ -519,19 +566,19 @@ impl Workspace {
     ) -> (Entity<EditorPane>, QuickActionSettings) {
         let pane = cx.new(|cx| {
             EditorPane::new(
-                desafinado_runtime::ai_backend::backend(services.clone()),
+                desafinado_runtime::ai_backend::backend(Arc::clone(services)),
                 window,
                 cx,
             )
         });
         let quick_actions = load_quick_actions(&services.user_data)
-            .ok()
+            .log_warn()
             .flatten()
             .and_then(|text| parse_quick_action_settings(&text))
             .unwrap_or_else(default_quick_action_settings);
         pane.update(cx, |pane, cx| {
             pane.quick_actions = enabled_quick_actions(&quick_actions, true);
-            pane.set_text(initial, window, cx)
+            pane.set_text(initial, window, cx);
         });
         (pane, quick_actions)
     }
@@ -547,13 +594,13 @@ impl Workspace {
         let evals_service = evals.read(cx).service();
         vec![
             cx.subscribe(pane, |this, _, event: &PaneEvent, cx| {
-                this.on_pane_event(event, cx)
+                this.on_pane_event(event, cx);
             }),
             cx.subscribe_in(
                 library,
                 window,
                 |this, _, event: &LibraryEvent, window, cx| {
-                    this.on_library_event(event, window, cx)
+                    this.on_library_event(event, window, cx);
                 },
             ),
             cx.subscribe_in(
@@ -561,24 +608,29 @@ impl Workspace {
                 window,
                 |this, _, event: &FrontmatterEvent, window, cx| match event {
                     FrontmatterEvent::Edit(field, value) => {
-                        this.edit_frontmatter(*field, value, window, cx)
+                        this.edit_frontmatter(*field, value, window, cx);
                     }
                 },
             ),
             cx.observe(library, |this, _, cx| this.sync_library(cx)),
             cx.subscribe_in(evals, window, |this, _, event: &EvalsEvent, window, cx| {
-                this.on_evals_event(event, window, cx)
+                this.on_evals_event(event, window, cx);
             }),
             cx.observe(evals, |_, _, cx| cx.notify()),
             cx.on_app_quit(move |_, _| {
-                let service = evals_service.clone();
+                let service = Arc::clone(&evals_service);
                 async move { service.shutdown() }
             }),
             cx.on_release(|this, _| this.flush_all()),
             cx.on_app_quit(|this, _| {
                 this.flush_all();
                 this.services.flush_records();
-                async {}
+                let write = this.saves.task.clone();
+                async move {
+                    if let Some(write) = write {
+                        write.await;
+                    }
+                }
             }),
         ]
     }
@@ -589,7 +641,7 @@ impl Workspace {
         let controller = ExternalChangesController::start(WatchConfig::new(
             move || library_panel::list(&user_data),
             move |changes| {
-                let _ = sender.unbounded_send(changes);
+                sender.unbounded_send(changes).log_warn();
             },
         ));
         self.watcher = Some(controller);
@@ -598,7 +650,7 @@ impl Workspace {
             while let Some(changes) = receiver.next().await {
                 if this
                     .update_in(cx, |this, window, cx| {
-                        this.external_changes(changes, window, cx)
+                        this.external_changes(changes, window, cx);
                     })
                     .is_err()
                 {
@@ -648,14 +700,29 @@ impl Workspace {
     }
 
     fn watch(&mut self) {
-        let path = self.session_path().map(Path::to_path_buf);
-        if self.watched.as_ref() == Some(&path) {
+        let watching = self
+            .session_path()
+            .map_or(Watching::Nothing, |path| Watching::File(path.to_path_buf()));
+        if self.watched.as_ref() == Some(&watching) {
             return;
         }
         if let Some(watcher) = &self.watcher {
-            watcher.watch_file(path.as_deref().and_then(Path::to_str));
+            let file = match &watching {
+                Watching::File(path) => {
+                    let file = path.to_str();
+                    if file.is_none() {
+                        log::warn!(
+                            "Not following outside changes to {}: its name is not UTF-8",
+                            path.display()
+                        );
+                    }
+                    file
+                }
+                Watching::Nothing => None,
+            };
+            watcher.watch_file(file);
         }
-        self.watched = Some(path);
+        self.watched = Some(watching);
     }
 
     pub(crate) fn text(&self, cx: &App) -> String {
@@ -685,17 +752,18 @@ impl Workspace {
         actions: Vec<ToastAction>,
         cx: &mut Context<Self>,
     ) {
-        let duration = if !actions.is_empty() {
-            ACTION_TOAST_DURATION
-        } else {
+        let duration = if actions.is_empty() {
             TOAST_DURATION
+        } else {
+            ACTION_TOAST_DURATION
         };
         let timer = cx.spawn(async move |this, cx| {
             cx.background_executor().timer(duration).await;
-            let _ = this.update(cx, |this, cx| {
+            this.update(cx, |this, cx| {
                 this.toast = None;
                 cx.notify();
-            });
+            })
+            .log_warn();
         });
         self.toast_serial += 1;
         let serial = self.toast_serial;
@@ -714,7 +782,7 @@ impl Workspace {
             PaneEvent::Changed => {
                 let text = self.text(cx);
                 if text != self.last_text {
-                    self.last_text = text.clone();
+                    self.last_text.clone_from(&text);
                     self.text_changed(&text, cx);
                     self.history.edited(text, now_ms());
                     self.schedule_history(cx);
@@ -795,7 +863,7 @@ impl Workspace {
         }
         self.unsaved_task = Some(cx.spawn(async move |this, cx| {
             cx.background_executor().timer(UNSAVED_DELAY).await;
-            let _ = this.update(cx, |this, _| this.flush_unsaved());
+            this.update(cx, |this, _| this.flush_unsaved()).log_warn();
         }));
     }
 
@@ -812,7 +880,7 @@ impl Workspace {
                 db.save_unsaved(&key, &unsaved, now_ms())
             };
             if let Err(error) = result {
-                eprintln!("Unsaved text write failed: {error}");
+                log::error!("Unsaved text write failed: {error}");
             }
         }
     }
@@ -821,7 +889,7 @@ impl Workspace {
         let key = history_key(Some(path));
         self.unsaved.remove(&key);
         if let Some(db) = &self.db {
-            let _ = db.clear_unsaved(&key);
+            db.clear_unsaved(&key).log_err();
         }
     }
 
@@ -853,10 +921,11 @@ impl Workspace {
         let wait = Duration::from_millis((due - now_ms()).max(0) as u64);
         self.history_tick = Some(cx.spawn(async move |this, cx| {
             cx.background_executor().timer(wait).await;
-            let _ = this.update(cx, |this, cx| {
+            this.update(cx, |this, cx| {
                 this.history.poll(now_ms());
                 this.settle_history(cx);
-            });
+            })
+            .log_warn();
         }));
     }
 
@@ -897,13 +966,14 @@ impl Workspace {
         };
         let arrived = restore_unsaved(&text, stored.as_ref());
         self.settle_before(&arrived.text, cx);
+        self.saves.document += 1;
         self.session = Some(opened_session(
             &name,
             &path,
             &arrived.text,
             &arrived.saved_text,
         ));
-        self.last_text = arrived.text.clone();
+        self.last_text.clone_from(&arrived.text);
         self.pane
             .update(cx, |pane, cx| pane.replace_text(&arrived.text, window, cx));
         self.arrived();
@@ -938,11 +1008,7 @@ impl Workspace {
     fn load(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
         match read_markdown(&path) {
             FileReadResult::Opened { path, name, text } => self.arrive(
-                Opened {
-                    name,
-                    path: PathBuf::from(path),
-                    text,
-                },
+                Opened { name, path, text },
                 true,
                 Arrival::Opened,
                 window,
@@ -959,11 +1025,7 @@ impl Workspace {
     fn reload(&mut self, conflict: Conflict, window: &mut Window, cx: &mut Context<Self>) {
         match read_markdown(&conflict.path) {
             FileReadResult::Opened { path, name, text } => self.arrive(
-                Opened {
-                    name,
-                    path: PathBuf::from(path),
-                    text,
-                },
+                Opened { name, path, text },
                 false,
                 Arrival::Reloaded,
                 window,
@@ -980,9 +1042,10 @@ impl Workspace {
     fn reload_from(&mut self, opened: Opened, window: &mut Window, cx: &mut Context<Self>) {
         let Opened { name, path, text } = opened;
         self.settle_before(&text, cx);
+        self.saves.document += 1;
         self.session = Some(opened_session(&name, &path, &text, &text));
         let change = minimal_change(&self.text(cx), &text);
-        self.last_text = text.clone();
+        self.last_text.clone_from(&text);
         self.pane
             .update(cx, |pane, cx| pane.refresh_text(&change, window, cx));
         self.arrived();
@@ -1001,7 +1064,8 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         if changes.library {
-            self.library.update(cx, |library, cx| library.refresh(cx));
+            self.library
+                .update(cx, super::library_panel::LibraryPanel::refresh);
         }
         let Some(path) = self.session_path().map(Path::to_path_buf) else {
             return;
@@ -1028,7 +1092,7 @@ impl Workspace {
             saved_text: &session.saved_text,
             document: &document,
             writing: self.writing.as_deref(),
-            noticed: self.noticed.as_ref().map(|noticed| noticed.as_deref()),
+            noticed: self.noticed.as_ref().map(DiskState::as_deref),
         });
         match (verdict, read) {
             (ExternalVerdict::Settled, _) => {
@@ -1041,7 +1105,7 @@ impl Workspace {
             }
             (ExternalVerdict::Nothing, _) => {}
             _ => {
-                self.noticed = Some(disk);
+                self.noticed = Some(DiskState::of(disk));
                 self.conflict = Some(Conflict {
                     name: session.name,
                     path,
@@ -1071,7 +1135,7 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         self.settle_before(&text, cx);
-        self.last_text = text.clone();
+        self.last_text.clone_from(&text);
         self.pane
             .update(cx, |pane, cx| pane.restore_text(&text, window, cx));
         self.text_changed(&text, cx);
@@ -1101,7 +1165,11 @@ impl Workspace {
             LeaveIntent::OpenPath(path) => {
                 self.load(path.clone(), window, cx);
                 let request = self.library_request.take();
-                if let Some((requested, true, _)) = request
+                if let Some(LibraryRequest {
+                    path: requested,
+                    focus_text: true,
+                    ..
+                }) = request
                     && requested == path
                     && self.session_path() == Some(path.as_path())
                 {
@@ -1127,7 +1195,8 @@ impl Workspace {
             }
             CreateSkillResult::Created { path, name } => {
                 self.new_skill = None;
-                self.library.update(cx, |library, cx| library.refresh(cx));
+                self.library
+                    .update(cx, super::library_panel::LibraryPanel::refresh);
                 let path = PathBuf::from(path);
                 self.load(path.clone(), window, cx);
                 if self.session_path() == Some(path.as_path()) {
@@ -1146,7 +1215,7 @@ impl Workspace {
     ) {
         match event {
             LibraryEvent::Open { path, focus_text } => {
-                self.open_from_library(PathBuf::from(path), *focus_text, window, cx)
+                self.open_from_library(PathBuf::from(path), *focus_text, window, cx);
             }
             LibraryEvent::OpenResult { path } => {
                 self.search_opening = true;
@@ -1156,7 +1225,7 @@ impl Workspace {
             LibraryEvent::NewSkill => self.open_new_skill(window, cx),
             LibraryEvent::Escape => self.focus_text_from_library(window, cx),
             LibraryEvent::Notify(text, tone) => {
-                self.notify_with(text.clone(), *tone, Vec::new(), cx)
+                self.notify_with(text.clone(), *tone, Vec::new(), cx);
             }
             LibraryEvent::RootsChanged => {
                 if let Some(watcher) = &self.watcher {
@@ -1185,7 +1254,11 @@ impl Workspace {
             }
             return;
         }
-        self.library_request = Some((path.clone(), focus_text, self.search_opening));
+        self.library_request = Some(LibraryRequest {
+            path: path.clone(),
+            focus_text,
+            from_search: self.search_opening,
+        });
         self.guard(LeaveIntent::OpenPath(path), window, cx);
     }
 
@@ -1201,8 +1274,18 @@ impl Workspace {
         skill_of_file(self.library.read(cx).roots(), &|path| path == active).map(EvalSkill::from)
     }
 
+    fn reading(&self) -> bool {
+        self.page == Page::Reading
+    }
+
+    fn leave_reading(&mut self) {
+        if self.reading() {
+            self.page = Page::Text;
+        }
+    }
+
     fn evals_shown(&self, cx: &App) -> bool {
-        self.evals_page && self.open_skill(cx).is_some()
+        self.page == Page::Evals && self.open_skill(cx).is_some()
     }
 
     fn busy_name(&self, cx: &App) -> Option<String> {
@@ -1230,12 +1313,12 @@ impl Workspace {
 
     fn open_evals(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.mode = HistoryMode::Editing;
-        self.evals_page = true;
+        self.page = Page::Evals;
         self.hovered = None;
         self.open_menu = None;
         self.unsaved_checked = None;
         window.focus(&self.focus, cx);
-        self.evals.update(cx, |evals, cx| evals.refresh(cx));
+        self.evals.update(cx, super::evals_view::EvalsView::refresh);
         cx.notify();
     }
 
@@ -1256,15 +1339,15 @@ impl Workspace {
                 self.show_editing(window, cx);
                 match action {
                     PaneToastAction::RetrySuggestion(id) => {
-                        self.pane.update(cx, |pane, cx| pane.retry(id, window, cx))
+                        self.pane.update(cx, |pane, cx| pane.retry(id, window, cx));
                     }
                     PaneToastAction::ShowSuggestion(id) => {
-                        self.pane.update(cx, |pane, cx| pane.show(id, window, cx))
+                        self.pane.update(cx, |pane, cx| pane.show(id, window, cx));
                     }
                     PaneToastAction::RetryReview(focus) => {
                         let focus = focus.clone();
                         self.pane
-                            .update(cx, |pane, cx| pane.start_review(focus, cx))
+                            .update(cx, |pane, cx| pane.start_review(focus, cx));
                     }
                 }
             }
@@ -1356,10 +1439,11 @@ impl Workspace {
         if self.library_open && !cx.reduce_motion() {
             self.leaving.library = Some(cx.spawn(async move |this, cx| {
                 cx.background_executor().timer(ui::MOTION_LEAVE).await;
-                let _ = this.update(cx, |this, cx| {
+                this.update(cx, |this, cx| {
                     this.leaving.library = None;
                     cx.notify();
-                });
+                })
+                .log_warn();
             }));
         }
         self.library_open = false;
@@ -1488,9 +1572,7 @@ impl Workspace {
             .as_ref()
             .map(|open| open.file_name.clone())
             .or_else(|| self.session.as_ref().map(|session| session.name.clone()));
-        let folder_name = if !is_skill_file(file_name.as_deref()) {
-            None
-        } else {
+        let folder_name = if is_skill_file(file_name.as_deref()) {
             open.as_ref()
                 .map(|open| open.folder_name.clone())
                 .or_else(|| {
@@ -1499,6 +1581,8 @@ impl Workspace {
                         .and_then(Path::file_name)
                         .map(|name| name.to_string_lossy().into_owned())
                 })
+        } else {
+            None
         };
         let report = inspect_frontmatter(
             &text,
@@ -1532,7 +1616,7 @@ impl Workspace {
         match plan_field_edit(&text, &values) {
             FieldEditPlan::Unchanged => {}
             FieldEditPlan::Refused { problem } => {
-                self.notify_failure(describe_frontmatter_problem(&problem), cx)
+                self.notify_failure(describe_frontmatter_problem(&problem), cx);
             }
             FieldEditPlan::Change { changes } => {
                 let from = changes.iter().map(|change| change.from).min().unwrap_or(0);
@@ -1542,7 +1626,7 @@ impl Workspace {
                 let end = to + next.len() - text.len();
                 let insert = next[from..end].to_string();
                 self.pane.update(cx, |pane, cx| {
-                    pane.edit_range(from..to, &insert, window, cx)
+                    pane.edit_range(from..to, &insert, window, cx);
                 });
             }
         }
@@ -1555,7 +1639,7 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         self.open_menu = None;
-        self.reading = false;
+        self.leave_reading();
         self.close_history(window, cx);
         self.frontmatter
             .update(cx, |view, cx| view.focus_panel(window, cx));
@@ -1570,13 +1654,13 @@ impl Workspace {
             LeaveChoice::Cancel => {
                 self.focus_text(window, cx);
                 if let LeaveIntent::OpenPath(_) = intent
-                    && let Some((_, _, search)) = self.library_request.take()
+                    && let Some(request) = self.library_request.take()
                 {
                     self.library.update(cx, |library, cx| {
-                        if search {
-                            library.focus_search(window, cx)
+                        if request.from_search {
+                            library.focus_search(window, cx);
                         } else {
-                            library.focus_tree(window, cx)
+                            library.focus_tree(window, cx);
                         }
                     });
                 }
@@ -1590,11 +1674,11 @@ impl Workspace {
                 if let Some(path) = self.session_path().map(Path::to_path_buf) {
                     self.discard_unsaved(&path);
                 }
-                self.continue_with(intent, window, cx)
+                self.continue_with(intent, window, cx);
             }
             LeaveChoice::Save => {
                 self.after_save = Some(intent);
-                self.save(false, window, cx);
+                self.save(SaveKind::Save, window, cx);
             }
         }
         cx.notify();
@@ -1606,6 +1690,7 @@ impl Workspace {
 
     fn clear_document(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.settle_before("", cx);
+        self.saves.document += 1;
         self.session = None;
         self.last_text = String::new();
         self.pane
@@ -1634,14 +1719,15 @@ impl Workspace {
             if let Ok(Ok(Some(paths))) = paths.await
                 && let Some(path) = paths.into_iter().next()
             {
-                let _ = this.update_in(cx, |this, window, cx| this.load(path, window, cx));
+                this.update_in(cx, |this, window, cx| this.load(path, window, cx))
+                    .log_warn();
             }
         })
         .detach();
     }
 
     fn save_document(&mut self, _: &SaveDocument, window: &mut Window, cx: &mut Context<Self>) {
-        self.save(false, window, cx);
+        self.save(SaveKind::Save, window, cx);
     }
 
     fn save_document_as(
@@ -1650,59 +1736,90 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.save(true, window, cx);
+        self.save(SaveKind::SaveAs, window, cx);
     }
 
-    fn save(&mut self, save_as: bool, window: &mut Window, cx: &mut Context<Self>) {
+    fn save(&mut self, kind: SaveKind, window: &mut Window, cx: &mut Context<Self>) {
         self.open_menu = None;
+        if self.writing.is_some() {
+            self.saves.queued = Some(kind.max(self.saves.queued.unwrap_or(SaveKind::Save)));
+            return;
+        }
+        let document = self.saves.document;
         let text = self.text(cx);
         self.writing = Some(text.clone());
         self.history.saving(text.clone(), now_ms());
         self.settle_history(cx);
-        let name = self
-            .session
-            .as_ref()
-            .map(|session| session.name.clone())
-            .unwrap_or_else(|| suggested_file_name(&text));
+        let name = self.session.as_ref().map_or_else(
+            || suggested_file_name(&text),
+            |session| session.name.clone(),
+        );
         match self.session.clone() {
             Some(FileSession {
                 path: Some(path),
                 saved_text,
                 ..
-            }) if !save_as => {
-                let result = save_markdown(&SaveRequest {
-                    path: path.to_string_lossy().into_owned(),
+            }) if kind == SaveKind::Save => {
+                let request = SaveRequest {
+                    path,
                     text: text.clone(),
                     expected: saved_text,
-                });
-                self.finish_save(result, text, name, window, cx);
+                };
+                let write = cx
+                    .background_spawn(async move { save_markdown(&request) })
+                    .shared();
+                self.saves.task = Some(write.clone());
+                cx.spawn_in(window, async move |this, cx| {
+                    let result = write.await;
+                    this.update_in(cx, |this, window, cx| {
+                        this.finish_save(
+                            result,
+                            Saving {
+                                text,
+                                name,
+                                document,
+                            },
+                            window,
+                            cx,
+                        );
+                    })
+                    .log_warn();
+                })
+                .detach();
             }
-            _ => self.prompt_save_as(text, name, window, cx),
+            _ => self.prompt_save_as(
+                Saving {
+                    text,
+                    name,
+                    document,
+                },
+                window,
+                cx,
+            ),
         }
     }
 
-    fn prompt_save_as(
-        &mut self,
-        text: String,
-        name: String,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
+    fn prompt_save_as(&mut self, saving: Saving, window: &mut Window, cx: &mut Context<Self>) {
         let directory = self
             .session_path()
             .and_then(Path::parent)
             .map(PathBuf::from)
             .or_else(dirs_home)
             .unwrap_or_else(|| PathBuf::from("."));
-        let target = cx.prompt_for_new_path(&directory, Some(&name));
+        let target = cx.prompt_for_new_path(&directory, Some(&saving.name));
         cx.spawn_in(window, async move |this, cx| {
             let result = match target.await {
-                Ok(Ok(Some(chosen))) => save_as_target(&chosen, &text),
+                Ok(Ok(Some(chosen))) => {
+                    let text = saving.text.clone();
+                    cx.background_spawn(async move { save_as_target(&chosen, &text) })
+                        .await
+                }
                 _ => FileSaveResult::Cancelled,
             };
-            let _ = this.update_in(cx, |this, window, cx| {
-                this.finish_save(result, text, name, window, cx)
-            });
+            this.update_in(cx, |this, window, cx| {
+                this.finish_save(result, saving, window, cx);
+            })
+            .log_warn();
         })
         .detach();
     }
@@ -1710,13 +1827,26 @@ impl Workspace {
     fn finish_save(
         &mut self,
         result: FileSaveResult,
-        text: String,
-        name: String,
+        saving: Saving,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         self.writing = None;
+        self.saves.task = None;
+        let Saving {
+            text,
+            name,
+            document,
+        } = saving;
+        if document != self.saves.document {
+            self.finish_save_elsewhere(result, &name, cx);
+            return;
+        }
         let saved = matches!(result, FileSaveResult::Saved { .. });
+        let replay = matches!(
+            result,
+            FileSaveResult::Saved { .. } | FileSaveResult::Cancelled
+        );
         match result {
             FileSaveResult::Cancelled => {}
             FileSaveResult::Failed { reason } => self.notify_failure(
@@ -1734,7 +1864,7 @@ impl Workspace {
                 let current = self.text(cx);
                 self.session = Some(FileSession {
                     name: name.clone(),
-                    path: Some(PathBuf::from(path)),
+                    path: Some(path),
                     saved_text: text.clone(),
                     dirty: current != text,
                 });
@@ -1746,9 +1876,41 @@ impl Workspace {
                 self.watch();
             }
         }
+        if let Some(kind) = self.saves.queued.take()
+            && replay
+        {
+            self.save(kind, window, cx);
+            cx.notify();
+            return;
+        }
         match self.after_save.take() {
             Some(intent) if saved => self.continue_with(intent, window, cx),
             _ => {}
+        }
+        cx.notify();
+    }
+
+    /// A save that ends after another document was opened only reports how it went:
+    /// the session, History and watcher now belong to the new document.
+    fn finish_save_elsewhere(
+        &mut self,
+        result: FileSaveResult,
+        name: &str,
+        cx: &mut Context<Self>,
+    ) {
+        self.saves.queued = None;
+        self.after_save = None;
+        match result {
+            FileSaveResult::Saved { name, .. } => self.notify_success(format!("Saved {name}"), cx),
+            FileSaveResult::Failed { reason } => self.notify_failure(
+                with_reason(format!("Could not save {name}"), Some(&reason)),
+                cx,
+            ),
+            FileSaveResult::Conflict => self.notify_failure(
+                format!("Could not save {name}: the file changed on disk"),
+                cx,
+            ),
+            FileSaveResult::Cancelled => {}
         }
         cx.notify();
     }
@@ -1779,7 +1941,9 @@ impl Workspace {
         } else {
             self.visible_mode()
         };
-        self.evals_page = false;
+        if self.page == Page::Evals {
+            self.page = Page::Text;
+        }
         self.mode = next_history_mode(&ids, from, action);
         let editing = self.visible_mode() == HistoryMode::Editing;
         if editing {
@@ -1795,7 +1959,7 @@ impl Workspace {
     }
 
     fn show_editing(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.reading = false;
+        self.leave_reading();
         if self.visible_mode() != HistoryMode::Editing {
             self.close_history(window, cx);
         }
@@ -1822,10 +1986,11 @@ impl Workspace {
         }
         let flash = cx.spawn(async move |this, cx| {
             cx.background_executor().timer(FLASH_DURATION).await;
-            let _ = this.update(cx, |this, cx| {
+            this.update(cx, |this, cx| {
                 this.flash = None;
                 cx.notify();
-            });
+            })
+            .log_warn();
         });
         self.flash = Some((id, flash));
         cx.notify();
@@ -1994,7 +2159,7 @@ impl Workspace {
                 PreferencesEvent::OpenKey => this.open_key(window, cx),
                 PreferencesEvent::OpenSpend => this.show_spend(&ShowSpend, window, cx),
                 PreferencesEvent::QuickActions(settings) => {
-                    this.change_quick_actions(settings.clone(), cx)
+                    this.change_quick_actions(settings.clone(), cx);
                 }
             },
         );
@@ -2013,16 +2178,17 @@ impl Workspace {
         }
         let done = cx.spawn(async move |this, cx| {
             cx.background_executor().timer(ui::MOTION_LEAVE).await;
-            let _ = this.update(cx, |this, cx| {
+            this.update(cx, |this, cx| {
                 this.leaving.preferences = None;
                 cx.notify();
-            });
+            })
+            .log_warn();
         });
         self.leaving.preferences = Some((panel, done));
     }
 
     fn change_quick_actions(&mut self, settings: QuickActionSettings, cx: &mut Context<Self>) {
-        self.quick_actions = settings.clone();
+        self.quick_actions.clone_from(&settings);
         self.pane.update(cx, |pane, cx| {
             pane.quick_actions = enabled_quick_actions(&settings, true);
             cx.notify();
@@ -2036,16 +2202,17 @@ impl Workspace {
                 previous.await;
             }
             if let Err(error) = write.await {
-                eprintln!("Quick actions could not be saved: {error}");
-                let _ = this.update(cx, |this, cx| {
-                    this.notify("Quick actions could not be saved.", cx)
-                });
+                log::error!("Quick actions could not be saved: {error}");
+                this.update(cx, |this, cx| {
+                    this.notify("Quick actions could not be saved.", cx);
+                })
+                .log_warn();
             }
         }));
     }
 
     fn open_key(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let dialog = cx.new(|cx| KeyDialog::new(self.services.clone(), window, cx));
+        let dialog = cx.new(|cx| KeyDialog::new(Arc::clone(&self.services), window, cx));
         let events = cx.subscribe_in(&dialog, window, |this, _, event: &KeyEvent, window, cx| {
             match event {
                 KeyEvent::State(state) => this.key_present = state.present,
@@ -2063,7 +2230,7 @@ impl Workspace {
     }
 
     fn open_model(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let dialog = cx.new(|cx| ModelDialog::new(self.services.clone(), window, cx));
+        let dialog = cx.new(|cx| ModelDialog::new(Arc::clone(&self.services), window, cx));
         let events = cx.subscribe_in(
             &dialog,
             window,
@@ -2087,10 +2254,10 @@ impl Workspace {
         self.open_menu = None;
         self.close_preferences(cx);
         if let Some(spend) = &self.spend {
-            spend.update(cx, |spend, cx| spend.reload(cx));
+            spend.update(cx, super::spend_view::SpendView::reload);
             return;
         }
-        let view = cx.new(|cx| SpendView::new(self.services.clone(), cx));
+        let view = cx.new(|cx| SpendView::new(Arc::clone(&self.services), cx));
         let events = cx.subscribe_in(&view, window, |this, _, event: &SpendEvent, window, cx| {
             match event {
                 SpendEvent::Close => {
@@ -2176,7 +2343,7 @@ impl Workspace {
                 MenuRow {
                     separated: true,
                     ..row(
-                        if self.reading {
+                        if self.reading() {
                             "Edit text"
                         } else {
                             "Reading view"
@@ -2244,11 +2411,9 @@ impl Workspace {
             .on_action(
                 cx.listener(|this, _: &MenuNext, window, cx| this.shift_menu(true, window, cx)),
             )
-            .on_action(
-                cx.listener(|this, _: &MenuPrevious, window, cx| {
-                    this.shift_menu(false, window, cx)
-                }),
-            )
+            .on_action(cx.listener(|this, _: &MenuPrevious, window, cx| {
+                this.shift_menu(false, window, cx);
+            }))
             .on_action(cx.listener(|this, _: &MenuSelect, window, cx| {
                 if let Some(index) = this.menu_active {
                     this.select_menu_row(index, window, cx);
@@ -2323,7 +2488,7 @@ impl Workspace {
 
     fn open_review(&mut self, _: &StartReview, window: &mut Window, cx: &mut Context<Self>) {
         self.open_menu = None;
-        self.reading = false;
+        self.leave_reading();
         if self.pane.read(cx).review.is_some() {
             return;
         }
@@ -2350,7 +2515,8 @@ impl Workspace {
 
     fn stop_review(&mut self, _: &StopReview, _: &mut Window, cx: &mut Context<Self>) {
         self.open_menu = None;
-        self.pane.update(cx, |pane, cx| pane.stop_review(cx));
+        self.pane
+            .update(cx, super::editor_pane::EditorPane::stop_review);
         cx.notify();
     }
 
@@ -2386,7 +2552,7 @@ impl Workspace {
             .child(
                 ui::button("review-start", "Review", ButtonKind::Strong, roles).on_click(
                     cx.listener(|this, _, window, cx| {
-                        this.confirm_review(&ConfirmReview, window, cx)
+                        this.confirm_review(&ConfirmReview, window, cx);
                     }),
                 ),
             );
@@ -2423,7 +2589,7 @@ impl Workspace {
                 .key_context("LeaveDialog")
                 .track_focus(&self.leave_focus)
                 .on_action(cx.listener(|this, _: &LeaveCancel, window, cx| {
-                    this.answer_leave(LeaveChoice::Cancel, window, cx)
+                    this.answer_leave(LeaveChoice::Cancel, window, cx);
                 }))
                 .on_action(cx.listener(|this, _: &LeaveNext, _, cx| {
                     this.leave_index = (this.leave_index + 1) % LEAVE_CHOICES.len();
@@ -2436,7 +2602,7 @@ impl Workspace {
                 }))
                 .on_action(cx.listener(|this, _: &LeavePress, window, cx| {
                     let choice = LEAVE_CHOICES[this.leave_index.min(LEAVE_CHOICES.len() - 1)];
-                    this.answer_leave(choice, window, cx)
+                    this.answer_leave(choice, window, cx);
                 }))
                 .child(ui::title(
                     format!("Save changes to {}?", self.file_name()),
@@ -2460,8 +2626,7 @@ impl Workspace {
     fn file_name(&self) -> SharedString {
         self.session
             .as_ref()
-            .map(|session| session.name.clone())
-            .unwrap_or_else(|| UNTITLED_NAME.into())
+            .map_or_else(|| UNTITLED_NAME.into(), |session| session.name.clone())
             .into()
     }
 
@@ -2518,7 +2683,7 @@ impl Workspace {
                         .child(
                             ui::button("keep-mine", "Keep mine", ButtonKind::Default, roles)
                                 .on_click(cx.listener(|this, _, window, cx| {
-                                    this.resolve_conflict(false, window, cx)
+                                    this.resolve_conflict(false, window, cx);
                                 })),
                         ),
                 ),
@@ -2551,7 +2716,7 @@ impl Workspace {
                             )
                             .on_click(cx.listener(
                                 move |this, _, window, cx| {
-                                    this.run_toast_action(&action, window, cx)
+                                    this.run_toast_action(&action, window, cx);
                                 },
                             ))
                         })),
@@ -2584,19 +2749,19 @@ struct Start {
     store: Arc<dyn HistoryStore>,
     initial: String,
     notice: Option<(String, ToastTone)>,
-    start: Option<StartFile>,
-    start_path: Option<PathBuf>,
+    file: Option<StartFile>,
+    file_path: Option<PathBuf>,
     remembered: Option<PathBuf>,
     first_initial: Vec<VersionSummary>,
 }
 
 fn open_start(launch: Option<PathBuf>, user_data: &Path) -> Start {
     let db = HistoryDb::open(&user_data.join(HISTORY_FILE))
-        .map_err(|error| eprintln!("History could not open: {error}"))
+        .map_err(|error| log::error!("History could not open: {error}"))
         .ok()
         .map(Arc::new);
     let store: Arc<dyn HistoryStore> = match &db {
-        Some(db) => Arc::new(DbHistoryStore::new(db.clone(), now_ms)),
+        Some(db) => Arc::new(DbHistoryStore::new(Arc::clone(db), now_ms)),
         None => Arc::new(MemoryHistoryStore::new()),
     };
     let from_launch = launch
@@ -2626,20 +2791,22 @@ fn open_start(launch: Option<PathBuf>, user_data: &Path) -> Start {
         if let Some(db) = &db
             && load_unsaved(Some(db), &key).is_none_or(|unsaved| unsaved.text == initial)
         {
-            let _ = db.clear_unsaved(&key);
+            db.clear_unsaved(&key).log_err();
         }
     }
     let start = reopened.start.clone();
     let start_path = start.as_ref().map(|start| start.path.clone());
     let start_key = history_key(start_path.as_deref());
-    let _ = store.record(
-        &start_key,
-        RecordInput {
-            at: now_ms(),
-            cause: VersionCause::Edited,
-            text: initial.clone(),
-        },
-    );
+    store
+        .record(
+            &start_key,
+            RecordInput {
+                at: now_ms(),
+                cause: VersionCause::Edited,
+                text: initial.clone(),
+            },
+        )
+        .log_err();
     let first_initial = store.list(&start_key).unwrap_or_default();
     let remembered = if reopened.gone {
         None
@@ -2651,8 +2818,8 @@ fn open_start(launch: Option<PathBuf>, user_data: &Path) -> Start {
         store,
         initial,
         notice,
-        start,
-        start_path,
+        file: start,
+        file_path: start_path,
         remembered,
         first_initial,
     }
@@ -2668,9 +2835,9 @@ fn document_history(
             history_key(reference.map(PathBuf::as_path))
         }),
         create: Box::new(move |key, initial| {
-            let mut options = DocumentHistoryOptions::new(store.clone(), key, HISTORY_IDLE_MS);
+            let mut options = DocumentHistoryOptions::new(Arc::clone(&store), key, HISTORY_IDLE_MS);
             options.initial = initial;
-            options.on_error = Box::new(|error| eprintln!("History write failed: {error}"));
+            options.on_error = Box::new(|error| log::error!("History write failed: {error}"));
             DocumentHistory::new(options)
         }),
         first,
@@ -2707,14 +2874,13 @@ fn dirs_home() -> Option<PathBuf> {
 }
 
 fn save_as_target(chosen: &Path, text: &str) -> FileSaveResult {
-    let chosen_text = chosen.to_string_lossy().into_owned();
-    let target = with_markdown_extension(&chosen_text);
-    if target != chosen_text && std::fs::symlink_metadata(&target).is_ok() {
+    let target = with_markdown_extension(chosen);
+    if target != chosen && std::fs::symlink_metadata(&target).is_ok() {
         return FileSaveResult::Failed {
-            reason: format!("{} already exists", name_of(Path::new(&target))),
+            reason: format!("{} already exists", name_of(&target)),
         };
     }
-    save_markdown_as(Path::new(&target), text)
+    save_markdown_as(&target, text)
 }
 
 fn preferences_motion(panel: Entity<PreferencesPanel>, open: bool) -> AnyElement {
@@ -2771,17 +2937,15 @@ impl Render for Workspace {
         let busy_name = self.busy_name(cx);
         self.evals
             .update(cx, |evals, _| evals.set_busy_name(busy_name));
-        let evals_shown = self.evals_page && open_skill.is_some();
+        let evals_shown = self.page == Page::Evals && open_skill.is_some();
         if evals_shown {
             self.check_unsaved(false, cx);
         }
-        if self.reading
-            && (evals_shown || self.spend.is_some() || self.visible_mode() != HistoryMode::Editing)
-        {
-            self.reading = false;
+        if self.spend.is_some() || self.visible_mode() != HistoryMode::Editing {
+            self.leave_reading();
         }
         let text_shown = !evals_shown
-            && !self.reading
+            && !self.reading()
             && self.spend.is_none()
             && self.visible_mode() == HistoryMode::Editing;
         if !text_shown {
@@ -2833,11 +2997,11 @@ impl Workspace {
         let has_panel = self.frontmatter.read(cx).has_panel();
         let height = self.frontmatter_height.get();
         let scrolled = self.frontmatter_scrolled.get().min(height);
-        let measured = self.frontmatter_height.clone();
+        let measured = Rc::clone(&self.frontmatter_height);
         let entity = cx.entity().downgrade();
         let wheel_entity = entity.clone();
-        let wheel_scrolled = self.frontmatter_scrolled.clone();
-        let wheel_height = self.frontmatter_height.clone();
+        let wheel_scrolled = Rc::clone(&self.frontmatter_scrolled);
+        let wheel_height = Rc::clone(&self.frontmatter_height);
         let editor = self.pane.read(cx).editor.clone();
         div()
             .size_full()
@@ -2865,7 +3029,7 @@ impl Workspace {
                                                 entity.update(cx, |_, cx| cx.notify());
                                             }
                                         },
-                                        |_, _, _, _| {},
+                                        |_, (), _, _| {},
                                     )
                                     .absolute()
                                     .top_0()
@@ -2879,12 +3043,12 @@ impl Workspace {
             .child(
                 canvas(
                     |_, _, _| {},
-                    move |bounds, _, window, _| {
+                    move |bounds, (), window, _| {
                         if !has_panel {
                             return;
                         }
-                        let scrolled = wheel_scrolled.clone();
-                        let height = wheel_height.clone();
+                        let scrolled = Rc::clone(&wheel_scrolled);
+                        let height = Rc::clone(&wheel_height);
                         let entity = wheel_entity.clone();
                         let editor = editor.clone();
                         window.on_mouse_event(move |event: &ScrollEvent, phase, _, cx| {
@@ -2969,7 +3133,7 @@ impl Workspace {
                 ui::icon_button("rail-search", component::IconName::Search, false, roles)
                     .tooltip(tip("Search the Library (Ctrl+P)"))
                     .on_click(cx.listener(|this, _, window, cx| {
-                        this.search_library(&SearchLibrary, window, cx)
+                        this.search_library(&SearchLibrary, window, cx);
                     })),
             )
     }
@@ -3006,10 +3170,10 @@ impl Workspace {
             .on_action(cx.listener(Self::show_spend))
             .on_action(cx.listener(Self::toggle_reading))
             .on_action(cx.listener(|this, _: &OpenFileMenu, window, cx| {
-                this.toggle_menu(MenuKind::File, window, cx)
+                this.toggle_menu(MenuKind::File, window, cx);
             }))
             .on_action(cx.listener(|this, _: &OpenEditMenu, window, cx| {
-                this.toggle_menu(MenuKind::Edit, window, cx)
+                this.toggle_menu(MenuKind::Edit, window, cx);
             }))
             .on_action(
                 cx.listener(|this, _: &CloseHistory, window, cx| this.close_history(window, cx)),
@@ -3017,11 +3181,9 @@ impl Workspace {
             .on_action(
                 cx.listener(|this, _: &DotLeft, window, cx| this.step_dot("ArrowLeft", window, cx)),
             )
-            .on_action(
-                cx.listener(|this, _: &DotRight, window, cx| {
-                    this.step_dot("ArrowRight", window, cx)
-                }),
-            )
+            .on_action(cx.listener(|this, _: &DotRight, window, cx| {
+                this.step_dot("ArrowRight", window, cx);
+            }))
             .on_action(
                 cx.listener(|this, _: &DotHome, window, cx| this.step_dot("Home", window, cx)),
             )
@@ -3047,7 +3209,7 @@ impl Workspace {
     }
 
     fn focus_text(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.reading {
+        if self.reading() {
             window.focus(&self.focus, cx);
         } else {
             self.pane.update(cx, |pane, cx| pane.focus(window, cx));
@@ -3072,13 +3234,16 @@ impl Workspace {
         {
             return;
         }
-        let next = !self.reading;
+        let next = if self.reading() {
+            Page::Text
+        } else {
+            Page::Reading
+        };
         self.open_menu = None;
         self.spend = None;
-        self.evals_page = false;
         self.show_editing(window, cx);
-        self.reading = next;
-        if self.reading {
+        self.page = next;
+        if next == Page::Reading {
             self.pane.update(cx, |pane, cx| pane.put_away(window, cx));
             self.focus.focus(window, cx);
         } else {
@@ -3104,13 +3269,12 @@ impl Workspace {
         let timeline = self.render_timeline(mode, evals_button, roles, cx);
         let version_bar = self.render_version_bar(mode, roles, cx);
         let content: AnyElement = match mode {
-            _ if self.spend.is_some() => self
-                .spend
-                .clone()
-                .map(|spend| spend.into_any_element())
-                .unwrap_or_else(|| div().into_any_element()),
+            _ if self.spend.is_some() => self.spend.clone().map_or_else(
+                || div().into_any_element(),
+                gpui_kit::IntoElement::into_any_element,
+            ),
             _ if evals_shown => self.evals.clone().into_any_element(),
-            HistoryMode::Editing if self.reading => crate::reading_view::render_reading(
+            HistoryMode::Editing if self.reading() => crate::reading_view::render_reading(
                 &self.text(cx),
                 roles,
                 crate::theme::reading_code(cx),
@@ -3236,8 +3400,7 @@ impl Workspace {
     fn render_header(&self, roles: Roles, cx: &mut Context<Self>) -> Div {
         let label = self
             .file_label(cx)
-            .map(SharedString::from)
-            .unwrap_or_else(|| self.file_name());
+            .map_or_else(|| self.file_name(), SharedString::from);
         let dirty = self.session.as_ref().is_some_and(|session| session.dirty);
         let review = self.pane.read(cx).review.as_ref().map(|run| run.added);
         let open = self.pane.read(cx).open_review_count();
@@ -3264,13 +3427,17 @@ impl Workspace {
                     .gap(px(8.))
                     .type_small()
                     .text_color(roles.muted)
-                    .child(if self.reading {
+                    .child(if self.reading() {
                         "Reading. Edit with"
                     } else {
                         "Select text and press"
                     })
                     .child(ui::kbd(
-                        if self.reading { "Ctrl+Alt+R" } else { "Ctrl+K" },
+                        if self.reading() {
+                            "Ctrl+Alt+R"
+                        } else {
+                            "Ctrl+K"
+                        },
                         roles,
                     )),
             )
@@ -3370,9 +3537,9 @@ impl Workspace {
             )
         })
         .children(toast)
-        .when_some(self.model_dialog.clone(), |this, dialog| this.child(dialog))
-        .when_some(self.key_dialog.clone(), |this, dialog| this.child(dialog))
-        .when_some(self.new_skill.clone(), |this, dialog| this.child(dialog))
+        .when_some(self.model_dialog.clone(), gpui_kit::ParentElement::child)
+        .when_some(self.key_dialog.clone(), gpui_kit::ParentElement::child)
+        .when_some(self.new_skill.clone(), gpui_kit::ParentElement::child)
         .when_some(self.evals.read(cx).dialog(), |this, dialog| {
             this.child(dialog)
         })

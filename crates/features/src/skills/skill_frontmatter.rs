@@ -117,7 +117,7 @@ enum Text<'a> {
     Problem(SkillProblem),
 }
 
-fn read_text<'a>(field: CheckedField, value: Option<&'a Value>) -> Text<'a> {
+fn read_text(field: CheckedField, value: Option<&Value>) -> Text<'_> {
     let name = field.as_str();
     let (missing, not_text, empty) = match field {
         CheckedField::Description => (

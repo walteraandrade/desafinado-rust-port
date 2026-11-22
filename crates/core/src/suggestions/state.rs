@@ -1277,6 +1277,10 @@ mod tests {
             active_suggestion(state, cursor).map(|found| found.id.clone())
         }
 
+        #[expect(
+            clippy::unnecessary_wraps,
+            reason = "builds the Option the assertions compare against"
+        )]
         fn some(id: &str) -> Option<String> {
             Some(id.to_string())
         }

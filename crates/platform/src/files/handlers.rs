@@ -1,5 +1,5 @@
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
@@ -13,7 +13,7 @@ use super::save::{save_markdown, save_markdown_as};
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum FileReadResult {
     Opened {
-        path: String,
+        path: PathBuf,
         name: String,
         text: String,
     },
@@ -26,7 +26,7 @@ pub enum FileReadResult {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum FileSaveResult {
-    Saved { path: String, name: String },
+    Saved { path: PathBuf, name: String },
     Conflict,
     Cancelled,
     Failed { reason: String },
@@ -76,10 +76,9 @@ pub fn save_file_as_request(
     let Some(chosen) = dialogs.pick_save_path(&request.suggested_name) else {
         return FileSaveResult::Cancelled;
     };
-    let chosen_text = chosen.to_string_lossy().into_owned();
-    let target = with_markdown_extension(&chosen_text);
-    if target != chosen_text && fs::symlink_metadata(&target).is_ok() {
-        let name = Path::new(&target)
+    let target = with_markdown_extension(&chosen);
+    if target != chosen && fs::symlink_metadata(&target).is_ok() {
+        let name = target
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_default();
@@ -87,42 +86,44 @@ pub fn save_file_as_request(
             reason: format!("{name} already exists"),
         };
     }
-    save_markdown_as(Path::new(&target), &request.text)
+    save_markdown_as(&target, &request.text)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::cell::Cell;
     use std::os::unix::fs::symlink;
     use std::path::PathBuf;
+    use std::sync::Mutex;
+    use std::sync::atomic::{AtomicU32, Ordering};
 
     struct Fake {
         file: Option<PathBuf>,
-        asked: Cell<u32>,
-        suggested: std::cell::RefCell<Vec<String>>,
+        asked: AtomicU32,
+        suggested: Mutex<Vec<String>>,
     }
-
-    unsafe impl Sync for Fake {}
 
     impl Fake {
         fn new(file: Option<PathBuf>) -> Self {
             Self {
                 file,
-                asked: Cell::new(0),
-                suggested: Default::default(),
+                asked: AtomicU32::new(0),
+                suggested: Mutex::default(),
             }
         }
     }
 
     impl FileDialogs for Fake {
         fn pick_file(&self) -> Option<PathBuf> {
-            self.asked.set(self.asked.get() + 1);
+            self.asked.fetch_add(1, Ordering::Relaxed);
             self.file.clone()
         }
         fn pick_save_path(&self, suggested_name: &str) -> Option<PathBuf> {
-            self.asked.set(self.asked.get() + 1);
-            self.suggested.borrow_mut().push(suggested_name.to_owned());
+            self.asked.fetch_add(1, Ordering::Relaxed);
+            self.suggested
+                .lock()
+                .unwrap()
+                .push(suggested_name.to_owned());
             self.file.clone()
         }
         fn pick_folder(&self) -> Option<PathBuf> {
@@ -145,7 +146,7 @@ mod tests {
         assert_eq!(
             result,
             FileReadResult::Opened {
-                path: path.to_string_lossy().into_owned(),
+                path: path.clone(),
                 name: "a.md".into(),
                 text: "# A\n".into()
             }
@@ -190,7 +191,7 @@ mod tests {
         let dialogs = Fake::new(Some(path.clone()));
         let result = save_file_as_request("# N\n", "dir/notes.md", &dialogs);
         assert!(matches!(result, FileSaveResult::Saved { .. }));
-        assert_eq!(dialogs.suggested.borrow().as_slice(), ["notes.md"]);
+        assert_eq!(dialogs.suggested.lock().unwrap().as_slice(), ["notes.md"]);
         assert_eq!(fs::read_to_string(&path).unwrap(), "# N\n");
     }
 
@@ -200,6 +201,17 @@ mod tests {
         let result = save_file_as_request("x", "n.md", &Fake::new(Some(dir.join("notes"))));
         assert!(matches!(result, FileSaveResult::Saved { .. }));
         assert_eq!(fs::read_to_string(dir.join("notes.md")).unwrap(), "x");
+    }
+
+    #[test]
+    fn save_as_keeps_a_name_that_is_not_utf8() {
+        use std::os::unix::ffi::OsStrExt;
+        let (_d, dir) = real_dir();
+        let name = std::ffi::OsStr::from_bytes(b"caf\xe9");
+        let result = save_file_as_request("x", "n.md", &Fake::new(Some(dir.join(name))));
+        assert!(matches!(result, FileSaveResult::Saved { .. }));
+        let written = std::ffi::OsStr::from_bytes(b"caf\xe9.md");
+        assert_eq!(fs::read_to_string(dir.join(written)).unwrap(), "x");
     }
 
     #[test]
@@ -242,6 +254,6 @@ mod tests {
         );
         let fake = Fake::new(None);
         assert_eq!(save_file_as_request("x", "dir/", &fake), invalid_save());
-        assert_eq!(fake.asked.get(), 0);
+        assert_eq!(fake.asked.load(Ordering::Relaxed), 0);
     }
 }

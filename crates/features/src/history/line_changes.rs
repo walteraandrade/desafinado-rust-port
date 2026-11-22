@@ -42,7 +42,7 @@ mod tests {
 
     fn same(lines: &[&str]) -> LineChange {
         LineChange::Same {
-            lines: lines.iter().map(|line| line.to_string()).collect(),
+            lines: lines.iter().map(std::string::ToString::to_string).collect(),
         }
     }
 

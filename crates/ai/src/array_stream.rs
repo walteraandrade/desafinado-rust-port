@@ -175,7 +175,7 @@ mod tests {
         let mut scanner = ElementScanner::new();
         assert!(scanner.feed(r#"{"elements":[{"a":1"#).is_empty());
         assert_eq!(scanner.feed(r#"},{"a":"#), [r#"{"a":1}"#]);
-        assert_eq!(scanner.feed(r#"2}]}"#), [r#"{"a":2}"#]);
+        assert_eq!(scanner.feed(r"2}]}"), [r#"{"a":2}"#]);
         assert!(scanner.is_closed());
     }
 

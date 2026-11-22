@@ -177,7 +177,7 @@ impl DocumentHistory {
         match self.store.list(&self.key) {
             Ok(listed) if !same_versions(&self.versions, &listed) => {
                 self.versions = listed;
-                for (_, listener) in self.listeners.iter_mut() {
+                for (_, listener) in &mut self.listeners {
                     listener();
                 }
                 true
@@ -291,8 +291,8 @@ mod tests {
     fn create_with(spy: Spy, initial: Option<VersionList>, cache_size: usize) -> Made {
         let spy = Arc::new(spy);
         let errors = Arc::new(Mutex::new(Vec::new()));
-        let sink = errors.clone();
-        let mut options = DocumentHistoryOptions::new(spy.clone(), KEY, IDLE_MS);
+        let sink = Arc::clone(&errors);
+        let mut options = DocumentHistoryOptions::new(Arc::<Spy>::clone(&spy), KEY, IDLE_MS);
         options.initial = initial;
         options.cache_size = cache_size;
         options.on_error = Box::new(move |error| sink.lock().unwrap().push(error.0.clone()));
@@ -341,7 +341,7 @@ mod tests {
     fn notifies_subscribers_once_per_change_until_they_unsubscribe() {
         let mut made = create();
         let calls = Arc::new(AtomicUsize::new(0));
-        let counter = calls.clone();
+        let counter = Arc::clone(&calls);
         let subscription = made.history.subscribe(Box::new(move || {
             counter.fetch_add(1, Ordering::SeqCst);
         }));
@@ -363,7 +363,7 @@ mod tests {
         made.history.settled();
         let before = made.history.snapshot().clone();
         let calls = Arc::new(AtomicUsize::new(0));
-        let counter = calls.clone();
+        let counter = Arc::clone(&calls);
         made.history.subscribe(Box::new(move || {
             counter.fetch_add(1, Ordering::SeqCst);
         }));
@@ -464,7 +464,7 @@ mod tests {
         spy.fail_record_for = Some("bad");
         let spy = Arc::new(spy);
         let written = Arc::new(AtomicUsize::new(0));
-        let counter = written.clone();
+        let counter = Arc::clone(&written);
         let mut options = DocumentHistoryOptions::new(spy, KEY, IDLE_MS);
         options.initial = Some(Vec::new());
         options.on_written = Some(Box::new(move || {

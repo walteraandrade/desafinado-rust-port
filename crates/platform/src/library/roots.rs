@@ -133,7 +133,7 @@ mod tests {
         for bad in [
             "nope",
             "[]",
-            r#"{}"#,
+            r"{}",
             r#"{"projectRoots":"/a"}"#,
             r#"{"projectRoots":["rel"]}"#,
             r#"{"projectRoots":[""]}"#,

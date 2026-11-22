@@ -1,3 +1,4 @@
+use desafinado_core::log_err::LogErr;
 use std::sync::LazyLock;
 
 use regex::Regex;
@@ -18,7 +19,8 @@ pub enum ModelChoice {
     Invalid { message: String },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("model choice storage failed")]
 pub struct StorageError;
 
 pub trait ModelStorage {
@@ -54,10 +56,11 @@ pub fn read_model_choice(storage: &impl ModelStorage) -> Option<String> {
 }
 
 pub fn write_model_choice(storage: &mut impl ModelStorage, id: Option<&str>) {
-    let _ = match id {
+    let written = match id {
         None => storage.remove_item(MODEL_STORAGE_KEY),
         Some(id) => storage.set_item(MODEL_STORAGE_KEY, id),
     };
+    written.log_err();
 }
 
 #[cfg(test)]

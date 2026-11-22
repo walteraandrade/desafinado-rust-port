@@ -1,3 +1,4 @@
+use desafinado_core::log_err::{LogErr, MissingIsRemoved};
 use std::fs;
 use std::io;
 use std::io::Write;
@@ -39,7 +40,7 @@ impl KeyFile for FsKeyFile {
             fs::create_dir_all(parent)?;
         }
         let temporary = self.temporary();
-        let _ = fs::remove_file(&temporary);
+        fs::remove_file(&temporary).missing_is_removed().log_warn();
         let written = (|| {
             let mut file = fs::OpenOptions::new()
                 .write(true)
@@ -51,7 +52,7 @@ impl KeyFile for FsKeyFile {
             fs::rename(&temporary, &self.path)
         })();
         if written.is_err() {
-            let _ = fs::remove_file(&temporary);
+            fs::remove_file(&temporary).missing_is_removed().log_warn();
         }
         written
     }

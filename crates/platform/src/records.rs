@@ -1,3 +1,4 @@
+use desafinado_core::log_err::LogErr;
 use std::collections::HashMap;
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
@@ -27,7 +28,10 @@ impl AiCallLog {
     }
 
     pub fn append(&self, record: &AiCallRecord) -> io::Result<()> {
-        let _guard = self.lock.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = self
+            .lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(parent) = self.file.parent() {
             fs::create_dir_all(parent)?;
         }
@@ -44,7 +48,7 @@ impl AiCallLog {
         match fs::read_to_string(&self.file) {
             Ok(text) => Ok(text
                 .lines()
-                .filter_map(|line| serde_json::from_str(line).ok())
+                .filter_map(|line| serde_json::from_str(line).log_warn())
                 .collect()),
             Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(Vec::new()),
             Err(error) => Err(error),
@@ -60,18 +64,17 @@ pub fn merge_enriched(lines: Vec<AiCallRecord>) -> Vec<AiCallRecord> {
     let mut merged: Vec<AiCallRecord> = Vec::new();
     let mut by_id: HashMap<String, usize> = HashMap::new();
     for record in lines {
-        match record
+        if let Some(index) = record
             .generation_id
             .clone()
             .and_then(|id| by_id.get(&id).copied())
         {
-            Some(index) => merged[index] = record,
-            None => {
-                if let Some(id) = &record.generation_id {
-                    by_id.insert(id.clone(), merged.len());
-                }
-                merged.push(record);
+            merged[index] = record;
+        } else {
+            if let Some(id) = &record.generation_id {
+                by_id.insert(id.clone(), merged.len());
             }
+            merged.push(record);
         }
     }
     merged

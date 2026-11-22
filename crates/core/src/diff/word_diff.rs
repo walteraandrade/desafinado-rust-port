@@ -203,15 +203,11 @@ pub fn diff_words_with_space(old: &str, new: &str) -> Vec<Part> {
             if remove_path.is_some() {
                 best[slot(diagonal - 1)] = None;
             }
-            let can_add = add_path
-                .map(|path| {
-                    let add_new_pos = path.old_pos - diagonal;
-                    0 <= add_new_pos && add_new_pos < new_len
-                })
-                .unwrap_or(false);
-            let can_remove = remove_path
-                .map(|path| path.old_pos + 1 < old_len)
-                .unwrap_or(false);
+            let can_add = add_path.is_some_and(|path| {
+                let add_new_pos = path.old_pos - diagonal;
+                0 <= add_new_pos && add_new_pos < new_len
+            });
+            let can_remove = remove_path.is_some_and(|path| path.old_pos + 1 < old_len);
             if !can_add && !can_remove {
                 best[slot(diagonal)] = None;
                 diagonal += 2;

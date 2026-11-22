@@ -4,6 +4,7 @@ use desafinado_ai::quick_action_settings::{
     move_quick_action, remove_user_quick_action, toggle_quick_action, update_user_quick_action,
 };
 use desafinado_ai::ui::list_motion::{ListStep, plan_list_change};
+use desafinado_core::log_err::LogErr;
 use desafinado_features::theme::{
     catalog::{ThemeOption, themes_of_mode},
     tokens::ThemeMode,
@@ -136,7 +137,7 @@ impl PreferencesPanel {
             return;
         }
         self.plan_motion(&next, cx);
-        self.settings = next.clone();
+        self.settings.clone_from(&next);
         cx.emit(PreferencesEvent::QuickActions(next));
         cx.notify();
     }
@@ -166,10 +167,11 @@ impl PreferencesPanel {
             let serial = self.leaving_serial;
             let done = cx.spawn(async move |this, cx| {
                 cx.background_executor().timer(ui::MOTION_LEAVE).await;
-                let _ = this.update(cx, |this, cx| {
+                this.update(cx, |this, cx| {
                     this.leaving_rows.retain(|row| row.serial != serial);
                     cx.notify();
-                });
+                })
+                .log_warn();
             });
             self.leaving_rows.push(LeavingRow {
                 serial,
@@ -300,17 +302,15 @@ impl PreferencesPanel {
             cx.notify();
             return;
         }
-        match editing {
-            Some(id) => self.change(|s| update_user_quick_action(s, &id, &value), cx),
-            None => {
-                self.created += 1;
-                let nanos = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|elapsed| elapsed.as_nanos())
-                    .unwrap_or(0);
-                let id = new_user_id(nanos, self.created);
-                self.change(|s| add_user_quick_action(s, &value, &id), cx);
-            }
+        if let Some(id) = editing {
+            self.change(|s| update_user_quick_action(s, &id, &value), cx);
+        } else {
+            self.created += 1;
+            let nanos = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |elapsed| elapsed.as_nanos());
+            let id = new_user_id(nanos, self.created);
+            self.change(|s| add_user_quick_action(s, &value, &id), cx);
         }
         self.end_draft(window, cx);
     }
@@ -472,13 +472,13 @@ impl PreferencesPanel {
                     .child(
                         ui::button("quick-action-cancel", "Cancel", ButtonKind::Default, roles)
                             .on_click(cx.listener(|this, _, window, cx| {
-                                this.cancel_draft(&CancelQuickActionDraft, window, cx)
+                                this.cancel_draft(&CancelQuickActionDraft, window, cx);
                             })),
                     )
                     .child(
                         ui::button("quick-action-submit", submit, ButtonKind::Strong, roles)
                             .on_click(cx.listener(|this, _, window, cx| {
-                                this.submit_draft(&SubmitQuickActionDraft, window, cx)
+                                this.submit_draft(&SubmitQuickActionDraft, window, cx);
                             })),
                     ),
             )
@@ -514,7 +514,7 @@ impl PreferencesPanel {
                     .py(px(8.))
                     .gap(px(12.))
                     .on_click(cx.listener(move |this, _, _, cx| {
-                        this.change(|s| toggle_quick_action(s, &toggle_id, !on), cx)
+                        this.change(|s| toggle_quick_action(s, &toggle_id, !on), cx);
                     }))
                     .child(ui::check(on, roles))
                     .child(
@@ -611,14 +611,14 @@ impl PreferencesPanel {
             .child(
                 small("up", "↑", ButtonKind::Default, index == 0).when(index > 0, |this| {
                     this.on_click(cx.listener(move |this, _, _, cx| {
-                        this.change(|s| move_quick_action(s, &up_id, -1), cx)
+                        this.change(|s| move_quick_action(s, &up_id, -1), cx);
                     }))
                 }),
             )
             .child(
                 small("down", "↓", ButtonKind::Default, last).when(!last, |this| {
                     this.on_click(cx.listener(move |this, _, _, cx| {
-                        this.change(|s| move_quick_action(s, &down_id, 1), cx)
+                        this.change(|s| move_quick_action(s, &down_id, 1), cx);
                     }))
                 }),
             )
@@ -631,7 +631,7 @@ impl PreferencesPanel {
                                 draft_of(&edit_slot),
                                 window,
                                 cx,
-                            )
+                            );
                         }))
                     }),
                 )
@@ -778,7 +778,7 @@ impl PreferencesPanel {
                                     },
                                     window,
                                     cx,
-                                )
+                                );
                             }))
                         }),
                     ),

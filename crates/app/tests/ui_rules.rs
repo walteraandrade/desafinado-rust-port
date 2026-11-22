@@ -57,13 +57,12 @@ fn matches(files: &[Source], allowed: &[&str], needles: &[&str]) -> Vec<String> 
 }
 
 fn report(rule: &str, violations: &[String]) {
-    if !violations.is_empty() {
-        panic!(
-            "{rule}: {} violation(s)\n{}",
-            violations.len(),
-            violations.join("\n")
-        );
-    }
+    assert!(
+        violations.is_empty(),
+        "{rule}: {} violation(s)\n{}",
+        violations.len(),
+        violations.join("\n")
+    );
 }
 
 #[test]
@@ -214,8 +213,7 @@ fn chain_head(text: &str, index: usize) -> String {
         match bytes[position] {
             b')' | b']' | b'}' => depth += 1,
             b'(' | b'[' | b'{' if depth > 0 => depth -= 1,
-            b'(' | b'[' | b'{' | b';' | b'=' | b',' if depth == 0 => break,
-            b'|' if depth == 0 => break,
+            b'(' | b'[' | b'{' | b';' | b'=' | b',' | b'|' if depth == 0 => break,
             _ => {}
         }
     }

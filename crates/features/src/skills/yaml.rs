@@ -100,7 +100,7 @@ struct Builder<'a, 't> {
     text: &'t str,
 }
 
-impl<'a, 't> Builder<'a, 't> {
+impl<'a> Builder<'a, '_> {
     fn at(&self, index: usize) -> usize {
         self.offsets[index.min(self.offsets.len() - 1)]
     }

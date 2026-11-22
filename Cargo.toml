@@ -6,6 +6,7 @@ exclude = ["spikes/gpui-editor"]
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.97"
 publish = false
 
 [workspace.dependencies]
@@ -15,4 +16,57 @@ similar = { version = "2", features = ["unicode"] }
 pulldown-cmark = { version = "0.13", default-features = false }
 unicode-segmentation = "1"
 thiserror = "2"
+log = "0.4"
+rustix = { version = "1.1.6", features = ["fs", "process"] }
 gpui-kit = { version = "=0.9.1", features = ["tree-sitter-markdown"] }
+
+# Smaller, faster installed binary: thin LTO across crates, one codegen unit and
+# no symbols. A panic message still names its file and line.
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "symbols"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+redundant_lifetimes = "warn"
+unused_lifetimes = "warn"
+
+[workspace.lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+# An app, not a library: these pedantic lints document public APIs nobody else calls.
+must_use_candidate = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+# Roles is a Copy bundle of theme colors read once per render; passing it by value keeps ui.rs call sites plain.
+large_types_passed_by_value = "allow"
+# Pixel, index and timestamp math converts between f32, f64, usize, isize and i64 on purpose;
+# the values are text offsets, pixels and milliseconds, far from any type's limits.
+cast_possible_truncation = "allow"
+cast_possible_wrap = "allow"
+cast_precision_loss = "allow"
+cast_sign_loss = "allow"
+# GPUI listeners, actions and builders hand over owned values and call view methods that may not read self.
+needless_pass_by_value = "allow"
+unused_self = "allow"
+# Short names are the domain's own in color math (l, c, h, r, g, b) and diff code (a, b, i, j).
+many_single_char_names = "allow"
+similar_names = "allow"
+# Fields like `_subscriptions` follow the GPUI convention for values held only to keep them alive.
+used_underscore_binding = "allow"
+# Generic hashers matter for library APIs; these maps are internal.
+implicit_hasher = "allow"
+# Several state structs mirror the Electron build's JSON and menu flags one to one.
+struct_excessive_bools = "allow"
+# Counting newlines in short frontmatter does not need the bytecount crate.
+naive_bytecount = "allow"
+# Tests assert exact layout and token arithmetic on purpose.
+float_cmp = "allow"
+# GPUI code reads best with `use gpui_kit::*`-style preludes.
+wildcard_imports = "allow"
+allow_attributes = "warn"
+allow_attributes_without_reason = "warn"
+clone_on_ref_ptr = "warn"
+let_underscore_must_use = "warn"
+map_err_ignore = "warn"
+unused_result_ok = "warn"

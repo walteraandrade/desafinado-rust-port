@@ -1,14 +1,14 @@
+use desafinado_core::log_err::{LogErr, MissingIsRemoved};
 use std::{
     fs::{File, OpenOptions},
     io::{self, Read, Write},
-    os::{
-        fd::AsRawFd,
-        unix::net::{UnixListener, UnixStream},
-    },
+    os::unix::net::{UnixListener, UnixStream},
     path::{Path, PathBuf},
     thread,
     time::{Duration, Instant},
 };
+
+use rustix::fs::{FlockOperation, flock};
 
 use serde_json::{Value, json};
 
@@ -49,7 +49,9 @@ pub struct PrimaryInstance {
 
 impl Drop for PrimaryInstance {
     fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.socket);
+        std::fs::remove_file(&self.socket)
+            .missing_is_removed()
+            .log_warn();
     }
 }
 
@@ -59,7 +61,7 @@ pub enum Claim {
 }
 
 fn try_lock(file: &File) -> bool {
-    unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) == 0 }
+    flock(file, FlockOperation::NonBlockingLockExclusive).is_ok()
 }
 
 fn hand_over(socket: &Path, message: &LaunchMessage) -> io::Result<()> {
@@ -80,7 +82,9 @@ fn serve(listener: UnixListener, deliver: impl Fn(LaunchMessage) + Send + 'stati
     thread::spawn(move || {
         for stream in listener.incoming() {
             let Ok(stream) = stream else { continue };
-            let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .log_warn();
             let mut bytes = Vec::new();
             if stream
                 .take(MAX_MESSAGE_BYTES)
@@ -110,7 +114,9 @@ pub fn claim(
         hand_over(&socket, message)?;
         return Ok(Claim::HandedOver);
     }
-    let _ = std::fs::remove_file(&socket);
+    std::fs::remove_file(&socket)
+        .missing_is_removed()
+        .log_warn();
     let listener = UnixListener::bind(&socket)?;
     serve(listener, deliver);
     Ok(Claim::Primary(PrimaryInstance {
@@ -126,7 +132,7 @@ mod tests {
 
     fn message(args: &[&str]) -> LaunchMessage {
         LaunchMessage {
-            argv: args.iter().map(|arg| arg.to_string()).collect(),
+            argv: args.iter().map(std::string::ToString::to_string).collect(),
             cwd: PathBuf::from("/work"),
         }
     }
@@ -150,7 +156,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let (sender, receiver) = mpsc::channel();
         let first = claim(dir.path(), &message(&["app"]), move |got| {
-            let _ = sender.send(got);
+            sender.send(got).log_warn();
         })
         .unwrap();
         assert!(matches!(first, Claim::Primary(_)));

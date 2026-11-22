@@ -133,8 +133,7 @@ pub fn diff_tokens(old: &[Token<'_>], new: &[Token<'_>]) -> Vec<(Edit, usize, us
         })
         .map(
             |(edit, old_index, new_index, old_len, new_len)| match edit {
-                Edit::Equal => (edit, old_index, old_len),
-                Edit::Removed => (edit, old_index, old_len),
+                Edit::Equal | Edit::Removed => (edit, old_index, old_len),
                 Edit::Added => (edit, new_index, new_len),
             },
         )

@@ -97,7 +97,7 @@ pub fn oklch_hex(lightness: f64, chroma: f64, hue: f64) -> String {
     } else {
         (0..30)
             .fold((0.0, chroma), |(low, high), _| {
-                let middle = (low + high) / 2.0;
+                let middle = f64::midpoint(low, high);
                 if in_gamut(oklch_to_srgb(lightness, middle, hue)) {
                     (middle, high)
                 } else {

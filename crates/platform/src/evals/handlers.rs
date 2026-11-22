@@ -1,3 +1,4 @@
+use desafinado_core::log_err::LogErr;
 use std::collections::HashMap;
 use std::fs;
 use std::io;
@@ -92,9 +93,9 @@ struct Stages {
 
 impl Stages {
     fn cleanup(&self) {
-        let _ = self.today.cleanup();
+        self.today.cleanup().log_warn();
         if let Some((older, ..)) = &self.older {
-            let _ = older.cleanup();
+            older.cleanup().log_warn();
         }
     }
 
@@ -200,7 +201,9 @@ impl EvalService {
     }
 
     fn state(&self) -> MutexGuard<'_, State> {
-        self.state.lock().unwrap_or_else(|error| error.into_inner())
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     fn library_real_path(&self, path: &str) -> Option<String> {
@@ -291,13 +294,14 @@ impl EvalService {
                 version_id,
                 at,
                 text,
-            } => match (self.deps.stage)(Path::new(real), Some(text)) {
-                Ok(older) => Some((older, *version_id, *at)),
-                Err(_) => {
-                    let _ = today.cleanup();
+            } => {
+                if let Ok(older) = (self.deps.stage)(Path::new(real), Some(text)) {
+                    Some((older, *version_id, *at))
+                } else {
+                    today.cleanup().log_warn();
                     return None;
                 }
-            },
+            }
         };
         Some(Stages { today, older })
     }
@@ -491,7 +495,7 @@ impl EvalService {
             })
         })();
         stages.cleanup();
-        let _ = self.deps.results.discard(key);
+        self.deps.results.discard(key).log_err();
         result
     }
 
@@ -516,9 +520,9 @@ impl EvalService {
         }
         self.stop_run();
         let state = self.state();
-        let _ = self
-            .finished
-            .wait_timeout_while(state, SHUTDOWN_WAIT, |state| state.running);
+        self.finished
+            .wait_timeout_while(state, SHUTDOWN_WAIT, |state| state.running)
+            .log_warn();
     }
 
     fn begin_run(&self) -> Option<Arc<AtomicBool>> {
@@ -531,7 +535,7 @@ impl EvalService {
         state.running_key = None;
         state.running_real = None;
         state.abort = Arc::new(AtomicBool::new(false));
-        Some(state.abort.clone())
+        Some(Arc::clone(&state.abort))
     }
 
     fn end_run(&self) {
@@ -794,8 +798,8 @@ mkdir -p "$out" && echo "<html>" > "$out/report.html"
             stage: Box::new(move |path, text| stage_skill(path, &temp, text)),
             count_evals: Box::new(count_evals),
             results: ResultsStore::new(&base.join("data")),
-            history: history.clone(),
-            open_path: Box::new(|path| path.exists()),
+            history: Arc::<MemoryHistoryStore>::clone(&history),
+            open_path: Box::new(std::path::Path::exists),
         }));
         Env {
             _dir: dir,
@@ -956,7 +960,7 @@ mkdir -p "$out" && echo "<html>" > "$out/report.html"
         let e = env_with(true);
         fs::write(e.base.join("bin/hang"), "").unwrap();
         prepare(&e, RunBaseline::None);
-        let service = e.service.clone();
+        let service = Arc::clone(&e.service);
         let skill_path = path(&e);
         let handle = std::thread::spawn(move || {
             service.run(&EvalRunRequest {

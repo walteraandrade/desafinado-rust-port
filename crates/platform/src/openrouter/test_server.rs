@@ -1,3 +1,4 @@
+use desafinado_core::log_err::LogErr;
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
@@ -93,10 +94,15 @@ fn write_reply(stream: &mut TcpStream, reply: &Reply) {
     let total: usize = reply.chunks.iter().map(|(_, c)| c.len()).sum();
     let mut head = format!("HTTP/1.1 {} X\r\nConnection: close\r\n", reply.status);
     for (name, value) in &reply.headers {
-        head.push_str(&format!("{name}: {value}\r\n"));
+        head.push_str(name);
+        head.push_str(": ");
+        head.push_str(value);
+        head.push_str("\r\n");
     }
     if reply.content_length {
-        head.push_str(&format!("Content-Length: {total}\r\n"));
+        head.push_str("Content-Length: ");
+        head.push_str(&total.to_string());
+        head.push_str("\r\n");
     }
     head.push_str("\r\n");
     if stream.write_all(head.as_bytes()).is_err() {
@@ -117,14 +123,14 @@ impl TestServer {
         let requests: Arc<Mutex<Vec<RecordedRequest>>> = Arc::default();
         let stop = Arc::new(AtomicBool::new(false));
         let queue = Arc::new(Mutex::new(replies.into_iter()));
-        let (log, flag) = (requests.clone(), stop.clone());
+        let (log, flag) = (Arc::clone(&requests), Arc::clone(&stop));
         std::thread::spawn(move || {
             for connection in listener.incoming() {
                 if flag.load(Ordering::SeqCst) {
                     break;
                 }
                 let Ok(mut stream) = connection else { continue };
-                let (queue, log) = (queue.clone(), log.clone());
+                let (queue, log) = (Arc::clone(&queue), Arc::clone(&log));
                 std::thread::spawn(move || {
                     let Some(request) = read_request(&mut stream) else {
                         return;
@@ -156,6 +162,6 @@ impl TestServer {
 impl Drop for TestServer {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::SeqCst);
-        let _ = TcpStream::connect(self.addr);
+        TcpStream::connect(self.addr).log_warn();
     }
 }

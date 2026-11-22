@@ -1,4 +1,4 @@
-use std::{thread, time::Duration};
+use std::{sync::Arc, thread, time::Duration};
 
 use desafinado_ai::{
     edits::ReviewValidationContext,
@@ -17,13 +17,9 @@ use desafinado_runtime::{
 
 fn main() {
     let services = Services::load();
-    let before = services
-        .log
-        .read_all()
-        .map(|records| records.len())
-        .unwrap_or(0);
+    let before = services.log.read_all().map_or(0, |records| records.len());
     println!("model: {}", services.model());
-    let ai = OpenRouterAi::new(services.clone());
+    let ai = OpenRouterAi::new(Arc::clone(&services));
     let blocks = extract_blocks(SAMPLE_DOCUMENT);
     let paragraph = blocks
         .iter()
@@ -67,7 +63,7 @@ fn main() {
             parts,
             context: ReviewValidationContext {
                 blocks,
-                occupied: Default::default(),
+                occupied: std::collections::BTreeSet::new(),
             },
         },
         &mut |event| {

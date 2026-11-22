@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::sync::{Mutex, PoisonError};
 
 use super::history::{VersionInput, mark_saved, record_version};
 use super::store::{HistoryStore, MarkSavedInput, RecordInput, StoreError};
@@ -16,28 +16,27 @@ impl MemoryHistoryStore {
         Self::default()
     }
 
-    fn with<T>(&self, key: &str, run: impl FnOnce(&History) -> T) -> Result<T, StoreError> {
+    fn with<T>(&self, key: &str, run: impl FnOnce(&History) -> T) -> T {
         let histories = self
             .histories
             .lock()
-            .map_err(|_| StoreError("history store poisoned".into()))?;
-        Ok(run(histories.get(key).unwrap_or(&Vec::new())))
+            .unwrap_or_else(PoisonError::into_inner);
+        run(histories.get(key).unwrap_or(&Vec::new()))
     }
 
-    fn update(&self, key: &str, run: impl FnOnce(&History) -> History) -> Result<(), StoreError> {
+    fn update(&self, key: &str, run: impl FnOnce(&History) -> History) {
         let mut histories = self
             .histories
             .lock()
-            .map_err(|_| StoreError("history store poisoned".into()))?;
+            .unwrap_or_else(PoisonError::into_inner);
         let next = run(histories.get(key).unwrap_or(&Vec::new()));
         histories.insert(key.to_string(), next);
-        Ok(())
     }
 }
 
 impl HistoryStore for MemoryHistoryStore {
     fn list(&self, key: &str) -> Result<VersionList, StoreError> {
-        self.with(key, |history| {
+        Ok(self.with(key, |history| {
             history
                 .iter()
                 .enumerate()
@@ -48,16 +47,16 @@ impl HistoryStore for MemoryHistoryStore {
                     )
                 })
                 .collect()
-        })
+        }))
     }
 
     fn text(&self, key: &str, id: VersionId) -> Result<Option<String>, StoreError> {
-        self.with(key, |history| {
+        Ok(self.with(key, |history| {
             history
                 .iter()
                 .find(|version| version.id == id)
                 .map(|version| version.text.clone())
-        })
+        }))
     }
 
     fn record(&self, key: &str, input: RecordInput) -> Result<(), StoreError> {
@@ -70,13 +69,15 @@ impl HistoryStore for MemoryHistoryStore {
                     at: input.at,
                 },
             )
-        })
+        });
+        Ok(())
     }
 
     fn mark_saved(&self, key: &str, input: MarkSavedInput) -> Result<(), StoreError> {
         self.update(key, |history| {
             mark_saved(history, &input.text, &input.name, input.at)
-        })
+        });
+        Ok(())
     }
 }
 

@@ -34,7 +34,7 @@ fn too_large(text: &str) -> bool {
 
 fn saved_at(real: &Path) -> FileSaveResult {
     FileSaveResult::Saved {
-        path: real.to_string_lossy().into_owned(),
+        path: real.to_path_buf(),
         name: real
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
@@ -65,10 +65,6 @@ fn resolve_existing(path: &Path) -> io::Result<Option<PathBuf>> {
     }
 }
 
-fn path_text(path: &Path) -> String {
-    path.to_string_lossy().into_owned()
-}
-
 pub fn save_markdown(request: &SaveRequest) -> FileSaveResult {
     match save_markdown_inner(request) {
         Ok(result) => result,
@@ -83,7 +79,7 @@ fn save_markdown_inner(request: &SaveRequest) -> io::Result<FileSaveResult> {
     let Some(real) = resolve_existing(Path::new(&request.path))? else {
         return Ok(FileSaveResult::Conflict);
     };
-    if !is_markdown_path(&path_text(&real)) {
+    if !is_markdown_path(&real) {
         return Ok(failed("Not a Markdown file"));
     }
     let holds = || -> io::Result<bool> {
@@ -111,7 +107,7 @@ fn save_markdown_as_inner(path: &Path, text: &str) -> io::Result<FileSaveResult>
         return Ok(failed("Too large to save (over 5 MiB)"));
     }
     let target = resolve_existing(path)?.unwrap_or_else(|| path.to_path_buf());
-    if !is_markdown_path(&path_text(&target)) {
+    if !is_markdown_path(&target) {
         return Ok(failed("Not a Markdown file"));
     }
     write_atomic(&target, text, &|| Ok(true))?;
@@ -125,7 +121,7 @@ mod tests {
 
     fn request(path: &Path, text: &str, expected: &str) -> SaveRequest {
         SaveRequest {
-            path: path_text(path),
+            path: path.to_path_buf(),
             text: text.into(),
             expected: expected.into(),
         }
@@ -179,11 +175,27 @@ mod tests {
         assert_eq!(
             save_markdown(&request(&path, "# A, edited\n", "# A\n")),
             FileSaveResult::Saved {
-                path: path_text(&path),
+                path: path.clone(),
                 name: "SKILL.md".into()
             }
         );
         assert_eq!(fs::read_to_string(&path).unwrap(), "# A, edited\n");
+    }
+
+    #[test]
+    fn saves_to_a_file_whose_name_is_not_valid_utf8() {
+        use std::os::unix::ffi::OsStrExt;
+        let (_dir, real) = real_dir();
+        let path = real.join(std::ffi::OsStr::from_bytes(b"caf\xe9.md"));
+        fs::write(&path, "old\n").unwrap();
+        let FileSaveResult::Saved { path: saved, .. } =
+            save_markdown(&request(&path, "new\n", "old\n"))
+        else {
+            panic!("not saved");
+        };
+        assert_eq!(saved, path);
+        assert_eq!(fs::read_to_string(&path).unwrap(), "new\n");
+        assert_eq!(entries(&real).len(), 1);
     }
 
     #[test]
@@ -258,7 +270,7 @@ mod tests {
         assert_eq!(
             result,
             FileSaveResult::Saved {
-                path: path_text(&target),
+                path: target.clone(),
                 name: "SKILL.md".into()
             }
         );
@@ -299,7 +311,7 @@ mod tests {
 
     #[test]
     fn fails_with_the_old_text_intact_when_the_folder_cannot_be_written() {
-        if unsafe { libc::geteuid() } == 0 {
+        if rustix::process::geteuid().is_root() {
             return;
         }
         let (_dir, real) = real_dir();
@@ -360,7 +372,7 @@ mod tests {
         assert_eq!(
             save_markdown_as(&path, "# N\n"),
             FileSaveResult::Saved {
-                path: path_text(&path),
+                path: path.clone(),
                 name: "new.md".into()
             }
         );
@@ -389,7 +401,7 @@ mod tests {
         assert_eq!(
             result,
             FileSaveResult::Saved {
-                path: path_text(&target),
+                path: target.clone(),
                 name: "t.md".into()
             }
         );

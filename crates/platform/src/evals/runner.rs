@@ -1,3 +1,4 @@
+use desafinado_core::log_err::LogErr;
 use std::io::{self, BufRead, BufReader, Read};
 use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::path::PathBuf;
@@ -5,6 +6,8 @@ use std::process::{Child, Command, Stdio};
 use std::sync::mpsc::channel;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+
+use rustix::process::{Pid, Signal, kill_process_group};
 
 const VERSION_TIMEOUT: Duration = Duration::from_secs(10);
 const DEFAULT_KILL_AFTER: Duration = Duration::from_secs(3);
@@ -64,8 +67,11 @@ pub struct EvalRunner {
     state: Arc<Mutex<State>>,
 }
 
-fn signal_group(pid: u32, signal: i32) -> bool {
-    unsafe { libc::kill(-(pid as i32), signal) == 0 }
+fn signal_group(pid: u32, signal: Signal) -> bool {
+    i32::try_from(pid)
+        .ok()
+        .and_then(Pid::from_raw)
+        .is_some_and(|group| kill_process_group(group, signal).is_ok())
 }
 
 pub fn parse_version(output: &str) -> Option<String> {
@@ -141,8 +147,8 @@ impl EvalRunner {
         let (sender, receiver) = channel();
         std::thread::spawn(move || {
             let mut text = String::new();
-            let _ = stdout.read_to_string(&mut text);
-            let _ = sender.send(text);
+            stdout.read_to_string(&mut text).log_warn();
+            sender.send(text).log_warn();
         });
         let started = Instant::now();
         let status = loop {
@@ -152,8 +158,8 @@ impl EvalRunner {
                     std::thread::sleep(Duration::from_millis(10));
                 }
                 _ => {
-                    let _ = child.kill();
-                    let _ = child.wait();
+                    child.kill().log_warn();
+                    child.wait().log_warn();
                     return None;
                 }
             }
@@ -177,7 +183,10 @@ impl EvalRunner {
             .spawn()?;
         let pid = child.id();
         let generation = {
-            let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+            let mut state = self
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             state.generation += 1;
             state.pid = Some(pid);
             state.killed = false;
@@ -197,14 +206,17 @@ impl EvalRunner {
         }
         let status = child.wait()?;
         let killed = {
-            let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+            let mut state = self
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             if state.generation == generation {
                 state.pid = None;
             }
             state.killed
         };
         if killed {
-            signal_group(pid, libc::SIGKILL);
+            signal_group(pid, Signal::KILL);
         }
         let exit = EvalExit {
             exit_code: status.code(),
@@ -216,21 +228,26 @@ impl EvalRunner {
 
     pub fn kill(&self) -> bool {
         let (pid, generation) = {
-            let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+            let mut state = self
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             let Some(pid) = state.pid else {
                 return false;
             };
             state.killed = true;
             (pid, state.generation)
         };
-        let sent = signal_group(pid, libc::SIGTERM);
-        let state = self.state.clone();
+        let sent = signal_group(pid, Signal::TERM);
+        let state = Arc::clone(&self.state);
         let wait = self.kill_after;
         std::thread::spawn(move || {
             std::thread::sleep(wait);
-            let current = state.lock().unwrap_or_else(|e| e.into_inner());
+            let current = state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             if current.generation == generation && current.pid == Some(pid) {
-                signal_group(pid, libc::SIGKILL);
+                signal_group(pid, Signal::KILL);
             }
         });
         sent
@@ -239,7 +256,7 @@ impl EvalRunner {
     pub fn is_running(&self) -> bool {
         self.state
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .pid
             .is_some()
     }
@@ -248,6 +265,7 @@ impl EvalRunner {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rustix::process::test_kill_process;
     use std::sync::Arc;
 
     fn sh(script: &str, cwd: &std::path::Path) -> EvalJob {
@@ -298,10 +316,12 @@ mod tests {
     fn runs_in_the_given_folder_with_only_home_and_path() {
         let dir = tempfile::tempdir().unwrap();
         let cwd = std::fs::canonicalize(dir.path()).unwrap();
-        unsafe { std::env::set_var("ANTHROPIC_API_KEY", "leak-check") };
+        assert!(
+            std::env::var_os("CARGO_PKG_NAME").is_some(),
+            "cargo sets CARGO_PKG_NAME for tests; the child must not inherit it"
+        );
         let runner = EvalRunner::new(env_for(&cwd));
         let (result, events) = run_collect(&runner, &sh("pwd; env | sort | cut -d= -f1", &cwd));
-        unsafe { std::env::remove_var("ANTHROPIC_API_KEY") };
         assert_eq!(
             result.unwrap(),
             EvalExit {
@@ -382,7 +402,7 @@ mod tests {
     fn kills_the_running_child_with_sigterm() {
         let dir = tempfile::tempdir().unwrap();
         let runner = Arc::new(EvalRunner::new(env_for(dir.path())));
-        let background = runner.clone();
+        let background = Arc::clone(&runner);
         let cwd = dir.path().to_path_buf();
         let handle = std::thread::spawn(move || background.run(&sh("sleep 30", &cwd), &mut |_| {}));
         while !runner.is_running() {
@@ -401,7 +421,7 @@ mod tests {
             env_for(dir.path()),
             Duration::from_millis(150),
         ));
-        let background = runner.clone();
+        let background = Arc::clone(&runner);
         let cwd = dir.path().to_path_buf();
         let marker = dir.path().join("pid");
         let script = format!(
@@ -426,10 +446,9 @@ mod tests {
             .parse()
             .unwrap();
         std::thread::sleep(Duration::from_millis(100));
-        let alive = unsafe { libc::kill(grandchild, 0) } == 0
+        let alive = Pid::from_raw(grandchild).is_some_and(|pid| test_kill_process(pid).is_ok())
             && std::fs::read_to_string(format!("/proc/{grandchild}/stat"))
-                .map(|stat| !stat.contains(") Z"))
-                .unwrap_or(false);
+                .is_ok_and(|stat| !stat.contains(") Z"));
         assert!(!alive);
     }
 

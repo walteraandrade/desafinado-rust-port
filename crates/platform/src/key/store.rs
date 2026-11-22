@@ -1,7 +1,9 @@
+use desafinado_core::log_err::LogErr;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
+use desafinado_ai::api_key::ApiKey;
 use serde::{Deserialize, Serialize};
 
 use super::base64;
@@ -66,7 +68,7 @@ impl StoredFormat {
     }
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Serialize)]
 struct StoredOut<'a> {
     version: u8,
     storage: StoredFormat,
@@ -75,7 +77,7 @@ struct StoredOut<'a> {
 
 #[derive(Debug, Clone)]
 struct Held {
-    key: Option<String>,
+    key: Option<ApiKey>,
     storage: KeyStorage,
     unreadable: bool,
 }
@@ -96,9 +98,9 @@ impl Held {
         }
     }
 
-    fn with(key: String, storage: KeyStorage) -> Self {
+    fn with(key: &str, storage: KeyStorage) -> Self {
         Self {
-            key: Some(key),
+            key: ApiKey::new(key),
             storage,
             unreadable: false,
         }
@@ -156,7 +158,9 @@ impl KeyStore {
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, State> {
-        self.state.lock().unwrap_or_else(|e| e.into_inner())
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     fn details(&self, state: &State) -> KeyDetails {
@@ -174,7 +178,7 @@ impl KeyStore {
         self.details(&self.lock())
     }
 
-    pub fn current(&self) -> Option<String> {
+    pub fn current(&self) -> Option<ApiKey> {
         self.lock().held.key.clone()
     }
 
@@ -204,11 +208,11 @@ impl KeyStore {
                 if !state.keyring_available {
                     return Held::unreadable();
                 }
-                self.keyring.get().ok().flatten()
+                self.keyring.get().log_warn().flatten()
             }
         };
         match key {
-            Some(key) if !key.is_empty() => Held::with(key, format.as_storage()),
+            Some(key) if !key.is_empty() => Held::with(&key, format.as_storage()),
             _ => Held::unreadable(),
         }
     }
@@ -216,32 +220,32 @@ impl KeyStore {
     fn persist(&self, state: &mut State, key: &str, format: StoredFormat) -> Option<Held> {
         let data = match format {
             StoredFormat::Keyring => {
-                self.keyring.set(key).ok()?;
+                self.keyring.set(key).log_warn()?;
                 KEYRING_DATA.to_owned()
             }
             StoredFormat::PlainText => base64::encode(key.as_bytes()),
         };
         if self.file.write(&serialize(format, &data)).is_err() {
             if format == StoredFormat::Keyring && state.on_disk != Some(StoredFormat::Keyring) {
-                let _ = self.keyring.delete();
+                self.keyring.delete().log_err();
             }
             return None;
         }
         state.on_disk = Some(format);
-        Some(Held::with(key.to_owned(), format.as_storage()))
+        Some(Held::with(key, format.as_storage()))
     }
 
     fn stored_format(&self) -> Option<StoredFormat> {
-        let text = self.file.read().ok().flatten()?;
+        let text = self.file.read().log_warn().flatten()?;
         parse_stored(&text).map(|(format, _)| format)
     }
 
     fn keep_for_session(&self, state: &mut State, key: &str) -> Held {
         if self.stored_format() != Some(StoredFormat::Keyring) {
-            let _ = self.file.remove();
+            self.file.remove().log_err();
             state.on_disk = None;
         }
-        Held::with(key.to_owned(), KeyStorage::Session)
+        Held::with(key, KeyStorage::Session)
     }
 
     pub fn save(&self, key: &str) -> KeyDetails {
@@ -262,7 +266,7 @@ impl KeyStore {
     pub fn keep_as_plain_text(&self) -> KeyDetails {
         let mut state = self.lock();
         if let (Some(key), KeyStorage::Session) = (state.held.key.clone(), state.held.storage)
-            && let Some(held) = self.persist(&mut state, &key, StoredFormat::PlainText)
+            && let Some(held) = self.persist(&mut state, key.expose(), StoredFormat::PlainText)
         {
             state.held = held;
         }
@@ -271,8 +275,8 @@ impl KeyStore {
 
     pub fn clear(&self) -> KeyDetails {
         let mut state = self.lock();
-        let _ = self.file.remove();
-        let _ = self.keyring.delete();
+        self.file.remove().log_err();
+        self.keyring.delete().log_err();
         state.on_disk = None;
         state.held = Held::none();
         self.details(&state)
@@ -398,7 +402,7 @@ mod tests {
         let details = store.save("sk-1");
         assert_eq!(details.storage, KeyStorage::Keyring);
         assert!(details.present && details.keyring_stored && details.keyring_available);
-        assert_eq!(store.current().as_deref(), Some("sk-1"));
+        assert_eq!(store.current().as_ref().map(ApiKey::expose), Some("sk-1"));
         assert_eq!(keyring.with(|s| s.secret.clone()).as_deref(), Some("sk-1"));
         let written = file.content().unwrap();
         assert!(!written.contains("sk-1"));
@@ -424,7 +428,7 @@ mod tests {
         assert!(file.content().is_some());
         store.save("new");
         assert_eq!(file.content(), None);
-        assert_eq!(store.current().as_deref(), Some("new"));
+        assert_eq!(store.current().as_ref().map(ApiKey::expose), Some("new"));
     }
 
     #[test]
@@ -491,7 +495,7 @@ mod tests {
         let store = store(&keyring, &file);
         store.save("one");
         store.save("two");
-        assert_eq!(store.current().as_deref(), Some("two"));
+        assert_eq!(store.current().as_ref().map(ApiKey::expose), Some("two"));
         assert_eq!(keyring.with(|s| s.secret.clone()).as_deref(), Some("two"));
     }
 
@@ -507,7 +511,10 @@ mod tests {
         let reloaded = super::KeyStore::new(Box::new(keyring.clone()), Box::new(file.clone()));
         let loaded = reloaded.load();
         assert_eq!(loaded.storage, KeyStorage::PlainText);
-        assert_eq!(reloaded.current().as_deref(), Some("sk-plain"));
+        assert_eq!(
+            reloaded.current().as_ref().map(ApiKey::expose),
+            Some("sk-plain")
+        );
     }
 
     #[test]
@@ -529,7 +536,10 @@ mod tests {
         let fresh = store(&keyring, &file);
         let details = fresh.load();
         assert!(details.present && details.keyring_stored && !details.unreadable);
-        assert_eq!(fresh.current().as_deref(), Some("sk-stored"));
+        assert_eq!(
+            fresh.current().as_ref().map(ApiKey::expose),
+            Some("sk-stored")
+        );
     }
 
     #[test]

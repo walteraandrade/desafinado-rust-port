@@ -148,8 +148,8 @@ pub fn sized_button(
         .items_center()
         .justify_center()
         .gap(px(8.))
-        .when(size == ButtonSize::Regular, |this| this.type_body())
-        .when(size == ButtonSize::Small, |this| this.type_small())
+        .when(size == ButtonSize::Regular, Type::type_body)
+        .when(size == ButtonSize::Small, Type::type_small)
         .weight_medium()
         .border_2()
         .when(control.focused, |this| this.border_color(roles.accent))
@@ -164,8 +164,8 @@ pub fn sized_button(
         ButtonKind::Quiet => (None, roles.muted, roles.fill),
         ButtonKind::Danger => (Some(roles.fill), roles.danger, roles.danger_fill),
     };
-    base.when_some(background, |this, background| this.bg(background))
-        .when(kind == ButtonKind::Strong, |this| this.weight_strong())
+    base.when_some(background, gpui_kit::Styled::bg)
+        .when(kind == ButtonKind::Strong, Type::weight_strong)
         .text_color(text)
         .cursor_pointer()
         .hover(move |this| {
@@ -350,7 +350,7 @@ pub fn link(
         .text_color(roles.accent)
         .weight_medium()
         .cursor_pointer()
-        .hover(|this| this.underline())
+        .hover(gpui_kit::Styled::underline)
         .child(label.into())
 }
 
@@ -695,7 +695,7 @@ pub fn measure(on_size: impl Fn(Size<Pixels>, &mut App) + 'static) -> impl IntoE
     let on_size = Rc::new(on_size);
     canvas(
         move |bounds, _, cx| on_size(bounds.size, cx),
-        |_, _, _, _| {},
+        |_, (), _, _| {},
     )
     .absolute()
     .top_0()
