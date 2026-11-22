@@ -224,7 +224,7 @@ mod tests {
 
     fn rows(rows: &[&[&str]]) -> Vec<Vec<String>> {
         rows.iter()
-            .map(|row| row.iter().map(|cell| cell.to_string()).collect())
+            .map(|row| row.iter().map(std::string::ToString::to_string).collect())
             .collect()
     }
 

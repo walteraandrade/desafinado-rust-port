@@ -27,7 +27,10 @@ impl AiCallLog {
     }
 
     pub fn append(&self, record: &AiCallRecord) -> io::Result<()> {
-        let _guard = self.lock.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = self
+            .lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(parent) = self.file.parent() {
             fs::create_dir_all(parent)?;
         }
@@ -60,18 +63,17 @@ pub fn merge_enriched(lines: Vec<AiCallRecord>) -> Vec<AiCallRecord> {
     let mut merged: Vec<AiCallRecord> = Vec::new();
     let mut by_id: HashMap<String, usize> = HashMap::new();
     for record in lines {
-        match record
+        if let Some(index) = record
             .generation_id
             .clone()
             .and_then(|id| by_id.get(&id).copied())
         {
-            Some(index) => merged[index] = record,
-            None => {
-                if let Some(id) = &record.generation_id {
-                    by_id.insert(id.clone(), merged.len());
-                }
-                merged.push(record);
+            merged[index] = record;
+        } else {
+            if let Some(id) = &record.generation_id {
+                by_id.insert(id.clone(), merged.len());
             }
+            merged.push(record);
         }
     }
     merged

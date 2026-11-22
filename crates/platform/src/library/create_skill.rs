@@ -1,3 +1,4 @@
+use desafinado_core::log_err::LogErr;
 use std::fs;
 use std::io;
 use std::path::Path;
@@ -56,12 +57,12 @@ pub fn create_skill(deps: &LibraryDeps, root: &str, name: &str) -> CreateSkillRe
     let text = match skill_template(name) {
         Ok(text) => text,
         Err(problem) => {
-            let _ = fs::remove_dir(&folder);
+            fs::remove_dir(&folder).log_warn();
             return failed(problem.message);
         }
     };
     if let Err(error) = write_atomic_unconditionally(&file, &text) {
-        let _ = fs::remove_dir(&folder);
+        fs::remove_dir(&folder).log_warn();
         return failed(describe_failure(&error));
     }
     CreateSkillResult::Created {

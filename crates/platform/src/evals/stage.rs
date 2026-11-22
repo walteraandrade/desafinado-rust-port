@@ -1,3 +1,4 @@
+use desafinado_core::log_err::LogErr;
 use std::collections::HashSet;
 use std::fs;
 use std::io;
@@ -105,7 +106,7 @@ fn container_in(temp_base: &Path) -> io::Result<PathBuf> {
         let container = temp_base.join(unique);
         match fs::create_dir(&container) {
             Ok(()) => return Ok(container),
-            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
             Err(error) => return Err(error),
         }
     }
@@ -120,7 +121,7 @@ pub fn stage_skill(
     let container = container_in(temp_base)?;
     let built = build(&real_root, &container, skill_text_override);
     if built.is_err() {
-        let _ = fs::remove_dir_all(&container);
+        fs::remove_dir_all(&container).log_warn();
     }
     built
 }
@@ -153,7 +154,7 @@ fn build(
     }
     if let Some(text) = skill_text_override {
         let skill_file = dir.join(SKILL_FILE_NAME);
-        let _ = fs::remove_file(&skill_file);
+        fs::remove_file(&skill_file).log_warn();
         fs::write(&skill_file, text)?;
     }
     let skill_text = fs::read_to_string(dir.join(SKILL_FILE_NAME))?;

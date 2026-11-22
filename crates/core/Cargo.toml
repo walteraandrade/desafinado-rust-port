@@ -3,6 +3,7 @@ name = "desafinado-core"
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
+rust-version.workspace = true
 
 [dependencies]
 serde.workspace = true
@@ -11,3 +12,7 @@ similar.workspace = true
 pulldown-cmark.workspace = true
 unicode-segmentation.workspace = true
 thiserror.workspace = true
+log.workspace = true
+
+[lints]
+workspace = true

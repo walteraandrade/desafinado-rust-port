@@ -299,7 +299,7 @@ mod tests {
 
     #[test]
     fn fails_with_the_old_text_intact_when_the_folder_cannot_be_written() {
-        if unsafe { libc::geteuid() } == 0 {
+        if rustix::process::geteuid().is_root() {
             return;
         }
         let (_dir, real) = real_dir();

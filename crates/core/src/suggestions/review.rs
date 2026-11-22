@@ -600,7 +600,9 @@ mod tests {
         fn placed_range(placement: &ReviewPlacement) -> (usize, usize) {
             match placement {
                 ReviewPlacement::Placed { draft, .. } => (draft.from, draft.to),
-                other => panic!("expected a placement, got {other:?}"),
+                other @ ReviewPlacement::Dropped { .. } => {
+                    panic!("expected a placement, got {other:?}")
+                }
             }
         }
 

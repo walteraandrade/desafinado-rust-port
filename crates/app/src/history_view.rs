@@ -1,3 +1,5 @@
+use std::rc::Rc;
+
 use desafinado_features::{
     diff::DiffHunk,
     history::{
@@ -101,9 +103,11 @@ fn hunk_text(hunks: &[DiffHunk], roles: Roles) -> StyledText {
 
 fn first_hunk_text(hunks: &[DiffHunk]) -> &str {
     match hunks.first() {
-        Some(DiffHunk::Equal { text, .. })
-        | Some(DiffHunk::Deleted { text, .. })
-        | Some(DiffHunk::Inserted { text, .. }) => text,
+        Some(
+            DiffHunk::Equal { text, .. }
+            | DiffHunk::Deleted { text, .. }
+            | DiffHunk::Inserted { text, .. },
+        ) => text,
         None => "",
     }
 }
@@ -257,7 +261,7 @@ impl Workspace {
         };
         let gaps = versions.len().saturating_sub(1).max(1) as f32;
         let dot_width = px(DOT_SIZE).min(self.timeline_width.get() / gaps);
-        let measured = self.timeline_width.clone();
+        let measured = Rc::clone(&self.timeline_width);
         let dots: Vec<Div> = versions
             .iter()
             .enumerate()
@@ -308,7 +312,7 @@ impl Workspace {
             .child(
                 canvas(
                     move |bounds, _, _| measured.set(bounds.size.width),
-                    |_, _, _, _| {},
+                    |_, (), _, _| {},
                 )
                 .absolute()
                 .size_full(),
@@ -424,7 +428,10 @@ impl Workspace {
         )
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "each argument is one piece of the row's state; grouping them would only rename them"
+    )]
     fn render_version_actions(
         &self,
         id: VersionId,
@@ -466,7 +473,7 @@ impl Workspace {
                 )
                 .when_some(restorable, |this, text| {
                     this.on_click(cx.listener(move |this, _, window, cx| {
-                        this.restore(id, at, text.clone(), window, cx)
+                        this.restore(id, at, text.clone(), window, cx);
                     }))
                 }),
             )

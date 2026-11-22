@@ -1,3 +1,4 @@
+use desafinado_core::log_err::LogErr;
 use std::sync::Arc;
 
 use desafinado_ai::prompts::DescriptionPromptInput;
@@ -83,7 +84,7 @@ impl FrontmatterView {
                 state.read(cx).value().to_string(),
                 event,
                 cx,
-            )
+            );
         });
         let description_events =
             cx.subscribe(&description, |this, state, event: &InputEvent, cx| {
@@ -92,7 +93,7 @@ impl FrontmatterView {
                     state.read(cx).value().to_string(),
                     event,
                     cx,
-                )
+                );
             });
         Self {
             report: FrontmatterReport::None,
@@ -164,7 +165,7 @@ impl FrontmatterView {
     pub fn focus_panel(&self, window: &mut Window, cx: &mut Context<Self>) {
         match self.report {
             FrontmatterReport::Skill { .. } => {
-                self.name.update(cx, |state, cx| state.focus(window, cx))
+                self.name.update(cx, |state, cx| state.focus(window, cx));
             }
             _ => window.focus(&self.focus, cx),
         }
@@ -187,11 +188,11 @@ impl FrontmatterView {
         self.assist = DescriptionAi::Working {
             source: source.clone(),
         };
-        let ai = self.ai.clone();
+        let ai = Arc::clone(&self.ai);
         let work = cx.background_spawn(async move { ai.description(DescriptionCall::new(input)) });
         self.request = Some(cx.spawn(async move |this, cx| {
             let result = work.await;
-            let _ = this.update(cx, |this, cx| {
+            this.update(cx, |this, cx| {
                 this.request = None;
                 this.assist = match result {
                     Err(error) => DescriptionAi::Failed {
@@ -210,7 +211,8 @@ impl FrontmatterView {
                     },
                 };
                 cx.notify();
-            });
+            })
+            .log_warn();
         }));
         cx.notify();
     }

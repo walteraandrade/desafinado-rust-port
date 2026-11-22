@@ -79,6 +79,10 @@ impl CallOutcome {
     }
 }
 
+#[expect(
+    clippy::ref_option,
+    reason = "serde's serialize_with passes a reference to the field"
+)]
 fn whole_number<S: Serializer>(value: &Option<f64>, serializer: S) -> Result<S::Ok, S::Error> {
     match value {
         None => serializer.serialize_none(),
@@ -411,7 +415,7 @@ mod tests {
             output_tokens: Some(120.0),
             reasoning_tokens: Some(30.0),
             cached_tokens: Some(0.0),
-            cost_usd: Some(0.000412),
+            cost_usd: Some(0.000_412),
             response_id: Some("gen-abc".into()),
             error: None,
         }
@@ -470,7 +474,7 @@ mod tests {
                     reasoning: Some(30.0),
                     cached: Some(0.0)
                 },
-                cost_usd: Some(0.000412),
+                cost_usd: Some(0.000_412),
                 latency_ms: LatencyMs {
                     client: 1850,
                     open_router: Some(1620.0),
@@ -670,7 +674,7 @@ mod tests {
         let json = serde_json::to_value(full_record()).unwrap();
         assert_eq!(json["tokens"]["input"], 812);
         assert_eq!(json["latencyMs"]["openRouter"], 1620);
-        assert_eq!(json["costUsd"], 0.000412);
+        assert_eq!(json["costUsd"], 0.000_412);
         assert_eq!(json["generationId"], "gen-abc");
         assert!(json["error"].is_null());
         let back: AiCallRecord = serde_json::from_value(json).unwrap();
@@ -691,7 +695,7 @@ mod tests {
             ..full_record()
         };
         let records = [cheap, other, unpriced];
-        assert!((total_cost_usd(&records) - 0.001412).abs() < 1e-12);
+        assert!((total_cost_usd(&records) - 0.001_412).abs() < 1e-12);
         let summary = summarize_costs(&records);
         assert_eq!(summary.total.calls, 3);
         assert_eq!(summary.total.priced_calls, 2);

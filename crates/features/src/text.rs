@@ -78,7 +78,7 @@ mod tests {
     #[test]
     fn to_fixed_rounds_half_up_like_javascript() {
         assert_eq!(to_fixed(0.125, 2), "0.13");
-        assert_eq!(to_fixed(0.00265497, 4), "0.0027");
+        assert_eq!(to_fixed(0.002_654_97, 4), "0.0027");
         assert_eq!(to_fixed(0.5, 2), "0.50");
         assert_eq!(to_fixed(0.3, 4), "0.3000");
         assert_eq!(to_fixed(9.999, 2), "10.00");

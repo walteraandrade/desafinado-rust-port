@@ -1,3 +1,7 @@
+#[expect(
+    clippy::case_sensitive_file_extension_comparisons,
+    reason = "the path is lowercased first"
+)]
 pub fn is_markdown_path(path: &str) -> bool {
     let lower = path.to_lowercase();
     lower.ends_with(".md") || lower.ends_with(".markdown")

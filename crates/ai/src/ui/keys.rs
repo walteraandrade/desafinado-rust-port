@@ -29,6 +29,7 @@ impl KeyPress {
         }
     }
 
+    #[must_use]
     pub fn with_shift(self) -> Self {
         Self {
             shift: true,
@@ -36,14 +37,17 @@ impl KeyPress {
         }
     }
 
+    #[must_use]
     pub fn with_alt(self) -> Self {
         Self { alt: true, ..self }
     }
 
+    #[must_use]
     pub fn with_ctrl(self) -> Self {
         Self { ctrl: true, ..self }
     }
 
+    #[must_use]
     pub fn with_meta(self) -> Self {
         Self { meta: true, ..self }
     }

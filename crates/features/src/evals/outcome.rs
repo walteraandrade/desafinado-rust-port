@@ -184,6 +184,10 @@ mod tests {
         }
     }
 
+    #[expect(
+        clippy::unnecessary_wraps,
+        reason = "builds the Option the assertions compare against"
+    )]
     fn report(text: String) -> Option<String> {
         Some(text)
     }

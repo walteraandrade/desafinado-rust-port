@@ -345,13 +345,13 @@ mod tests {
                 "2026-11-14T09:00:00Z",
                 "select paragraph 2 → Shorter",
                 "m1",
-                Some(0.000925),
+                Some(0.000_925),
             ),
             record(
                 "2026-11-14T09:01:00Z",
                 "block 3 → Shorter",
                 "m1",
-                Some(0.000925),
+                Some(0.000_925),
             ),
             record(
                 "2026-11-14T09:02:00Z",
@@ -433,10 +433,10 @@ mod tests {
     #[test]
     fn formats_money_counts_and_latency() {
         assert_eq!(format_usd(0.0), "US$0.00");
-        assert_eq!(format_usd(0.000925), "US$0.000925");
+        assert_eq!(format_usd(0.000_925), "US$0.000925");
         assert_eq!(format_usd(0.0258), "US$0.0258");
         assert_eq!(format_usd(12.3456), "US$12.35");
-        assert_eq!(format_count(1234567.0), "1,234,567");
+        assert_eq!(format_count(1_234_567.0), "1,234,567");
         assert_eq!(format_count(82.0), "82");
         assert_eq!(format_latency(950), "950 ms");
         assert_eq!(format_latency(1850), "1.9 s");

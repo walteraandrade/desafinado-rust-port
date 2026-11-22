@@ -168,8 +168,8 @@ fn build_skill(skill: &Skill) -> TreeNode {
         .collect();
     let mut node = TreeNode::new(&id, TreeKind::Skill, &skill.name);
     node.path = Some(skill.real_path.clone());
-    node.description = skill.description.clone();
-    node.problem = skill.problem.clone();
+    node.description.clone_from(&skill.description);
+    node.problem.clone_from(&skill.problem);
     node.children = build_level(&skill.real_path, &id, "", entries, true);
     node
 }

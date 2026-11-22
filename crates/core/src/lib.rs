@@ -3,6 +3,7 @@
 pub mod blocks;
 pub mod change_set;
 pub mod diff;
+pub mod log_err;
 
 pub mod sample;
 pub mod suggestions;

@@ -19,8 +19,10 @@ pub fn load_theme_choice(storage: Option<&dyn KeyValueStorage>) -> ThemeChoice {
 }
 
 pub fn save_theme_choice(storage: Option<&dyn KeyValueStorage>, choice: &str) {
-    if let Some(storage) = storage {
-        let _ = storage.set_item(THEME_STORAGE_KEY, choice);
+    if let Some(storage) = storage
+        && let Err(error) = storage.set_item(THEME_STORAGE_KEY, choice)
+    {
+        log::error!("Theme choice not saved: {error}");
     }
 }
 
@@ -122,7 +124,7 @@ mod tests {
         let tokens = omarchy();
         assert!(std::ptr::eq(
             active_theme(OMARCHY_CHOICE, Some(&tokens)),
-            &tokens
+            &raw const tokens
         ));
     }
 

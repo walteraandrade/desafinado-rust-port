@@ -307,11 +307,6 @@ mod tests {
     }
 
     #[test]
-    fn exposes_the_threshold_as_a_named_constant() {
-        assert_eq!(BLOCK_LEVEL_THRESHOLD, 0.4);
-    }
-
-    #[test]
     fn returns_a_single_equal_hunk_for_identical_text() {
         let result = adaptive_diff("Same text.", "Same text.");
         assert_eq!(result.mode, DiffMode::Word);

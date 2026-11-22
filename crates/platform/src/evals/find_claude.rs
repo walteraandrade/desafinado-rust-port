@@ -3,9 +3,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
 pub fn is_executable_file(path: &Path) -> bool {
-    fs::metadata(path)
-        .map(|info| info.is_file() && info.permissions().mode() & 0o111 != 0)
-        .unwrap_or(false)
+    fs::metadata(path).is_ok_and(|info| info.is_file() && info.permissions().mode() & 0o111 != 0)
 }
 
 pub fn candidate_paths(path: Option<&str>, home: &Path) -> Vec<PathBuf> {

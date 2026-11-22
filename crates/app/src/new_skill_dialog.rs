@@ -220,7 +220,7 @@ impl Render for NewSkillDialog {
                             )
                             .when(ready, |this| {
                                 this.on_click(cx.listener(|this, _, window, cx| {
-                                    this.submit(&SubmitNewSkill, window, cx)
+                                    this.submit(&SubmitNewSkill, window, cx);
                                 }))
                             }),
                         ),

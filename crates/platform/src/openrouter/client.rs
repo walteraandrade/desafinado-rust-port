@@ -17,7 +17,7 @@ use super::{PLACEHOLDER_KEY, base_url_from_env};
 use desafinado_ai::chat_stream::{ChatStreamEvent, ChatStreamParser, observation_from_response};
 use desafinado_ai::records::{CallObservation, OpenRouterGeneration};
 
-const DEFAULT_TIMEOUT: Duration = Duration::from_secs(600);
+const DEFAULT_TIMEOUT: Duration = Duration::from_mins(10);
 const MAX_RETRY_DELAY: Duration = Duration::from_secs(10);
 
 #[derive(Debug, Clone, Copy)]
@@ -30,7 +30,7 @@ impl Default for RetryPolicy {
     fn default() -> Self {
         Self {
             max_retries: 1,
-            min_delay: Duration::from_millis(1000),
+            min_delay: Duration::from_secs(1),
         }
     }
 }
@@ -78,16 +78,19 @@ impl OpenRouterClient {
         )
     }
 
+    #[must_use]
     pub fn with_retry(mut self, retry: RetryPolicy) -> Self {
         self.retry = retry;
         self
     }
 
+    #[must_use]
     pub fn with_timeout(mut self, timeout: Duration) -> Self {
         self.timeout = timeout;
         self
     }
 
+    #[must_use]
     pub fn with_stall(mut self, stall: Option<Duration>) -> Self {
         self.stall = stall;
         self
@@ -312,7 +315,9 @@ fn retry_delay(retry: RetryPolicy, retry_after: Option<Duration>) -> Duration {
 }
 
 fn parse_completion(model: &str, text: &str) -> Result<ChatOutput, ClientError> {
-    let value: Value = serde_json::from_str(text).map_err(|_| classify_status(200, text))?;
+    let Ok(value) = serde_json::from_str::<Value>(text) else {
+        return Err(classify_status(200, text));
+    };
     if value.get("error").is_some() {
         return Err(classify_status(200, text));
     }
@@ -409,6 +414,7 @@ impl Iterator for ChatStream {
 mod tests {
     use super::*;
     use crate::openrouter::test_server::{Reply, TestServer};
+    use desafinado_core::log_err::LogErr;
     use serde_json::json;
 
     const COMPLETION: &str = r#"{"id":"gen-abc","model":"vendor/model-served","provider":"Acme","choices":[{"finish_reason":"stop","message":{"role":"assistant","content":"{\"ok\":true}"}}],"usage":{"prompt_tokens":12,"completion_tokens":4,"cost":0.00031,"completion_tokens_details":{"reasoning_tokens":1},"prompt_tokens_details":{"cached_tokens":2}}}"#;
@@ -712,7 +718,7 @@ mod tests {
         let server = TestServer::start(vec![Reply::sse(&[&a, &b, "data: [DONE]\n\n"])]);
         let flag = Arc::new(AtomicBool::new(false));
         let mut stream = client(&server, None)
-            .chat_stream(&request(), Some(flag.clone()))
+            .chat_stream(&request(), Some(Arc::clone(&flag)))
             .unwrap();
         assert!(stream.next().unwrap().is_ok());
         flag.store(true, Ordering::SeqCst);
@@ -746,7 +752,7 @@ mod tests {
         let proxy_addr = proxy.local_addr().unwrap();
         let target_addr = target.addr;
         let seen = Arc::new(std::sync::Mutex::new(String::new()));
-        let log = seen.clone();
+        let log = Arc::clone(&seen);
         std::thread::spawn(move || {
             use std::io::{Read, Write};
             let (mut inbound, _) = proxy.accept().unwrap();
@@ -763,10 +769,10 @@ mod tests {
                 .unwrap();
             let (mut a, mut b) = (inbound.try_clone().unwrap(), outbound.try_clone().unwrap());
             let up = std::thread::spawn(move || {
-                let _ = std::io::copy(&mut a, &mut b);
+                std::io::copy(&mut a, &mut b).log_warn();
             });
-            let _ = std::io::copy(&mut outbound, &mut inbound);
-            let _ = up.join();
+            std::io::copy(&mut outbound, &mut inbound).log_warn();
+            up.join().unwrap();
         });
         let options = AgentOptions {
             proxy_from_env: false,

@@ -1,6 +1,9 @@
 pub mod cause;
 pub mod events;
-#[allow(clippy::module_inception)]
+#[expect(
+    clippy::module_inception,
+    reason = "history::history holds the pure History model the other modules share"
+)]
 pub mod history;
 pub mod hub;
 pub mod line_changes;

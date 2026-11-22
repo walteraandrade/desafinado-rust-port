@@ -1,3 +1,4 @@
+use desafinado_core::log_err::LogErr;
 use std::{
     path::{Path, PathBuf},
     process::Command,
@@ -89,7 +90,9 @@ fn off_thread<T: Send + 'static>(
 ) -> oneshot::Receiver<T> {
     let (sender, receiver) = oneshot::channel();
     std::thread::spawn(move || {
-        let _ = sender.send(work());
+        if sender.send(work()).is_err() {
+            log::debug!("An evals result arrived after its view closed");
+        }
     });
     receiver
 }
@@ -163,7 +166,7 @@ enum Mark {
     None,
 }
 
-fn pass_mark(run: &RunRecord) -> Mark {
+fn pass_mark(run: RunRecord) -> Mark {
     match (run.errored, run.passed) {
         (true, _) => Mark::None,
         (false, true) => Mark::Pass,
@@ -171,7 +174,7 @@ fn pass_mark(run: &RunRecord) -> Mark {
     }
 }
 
-fn fired_mark(run: &RunRecord) -> Mark {
+fn fired_mark(run: RunRecord) -> Mark {
     match (run.errored, run.fired) {
         (false, Some(true)) => Mark::Pass,
         (false, Some(false)) => Mark::Fail,
@@ -188,13 +191,14 @@ fn short_flag(kind: SuspiciousKind) -> &'static str {
 }
 
 pub fn local_date_time(iso: &str, offset_minutes: i64) -> String {
-    chrono::DateTime::parse_from_rfc3339(iso)
-        .map(|date| {
+    chrono::DateTime::parse_from_rfc3339(iso).map_or_else(
+        |_| "Invalid Date".to_string(),
+        |date| {
             (date.naive_utc() + chrono::Duration::minutes(offset_minutes))
                 .format("%-m/%-d/%Y, %-I:%M:%S %p")
                 .to_string()
-        })
-        .unwrap_or_else(|_| "Invalid Date".to_string())
+        },
+    )
 }
 
 fn meter(label: &str, tally: &Tally, roles: Roles) -> Div {
@@ -319,7 +323,7 @@ impl EvalsView {
     }
 
     pub fn service(&self) -> Arc<EvalService> {
-        self.service.clone()
+        Arc::clone(&self.service)
     }
 
     pub fn skill(&self) -> Option<&EvalSkill> {
@@ -394,13 +398,13 @@ impl EvalsView {
         };
         self.latest += 1;
         let load = self.latest;
-        let service = self.service.clone();
+        let service = Arc::clone(&self.service);
         let result = off_thread(move || service.status(&EvalSkillRequest { skill_path }));
         cx.spawn(async move |this, cx| {
             let Ok(result) = result.await else {
                 return;
             };
-            let _ = this.update(cx, |this, cx| {
+            this.update(cx, |this, cx| {
                 if load != this.latest {
                     return;
                 }
@@ -425,7 +429,8 @@ impl EvalsView {
                     EvalStatus::Failed { reason } => PanelState::Failed(reason),
                 };
                 cx.notify();
-            });
+            })
+            .log_warn();
         })
         .detach();
     }
@@ -438,7 +443,7 @@ impl EvalsView {
             self.poll = Some(cx.spawn(async move |this, cx| {
                 loop {
                     cx.background_executor().timer(POLL).await;
-                    if this.update(cx, |this, cx| this.refresh(cx)).is_err() {
+                    if this.update(cx, EvalsView::refresh).is_err() {
                         break;
                     }
                 }
@@ -463,45 +468,43 @@ impl EvalsView {
     }
 
     fn set_dialog(&mut self, dialog: EvalDialogState, window: &mut Window, cx: &mut Context<Self>) {
-        match &dialog {
-            EvalDialogState::Confirm {
-                prepared,
-                baseline,
-                refreshing,
-            } => match &self.dialog_view {
-                Some(view) => view.update(cx, |view, cx| {
-                    view.update_state(prepared.clone(), *baseline, *refreshing, cx)
-                }),
-                None => {
-                    let name = self
-                        .skill
-                        .as_ref()
-                        .map(|skill| skill.name.clone())
-                        .unwrap_or_default();
-                    let notice = unsaved_notice(&self.unsaved);
-                    let (prepared, baseline, refreshing) =
-                        (prepared.clone(), *baseline, *refreshing);
-                    let view = cx.new(|cx| {
-                        EvalRunDialog::new(name, prepared, baseline, refreshing, notice, window, cx)
-                    });
-                    self._dialog_events = Some(cx.subscribe_in(
-                        &view,
-                        window,
-                        |this, _, event: &EvalRunEvent, window, cx| match event {
-                            EvalRunEvent::Pick(baseline) => this.pick(*baseline, window, cx),
-                            EvalRunEvent::Run(settings) => this.run(settings.clone(), window, cx),
-                            EvalRunEvent::Close => this.close(window, cx),
-                        },
-                    ));
-                    self.dialog_view = Some(view);
-                }
-            },
-            _ => {
-                if self.dialog_view.take().is_some() {
-                    cx.emit(EvalsEvent::DialogClosed);
-                }
-                self._dialog_events = None;
+        if let EvalDialogState::Confirm {
+            prepared,
+            baseline,
+            refreshing,
+        } = &dialog
+        {
+            if let Some(view) = &self.dialog_view {
+                view.update(cx, |view, cx| {
+                    view.update_state(prepared.clone(), *baseline, *refreshing, cx);
+                });
+            } else {
+                let name = self
+                    .skill
+                    .as_ref()
+                    .map(|skill| skill.name.clone())
+                    .unwrap_or_default();
+                let notice = unsaved_notice(&self.unsaved);
+                let (prepared, baseline, refreshing) = (prepared.clone(), *baseline, *refreshing);
+                let view = cx.new(|cx| {
+                    EvalRunDialog::new(name, prepared, baseline, refreshing, notice, window, cx)
+                });
+                self._dialog_events = Some(cx.subscribe_in(
+                    &view,
+                    window,
+                    |this, _, event: &EvalRunEvent, window, cx| match event {
+                        EvalRunEvent::Pick(baseline) => this.pick(*baseline, window, cx),
+                        EvalRunEvent::Run(settings) => this.run(settings.clone(), window, cx),
+                        EvalRunEvent::Close => this.close(window, cx),
+                    },
+                ));
+                self.dialog_view = Some(view);
             }
+        } else {
+            if self.dialog_view.take().is_some() {
+                cx.emit(EvalsEvent::DialogClosed);
+            }
+            self._dialog_events = None;
         }
         self.dialog = dialog;
         cx.notify();
@@ -526,7 +529,7 @@ impl EvalsView {
         };
         self.message = None;
         self.set_dialog(EvalDialogState::Preparing, window, cx);
-        let service = self.service.clone();
+        let service = Arc::clone(&self.service);
         let result = off_thread(move || {
             service.prepare(&EvalPrepareRequest {
                 skill_path,
@@ -537,12 +540,13 @@ impl EvalsView {
             let Ok(result) = result.await else {
                 return;
             };
-            let _ = this.update_in(cx, |this, window, cx| {
+            this.update_in(cx, |this, window, cx| {
                 let settled = settle_ask(&result);
                 this.set_dialog(settled.dialog, window, cx);
                 this.apply_effect(settled.effect);
                 cx.notify();
-            });
+            })
+            .log_warn();
         })
         .detach();
     }
@@ -553,7 +557,7 @@ impl EvalsView {
         };
         let started = start_pick(&self.dialog, baseline);
         self.set_dialog(started, window, cx);
-        let service = self.service.clone();
+        let service = Arc::clone(&self.service);
         let result = off_thread(move || {
             service.prepare(&EvalPrepareRequest {
                 skill_path,
@@ -564,12 +568,13 @@ impl EvalsView {
             let Ok(result) = result.await else {
                 return;
             };
-            let _ = this.update_in(cx, |this, window, cx| {
+            this.update_in(cx, |this, window, cx| {
                 let settled = settle_pick(&this.dialog, baseline, &result);
                 this.set_dialog(settled.dialog, window, cx);
                 this.apply_effect(settled.effect);
                 cx.notify();
-            });
+            })
+            .log_warn();
         })
         .detach();
     }
@@ -598,7 +603,7 @@ impl EvalsView {
             *stopped = None;
         });
         self.message = None;
-        let service = self.service.clone();
+        let service = Arc::clone(&self.service);
         let request = EvalRunRequest {
             skill_path: skill_path.clone(),
             baseline,
@@ -609,7 +614,7 @@ impl EvalsView {
             let result = result.await.unwrap_or(EvalRunResult::Failed {
                 reason: "Could not run claude".into(),
             });
-            let _ = this.update(cx, |this, cx| {
+            this.update(cx, |this, cx| {
                 this.set_going(None, cx);
                 this.latest += 1;
                 cx.emit(EvalsEvent::Ended {
@@ -626,13 +631,13 @@ impl EvalsView {
                             *last = Some(summary);
                             *cancelling = false;
                             *stopped = None;
-                        })
+                        });
                     }
                     EvalRunResult::NotComplete { message, cost_usd } => {
                         this.patch_ready(|_, cancelling, stopped| {
                             *cancelling = false;
                             *stopped = Some(StoppedRun { message, cost_usd });
-                        })
+                        });
                     }
                     other => {
                         this.patch_ready(|_, cancelling, _| *cancelling = false);
@@ -640,7 +645,8 @@ impl EvalsView {
                     }
                 }
                 cx.notify();
-            });
+            })
+            .log_warn();
         })
         .detach();
         cx.notify();
@@ -650,20 +656,21 @@ impl EvalsView {
         self.latest += 1;
         self.patch_ready(|_, cancelling, _| *cancelling = true);
         cx.notify();
-        let service = self.service.clone();
+        let service = Arc::clone(&self.service);
         let result = off_thread(move || service.cancel());
         cx.spawn(async move |this, cx| {
             let Ok(result) = result.await else {
                 return;
             };
-            let _ = this.update(cx, |this, cx| {
+            this.update(cx, |this, cx| {
                 this.latest += 1;
                 if let EvalCancelResult::Failed { reason } = result {
                     this.patch_ready(|_, cancelling, _| *cancelling = false);
                     this.message = Some(reason);
                 }
                 cx.notify();
-            });
+            })
+            .log_warn();
         })
         .detach();
     }
@@ -672,7 +679,7 @@ impl EvalsView {
         let Some(skill_path) = self.skill_path() else {
             return;
         };
-        let service = self.service.clone();
+        let service = Arc::clone(&self.service);
         let result = off_thread(move || {
             service.open_report(&EvalOpenReportRequest {
                 skill_path,
@@ -683,10 +690,11 @@ impl EvalsView {
             let Ok(EvalOpenReportResult::Failed { reason }) = result.await else {
                 return;
             };
-            let _ = this.update(cx, |this, cx| {
+            this.update(cx, |this, cx| {
                 this.message = Some(reason);
                 cx.notify();
-            });
+            })
+            .log_warn();
         })
         .detach();
     }
@@ -1045,17 +1053,23 @@ fn eval_table(
                         .children(flags(index, signal, &view.labels, roles)),
                 )))
                 .child(rest_column(cell(pips(
-                    case.runs.with.iter().map(fired_mark).collect(),
+                    case.runs.with.iter().copied().map(fired_mark).collect(),
                     signal.fired,
                     roles,
                 ))))
                 .child(rest_column(cell(pips(
-                    case.runs.with.iter().map(pass_mark).collect(),
+                    case.runs.with.iter().copied().map(pass_mark).collect(),
                     (case.with.total != 0).then_some(case.with),
                     roles,
                 ))))
                 .child(rest_column(cell(pips(
-                    case.runs.without.iter().flatten().map(pass_mark).collect(),
+                    case.runs
+                        .without
+                        .iter()
+                        .flatten()
+                        .copied()
+                        .map(pass_mark)
+                        .collect(),
                     case.without,
                     roles,
                 ))))

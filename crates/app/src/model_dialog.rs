@@ -129,7 +129,7 @@ impl Render for ModelDialog {
                         .child(
                             ui::button("model-save", "Save model", ButtonKind::Strong, roles)
                                 .on_click(cx.listener(|this, _, window, cx| {
-                                    this.submit(&SubmitModel, window, cx)
+                                    this.submit(&SubmitModel, window, cx);
                                 })),
                         ),
                 ),

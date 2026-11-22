@@ -11,6 +11,10 @@ pub fn default_generation_delays_ms() -> Vec<u64> {
     vec![DEFAULT_GENERATION_ATTEMPT_DELAY_MS; DEFAULT_GENERATION_RETRIES]
 }
 
+#[expect(
+    clippy::option_option,
+    reason = "the outer None marks a malformed field; the inner None an absent or null one"
+)]
 fn nullish_number(data: &serde_json::Map<String, Value>, key: &str) -> Option<Option<f64>> {
     match data.get(key) {
         None | Some(Value::Null) => Some(None),
@@ -19,6 +23,10 @@ fn nullish_number(data: &serde_json::Map<String, Value>, key: &str) -> Option<Op
     }
 }
 
+#[expect(
+    clippy::option_option,
+    reason = "the outer None marks a malformed field; the inner None an absent or null one"
+)]
 fn nullish_string(data: &serde_json::Map<String, Value>, key: &str) -> Option<Option<String>> {
     match data.get(key) {
         None | Some(Value::Null) => Some(None),
@@ -27,6 +35,10 @@ fn nullish_string(data: &serde_json::Map<String, Value>, key: &str) -> Option<Op
     }
 }
 
+#[expect(
+    clippy::option_option,
+    reason = "the outer None marks a malformed field; the inner None an absent or null one"
+)]
 fn optional_string(data: &serde_json::Map<String, Value>, key: &str) -> Option<Option<String>> {
     match data.get(key) {
         None => Some(None),

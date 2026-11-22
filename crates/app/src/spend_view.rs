@@ -1,3 +1,4 @@
+use desafinado_core::log_err::LogErr;
 use std::sync::Arc;
 
 use chrono::{FixedOffset, Utc};
@@ -52,11 +53,11 @@ impl SpendView {
     }
 
     pub fn reload(&mut self, cx: &mut Context<Self>) {
-        let services = self.services.clone();
+        let services = Arc::clone(&self.services);
         let work = cx.background_spawn(async move { services.log.read_all() });
         self._task = Some(cx.spawn(async move |this, cx| {
             let result = work.await;
-            let _ = this.update(cx, |this, cx| {
+            this.update(cx, |this, cx| {
                 this.loaded = match result {
                     Ok(records) => Loaded::Ready(records),
                     Err(error) => {
@@ -64,7 +65,8 @@ impl SpendView {
                     }
                 };
                 cx.notify();
-            });
+            })
+            .log_warn();
         }));
     }
 }
@@ -162,7 +164,7 @@ fn share_bar(id: SharedString, index: usize, share: f64, roles: Roles) -> Div {
 }
 
 fn tokens(input: Option<f64>, output: Option<f64>) -> String {
-    let count = |value: Option<f64>| value.map(format_count).unwrap_or_else(|| "–".into());
+    let count = |value: Option<f64>| value.map_or_else(|| "–".into(), format_count);
     format!("{} / {}", count(input), count(output))
 }
 
@@ -251,10 +253,7 @@ fn recent_table(
                     record.task.clone(),
                     served_by(record),
                     tokens(record.tokens.input, record.tokens.output),
-                    record
-                        .cost_usd
-                        .map(format_usd)
-                        .unwrap_or_else(|| "–".into()),
+                    record.cost_usd.map_or_else(|| "–".into(), format_usd),
                     format_latency(record.latency_ms.client),
                     finish_of(record),
                 ],
@@ -356,9 +355,7 @@ fn tiles(report: &SpendReport, roles: Roles) -> Div {
         ))
         .child(tile(
             "Per call",
-            average_cost(total)
-                .map(format_usd)
-                .unwrap_or_else(|| "–".into()),
+            average_cost(total).map_or_else(|| "–".into(), format_usd),
             Some("Average of priced calls".into()),
             roles,
         ))

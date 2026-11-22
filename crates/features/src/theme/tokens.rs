@@ -175,8 +175,8 @@ mod tests {
             .map(|(n, _)| *n)
             .collect();
         let mut names = THEME_VARIABLE_NAMES.to_vec();
-        written.sort();
-        names.sort();
+        written.sort_unstable();
+        names.sort_unstable();
         assert_eq!(names, written);
     }
 

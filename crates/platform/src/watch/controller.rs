@@ -1,6 +1,7 @@
+use desafinado_core::log_err::LogErr;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, channel};
+use std::sync::mpsc::{Receiver, RecvError, RecvTimeoutError, Sender, channel};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -14,7 +15,7 @@ use crate::library::LibrarySnapshot;
 
 pub const DEFAULT_DELAY_MS: u64 = 250;
 pub const DEFAULT_MAX_WAIT_MS: u64 = 1000;
-const OWN_WRITE_WINDOW: Duration = Duration::from_millis(2000);
+const OWN_WRITE_WINDOW: Duration = Duration::from_secs(2);
 
 type PathLookup = Box<dyn Fn(&str) -> Option<String> + Send>;
 type EntriesLookup = Box<dyn Fn(&str) -> Option<RootEntries> + Send>;
@@ -174,11 +175,13 @@ impl Worker {
         let commands = self.commands.clone();
         let owned = dir.to_owned();
         let sink = Box::new(move |message: RawWatchMessage| {
-            let _ = commands.send(Command::Raw {
-                dir: owned.clone(),
-                id,
-                message,
-            });
+            commands
+                .send(Command::Raw {
+                    dir: owned.clone(),
+                    id,
+                    message,
+                })
+                .log_warn();
         });
         match self.config.watch.watch(Path::new(dir), sink) {
             Ok(handle) => {
@@ -320,7 +323,7 @@ impl Worker {
                 self.own_writes.push((real, Instant::now()));
             }
             Command::Barrier(reply) => {
-                let _ = reply.send(());
+                reply.send(()).log_warn();
             }
             Command::Close => return false,
         }
@@ -331,7 +334,9 @@ impl Worker {
         self.reconcile();
         loop {
             let received = match self.deadline {
-                None => receiver.recv().map_err(|_| RecvTimeoutError::Disconnected),
+                None => receiver
+                    .recv()
+                    .map_err(|RecvError| RecvTimeoutError::Disconnected),
                 Some(deadline) => {
                     receiver.recv_timeout(deadline.saturating_duration_since(Instant::now()))
                 }
@@ -381,23 +386,25 @@ impl ExternalChangesController {
     }
 
     pub fn watch_file(&self, path: Option<&str>) {
-        let _ = self
-            .commands
-            .send(Command::WatchFile(path.map(str::to_owned)));
+        self.commands
+            .send(Command::WatchFile(path.map(str::to_owned)))
+            .log_warn();
     }
 
     pub fn roots_changed(&self) {
-        let _ = self.commands.send(Command::RootsChanged);
+        self.commands.send(Command::RootsChanged).log_warn();
     }
 
     pub fn note_own_write(&self, path: &str) {
-        let _ = self.commands.send(Command::OwnWrite(path.to_owned()));
+        self.commands
+            .send(Command::OwnWrite(path.to_owned()))
+            .log_warn();
     }
 
     pub fn settle(&self) {
         let (reply, done) = channel();
         if self.commands.send(Command::Barrier(reply)).is_ok() {
-            let _ = done.recv_timeout(Duration::from_secs(10));
+            done.recv_timeout(Duration::from_secs(10)).log_warn();
         }
     }
 
@@ -406,9 +413,11 @@ impl ExternalChangesController {
     }
 
     fn shutdown(&mut self) {
-        let _ = self.commands.send(Command::Close);
-        if let Some(worker) = self.worker.take() {
-            let _ = worker.join();
+        self.commands.send(Command::Close).log_warn();
+        if let Some(worker) = self.worker.take()
+            && worker.join().is_err()
+        {
+            log::error!("The file watcher thread panicked");
         }
     }
 }
@@ -452,7 +461,7 @@ mod tests {
             self.sinks.lock().unwrap().insert(key.clone(), sink);
             Ok(Box::new(FakeHandle {
                 dir: key,
-                sinks: self.sinks.clone(),
+                sinks: Arc::clone(&self.sinks),
             }))
         }
     }
@@ -492,16 +501,16 @@ mod tests {
                 file_system: &RealFileSystem,
             })
         };
-        let sink_emitted = emitted.clone();
+        let sink_emitted = Arc::clone(&emitted);
         let mut config = WatchConfig::new(list, move |changes| {
-            sink_emitted.lock().unwrap().push(changes)
+            sink_emitted.lock().unwrap().push(changes);
         });
         config.watch = Box::new(FakeWatch {
-            sinks: sinks.clone(),
-            opened: opened.clone(),
+            sinks: Arc::clone(&sinks),
+            opened: Arc::clone(&opened),
         });
         config.delay = Duration::from_millis(delay_ms);
-        config.max_wait = Duration::from_millis(1000);
+        config.max_wait = Duration::from_secs(1);
         let controller = ExternalChangesController::start(config);
         controller.settle();
         Rig {
@@ -661,7 +670,7 @@ mod tests {
         let sinks: Sinks = Arc::default();
         let home = base.join("home").to_string_lossy().into_owned();
         let data = base.join("data");
-        let sink_emitted = emitted.clone();
+        let sink_emitted = Arc::clone(&emitted);
         let mut config = WatchConfig::new(
             move || {
                 let store = RootsStore::new(&data);
@@ -674,7 +683,7 @@ mod tests {
             move |c| sink_emitted.lock().unwrap().push(c),
         );
         config.watch = Box::new(FakeWatch {
-            sinks: sinks.clone(),
+            sinks: Arc::clone(&sinks),
             opened: Arc::default(),
         });
         config.delay = Duration::from_millis(150);
@@ -713,7 +722,7 @@ mod tests {
     #[test]
     fn closing_stops_every_watch() {
         let r = rig(30);
-        let sinks = r.sinks.clone();
+        let sinks = Arc::clone(&r.sinks);
         let _ = r.opened.lock().unwrap().len();
         r.controller.close();
         assert!(sinks.lock().unwrap().is_empty());

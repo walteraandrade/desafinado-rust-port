@@ -98,7 +98,10 @@ mod tests {
     fn find(text: String, left_out: &[&str]) -> Vec<Risk> {
         find_risks(&RiskInput {
             skill_text: text,
-            left_out: left_out.iter().map(|s| s.to_string()).collect(),
+            left_out: left_out
+                .iter()
+                .map(std::string::ToString::to_string)
+                .collect(),
         })
     }
 

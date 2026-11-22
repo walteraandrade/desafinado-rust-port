@@ -93,36 +93,38 @@ pub fn save_file_as_request(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::cell::Cell;
     use std::os::unix::fs::symlink;
     use std::path::PathBuf;
+    use std::sync::Mutex;
+    use std::sync::atomic::{AtomicU32, Ordering};
 
     struct Fake {
         file: Option<PathBuf>,
-        asked: Cell<u32>,
-        suggested: std::cell::RefCell<Vec<String>>,
+        asked: AtomicU32,
+        suggested: Mutex<Vec<String>>,
     }
-
-    unsafe impl Sync for Fake {}
 
     impl Fake {
         fn new(file: Option<PathBuf>) -> Self {
             Self {
                 file,
-                asked: Cell::new(0),
-                suggested: Default::default(),
+                asked: AtomicU32::new(0),
+                suggested: Mutex::default(),
             }
         }
     }
 
     impl FileDialogs for Fake {
         fn pick_file(&self) -> Option<PathBuf> {
-            self.asked.set(self.asked.get() + 1);
+            self.asked.fetch_add(1, Ordering::Relaxed);
             self.file.clone()
         }
         fn pick_save_path(&self, suggested_name: &str) -> Option<PathBuf> {
-            self.asked.set(self.asked.get() + 1);
-            self.suggested.borrow_mut().push(suggested_name.to_owned());
+            self.asked.fetch_add(1, Ordering::Relaxed);
+            self.suggested
+                .lock()
+                .unwrap()
+                .push(suggested_name.to_owned());
             self.file.clone()
         }
         fn pick_folder(&self) -> Option<PathBuf> {
@@ -190,7 +192,7 @@ mod tests {
         let dialogs = Fake::new(Some(path.clone()));
         let result = save_file_as_request("# N\n", "dir/notes.md", &dialogs);
         assert!(matches!(result, FileSaveResult::Saved { .. }));
-        assert_eq!(dialogs.suggested.borrow().as_slice(), ["notes.md"]);
+        assert_eq!(dialogs.suggested.lock().unwrap().as_slice(), ["notes.md"]);
         assert_eq!(fs::read_to_string(&path).unwrap(), "# N\n");
     }
 
@@ -242,6 +244,6 @@ mod tests {
         );
         let fake = Fake::new(None);
         assert_eq!(save_file_as_request("x", "dir/", &fake), invalid_save());
-        assert_eq!(fake.asked.get(), 0);
+        assert_eq!(fake.asked.load(Ordering::Relaxed), 0);
     }
 }

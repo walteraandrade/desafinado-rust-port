@@ -1,3 +1,4 @@
+use desafinado_core::log_err::LogErr;
 use std::{
     sync::Arc,
     time::{Duration, Instant},
@@ -234,7 +235,7 @@ impl FakeAi {
                 first_suggestion_ms,
             },
         });
-        let _ = log.append(&record);
+        log.append(&record).log_err();
     }
 
     fn answer(
@@ -524,7 +525,7 @@ mod tests {
             }),
             context: ReviewValidationContext {
                 blocks,
-                occupied: Default::default(),
+                occupied: std::collections::BTreeSet::new(),
             },
         }
     }

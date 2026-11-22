@@ -195,14 +195,14 @@ pub struct ReadingCode(pub Arc<CodeHighlighter>);
 impl Global for ReadingCode {}
 
 pub fn reading_code(cx: &App) -> Arc<CodeHighlighter> {
-    cx.global::<ReadingCode>().0.clone()
+    Arc::clone(&cx.global::<ReadingCode>().0)
 }
 
 fn code_highlighter(theme: HighlightTheme) -> Arc<CodeHighlighter> {
     Arc::new(move |block: &CodeBlock| {
         thread_local! {
             static HIGHLIGHTERS: std::cell::RefCell<std::collections::HashMap<String, SyntaxHighlighter>> =
-                Default::default();
+                std::cell::RefCell::default();
         }
         let Some(lang) = block.lang() else {
             return Vec::new();

@@ -1,3 +1,4 @@
+use desafinado_core::log_err::LogErr;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -156,7 +157,9 @@ impl KeyStore {
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, State> {
-        self.state.lock().unwrap_or_else(|e| e.into_inner())
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     fn details(&self, state: &State) -> KeyDetails {
@@ -223,7 +226,7 @@ impl KeyStore {
         };
         if self.file.write(&serialize(format, &data)).is_err() {
             if format == StoredFormat::Keyring && state.on_disk != Some(StoredFormat::Keyring) {
-                let _ = self.keyring.delete();
+                self.keyring.delete().log_err();
             }
             return None;
         }
@@ -238,7 +241,7 @@ impl KeyStore {
 
     fn keep_for_session(&self, state: &mut State, key: &str) -> Held {
         if self.stored_format() != Some(StoredFormat::Keyring) {
-            let _ = self.file.remove();
+            self.file.remove().log_err();
             state.on_disk = None;
         }
         Held::with(key.to_owned(), KeyStorage::Session)
@@ -271,8 +274,8 @@ impl KeyStore {
 
     pub fn clear(&self) -> KeyDetails {
         let mut state = self.lock();
-        let _ = self.file.remove();
-        let _ = self.keyring.delete();
+        self.file.remove().log_err();
+        self.keyring.delete().log_err();
         state.on_disk = None;
         state.held = Held::none();
         self.details(&state)

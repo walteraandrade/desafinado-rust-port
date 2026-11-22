@@ -415,7 +415,7 @@ impl Render for EvalRunDialog {
                             )
                             .when(ready, |this| {
                                 this.on_click(cx.listener(|this, _, window, cx| {
-                                    this.submit(&SubmitEvalRun, window, cx)
+                                    this.submit(&SubmitEvalRun, window, cx);
                                 }))
                             }),
                         ),

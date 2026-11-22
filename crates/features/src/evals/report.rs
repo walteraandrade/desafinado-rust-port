@@ -317,7 +317,7 @@ mod tests {
                 summary: EvalSummary {
                     claude_version: "2.1.319".into(),
                     started_at: "2026-11-07T20:03:24.309Z".into(),
-                    cost_usd: 0.00265497,
+                    cost_usd: 0.002_654_97,
                     cases: vec![CaseTally {
                         name: "greet".into(),
                         with: Tally {
@@ -488,6 +488,10 @@ mod tests {
         }
     }
 
+    #[expect(
+        clippy::option_option,
+        reason = "mirrors fired: None when the run has no report"
+    )]
     fn fired_with(grader: Value, skill_name: &str) -> Option<Option<bool>> {
         let text = edited(|report| {
             report["suite"]["plugins"] = json!([{ "name": skill_name }]);

@@ -1,6 +1,7 @@
+use desafinado_core::log_err::LogErr;
 use std::io::{Read, Write};
 use std::path::Path;
-use std::sync::Mutex;
+use std::sync::{Mutex, PoisonError};
 
 use flate2::Compression;
 use flate2::read::GzDecoder;
@@ -74,10 +75,7 @@ pub struct HistoryDb {
 }
 
 fn sha256(text: &str) -> String {
-    Sha256::digest(text.as_bytes())
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect()
+    desafinado_ai::text::lower_hex(&Sha256::digest(text.as_bytes()))
 }
 
 fn gzip(text: &str) -> Result<Vec<u8>> {
@@ -100,7 +98,7 @@ fn in_transaction<T>(connection: &Connection, run: impl FnOnce() -> Result<T>) -
             Ok(value)
         }
         Err(error) => {
-            let _ = connection.execute_batch("rollback");
+            connection.execute_batch("rollback").log_warn();
             Err(error)
         }
     }
@@ -126,7 +124,8 @@ fn prepare_schema(connection: &Connection) -> Result<()> {
 }
 
 fn cause_of(json: &str) -> Result<VersionCause> {
-    serde_json::from_str(json).map_err(|_| HistoryError("Unexpected History cause".into()))
+    serde_json::from_str(json)
+        .map_err(|error| HistoryError(format!("Unexpected History cause: {error}")))
 }
 
 struct Latest {
@@ -144,7 +143,9 @@ impl HistoryDb {
     pub fn open(file: &Path) -> Result<Self> {
         let connection = Connection::open(file)?;
         if let Err(error) = prepare_schema(&connection) {
-            let _ = connection.close();
+            if let Err((_, close_error)) = connection.close() {
+                log::warn!("History database did not close cleanly: {close_error}");
+            }
             return Err(error);
         }
         Ok(Self {
@@ -162,7 +163,7 @@ impl HistoryDb {
         let guard = self
             .connection
             .lock()
-            .map_err(|_| HistoryError("History database lock poisoned".into()))?;
+            .unwrap_or_else(PoisonError::into_inner);
         match guard.as_ref() {
             Some(connection) => run(connection),
             None => Err(HistoryError("History database is closed".into())),
@@ -399,17 +400,14 @@ impl HistoryStore for HistoryDb {
                         |row| row.get(0),
                     )
                     .optional()?;
-                let target = match held {
-                    Some(id) => id,
-                    None => {
-                        let latest = Self::latest_of(connection, file_id)?;
-                        let record = RecordInput {
-                            at: input.at,
-                            cause: VersionCause::Edited,
-                            text: input.text.clone(),
-                        };
-                        Self::append(connection, file_id, &record, &hash, &body, latest.as_ref())?
-                    }
+                let target = if let Some(id) = held { id } else {
+                    let latest = Self::latest_of(connection, file_id)?;
+                    let record = RecordInput {
+                        at: input.at,
+                        cause: VersionCause::Edited,
+                        text: input.text.clone(),
+                    };
+                    Self::append(connection, file_id, &record, &hash, &body, latest.as_ref())?
                 };
                 connection.execute(
                     "update versions set saved = ? where id = ?",

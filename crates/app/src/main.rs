@@ -1,3 +1,4 @@
+use desafinado_core::log_err::LogErr;
 mod document;
 mod editor_pane;
 mod eval_run_dialog;
@@ -8,6 +9,7 @@ mod history_view;
 mod key_dialog;
 mod last_file;
 mod library_panel;
+mod logger;
 mod menu_nav;
 mod model_dialog;
 mod new_skill_dialog;
@@ -59,7 +61,7 @@ fn window_options(cx: &mut App) -> WindowOptions {
 fn start_failure() -> Option<String> {
     let dir = user_data_dir();
     ensure_user_data_dir(&dir)
-        .and_then(|_| {
+        .and_then(|()| {
             let probe = dir.join(".write-check");
             std::fs::write(&probe, b"")?;
             std::fs::remove_file(probe)
@@ -78,9 +80,9 @@ fn show_start_error(message: String) {
         .with_assets(gpui_kit::assets::Assets::new(""))
         .run(move |cx| {
             gpui_kit::init(cx);
-            let _ = cx
-                .text_system()
-                .add_fonts(FONTS.iter().map(|font| Cow::Borrowed(*font)).collect());
+            cx.text_system()
+                .add_fonts(FONTS.iter().map(|font| Cow::Borrowed(*font)).collect())
+                .log_err();
             theme::apply_default(cx);
             let options = window_options(cx);
             gpui_kit::open_window(options, cx, |_, cx| {
@@ -98,8 +100,9 @@ fn show_start_error(message: String) {
 }
 
 fn main() {
+    logger::init();
     if let Some(message) = start_failure() {
-        eprintln!("Failed to start: {message}");
+        log::error!("Failed to start: {message}");
         show_start_error(message);
         return;
     }
@@ -111,12 +114,12 @@ fn main() {
         cwd: cwd.clone(),
     };
     let instance = match single_instance::claim(&user_data_dir(), &message, move |message| {
-        let _ = sender.unbounded_send(message);
+        sender.unbounded_send(message).log_warn();
     }) {
         Ok(Claim::HandedOver) => return,
         Ok(Claim::Primary(primary)) => Some(primary),
         Err(error) => {
-            eprintln!("Could not claim the single instance: {error}");
+            log::error!("Could not claim the single instance: {error}");
             None
         }
     };
@@ -128,9 +131,9 @@ fn main() {
         .with_assets(gpui_kit::assets::Assets::new(""))
         .run(move |cx| {
             gpui_kit::init(cx);
-            let _ = cx
-                .text_system()
-                .add_fonts(FONTS.iter().map(|font| Cow::Borrowed(*font)).collect());
+            cx.text_system()
+                .add_fonts(FONTS.iter().map(|font| Cow::Borrowed(*font)).collect())
+                .log_err();
             theme::init(&services.user_data, cx);
             workspace::init(cx);
             preferences_view::init(cx);

@@ -45,14 +45,17 @@ pub fn has_unsaved_changes(session: Option<&FileSession>, text: &str, baseline: 
 }
 
 pub fn history_key(path: Option<&Path>) -> String {
-    path.map(|path| path.to_string_lossy().into_owned())
-        .unwrap_or_else(|| SCRATCH_KEY.to_string())
+    path.map_or_else(
+        || SCRATCH_KEY.to_string(),
+        |path| path.to_string_lossy().into_owned(),
+    )
 }
 
 pub fn name_of(path: &Path) -> String {
-    path.file_name()
-        .map(|name| name.to_string_lossy().into_owned())
-        .unwrap_or_else(|| path.to_string_lossy().into_owned())
+    path.file_name().map_or_else(
+        || path.to_string_lossy().into_owned(),
+        |name| name.to_string_lossy().into_owned(),
+    )
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -63,12 +66,34 @@ pub enum ExternalVerdict {
     Notice,
 }
 
+/// What the disk held for the open file: its text, or nothing because the file is gone.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DiskState<T> {
+    Text(T),
+    Missing,
+}
+
+impl<T> DiskState<T> {
+    pub fn of(disk: Option<T>) -> Self {
+        disk.map_or(Self::Missing, Self::Text)
+    }
+}
+
+impl DiskState<String> {
+    pub fn as_deref(&self) -> DiskState<&str> {
+        match self {
+            Self::Text(text) => DiskState::Text(text),
+            Self::Missing => DiskState::Missing,
+        }
+    }
+}
+
 pub struct ExternalFacts<'a> {
     pub disk: Option<&'a str>,
     pub saved_text: &'a str,
     pub document: &'a str,
     pub writing: Option<&'a str>,
-    pub noticed: Option<Option<&'a str>>,
+    pub noticed: Option<DiskState<&'a str>>,
 }
 
 pub fn decide_external_change(facts: &ExternalFacts) -> ExternalVerdict {
@@ -85,13 +110,12 @@ pub fn decide_external_change(facts: &ExternalFacts) -> ExternalVerdict {
     if disk == Some(saved_text) {
         return ExternalVerdict::Settled;
     }
-    if noticed == Some(disk) {
+    if noticed == Some(DiskState::of(disk)) {
         return ExternalVerdict::Nothing;
     }
     match disk {
-        None => ExternalVerdict::Notice,
         Some(disk) if document == saved_text || document == disk => ExternalVerdict::Reload,
-        Some(_) => ExternalVerdict::Notice,
+        _ => ExternalVerdict::Notice,
     }
 }
 
@@ -143,8 +167,7 @@ pub fn minimal_change(before: &str, after: &str) -> MinimalChange {
         .char_indices()
         .zip(after.chars())
         .find(|((_, a), b)| a != b)
-        .map(|((index, _), _)| index)
-        .unwrap_or_else(|| before.len().min(after.len()));
+        .map_or_else(|| before.len().min(after.len()), |((index, _), _)| index);
     let prefix = floor_boundary(after, floor_boundary(before, prefix));
     let limit = (before.len() - prefix).min(after.len() - prefix);
     let suffix = before[prefix..]
@@ -183,7 +206,7 @@ mod tests {
         saved: &'a str,
         document: &'a str,
         writing: Option<&'a str>,
-        noticed: Option<Option<&'a str>>,
+        noticed: Option<DiskState<&'a str>>,
     ) -> ExternalVerdict {
         decide_external_change(&ExternalFacts {
             disk,
@@ -226,15 +249,21 @@ mod tests {
     #[test]
     fn notices_the_same_disk_text_once() {
         assert_eq!(
-            facts(Some("new"), "s", "mine", None, Some(Some("new"))),
+            facts(Some("new"), "s", "mine", None, Some(DiskState::Text("new"))),
             ExternalVerdict::Nothing
         );
         assert_eq!(
-            facts(None, "s", "mine", None, Some(None)),
+            facts(None, "s", "mine", None, Some(DiskState::Missing)),
             ExternalVerdict::Nothing
         );
         assert_eq!(
-            facts(Some("newer"), "s", "mine", None, Some(Some("new"))),
+            facts(
+                Some("newer"),
+                "s",
+                "mine",
+                None,
+                Some(DiskState::Text("new"))
+            ),
             ExternalVerdict::Notice
         );
     }

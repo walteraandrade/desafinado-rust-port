@@ -1,3 +1,4 @@
+use desafinado_core::log_err::LogErr;
 use std::{
     collections::BTreeMap,
     path::PathBuf,
@@ -43,7 +44,7 @@ impl Services {
             .ok()
             .and_then(|mut pending| pending.remove(&id));
         if held.is_some() {
-            let _ = self.log.append(&record);
+            self.log.append(&record).log_err();
         }
     }
 
@@ -54,13 +55,13 @@ impl Services {
             .map(|mut pending| std::mem::take(&mut *pending))
             .unwrap_or_default();
         for record in held.values() {
-            let _ = self.log.append(record);
+            self.log.append(record).log_err();
         }
     }
 
     pub fn load() -> Arc<Self> {
         let user_data = user_data_dir();
-        let _ = std::fs::create_dir_all(&user_data);
+        std::fs::create_dir_all(&user_data).log_err();
         let keys = KeyStore::new(
             Box::new(SecretServiceKeyring),
             Box::new(FsKeyFile::new(key_file_path(&user_data))),
@@ -89,7 +90,7 @@ impl Services {
 
     pub fn set_model(&self, model: &str) {
         let model = resolve_model(Some(model));
-        let _ = std::fs::write(self.user_data.join(MODEL_FILE), &model);
+        std::fs::write(self.user_data.join(MODEL_FILE), &model).log_err();
         if let Ok(mut current) = self.model.lock() {
             *current = model;
         }
@@ -107,7 +108,7 @@ impl Services {
     }
 
     pub fn use_default_model(&self) {
-        let _ = std::fs::remove_file(self.user_data.join(MODEL_FILE));
+        std::fs::remove_file(self.user_data.join(MODEL_FILE)).log_err();
         if let Ok(mut current) = self.model.lock() {
             *current = self.default_model();
         }

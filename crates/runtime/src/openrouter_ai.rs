@@ -7,7 +7,7 @@ use std::{
 };
 
 use desafinado_ai::{
-    edits::check_suggestion,
+    edits::{InvalidSuggestion, check_suggestion},
     errors::is_retryable_output_error,
     records::{CallObservation, CallOutcome, CallTiming, ShapeRecordInput, shape_ai_call_record},
     request::{
@@ -54,7 +54,7 @@ impl OpenRouterAi {
         observation: CallObservation,
         timing: CallTiming,
     ) {
-        let services = self.services.clone();
+        let services = Arc::clone(&self.services);
         let task = task.to_string();
         let response_id = observation.response_id.clone();
         let shape = move |generation| {
@@ -179,19 +179,20 @@ impl AiBackend for OpenRouterAi {
                 let mut first_element: Option<f64> = None;
                 let mut first_suggestion: Option<f64> = None;
                 let mut validated = 0;
-                let result = client.chat_stream_collect(&body, Some(abort.clone()), &mut |delta| {
-                    if abort.load(Ordering::SeqCst) {
-                        return;
-                    }
-                    first_element.get_or_insert(clock.elapsed().as_millis() as f64);
-                    let alive = feed_review(&mut stream, delta, emit, &mut || {
-                        validated += 1;
-                        first_suggestion.get_or_insert(clock.elapsed().as_millis() as f64);
+                let result =
+                    client.chat_stream_collect(&body, Some(Arc::clone(&abort)), &mut |delta| {
+                        if abort.load(Ordering::SeqCst) {
+                            return;
+                        }
+                        first_element.get_or_insert(clock.elapsed().as_millis() as f64);
+                        let alive = feed_review(&mut stream, delta, emit, &mut || {
+                            validated += 1;
+                            first_suggestion.get_or_insert(clock.elapsed().as_millis() as f64);
+                        });
+                        if !alive {
+                            abort.store(true, Ordering::SeqCst);
+                        }
                     });
-                    if !alive {
-                        abort.store(true, Ordering::SeqCst);
-                    }
-                });
                 let stopped = abort.load(Ordering::SeqCst);
                 let (failure, observation) = match result {
                     _ if stopped => (Some(stopped_error()), CallObservation::default()),
@@ -225,8 +226,10 @@ fn checked_suggestion(original: &str, content: &str) -> Result<SuggestionResult,
     let output = parse_suggestion(content).ok_or_else(|| ClientError::InvalidOutput {
         message: "The answer did not match the schema".into(),
     })?;
-    check_suggestion(original, &output).map_err(|_| ClientError::InvalidOutput {
-        message: "The replacement was empty".into(),
+    check_suggestion(original, &output).map_err(|InvalidSuggestion::Empty| {
+        ClientError::InvalidOutput {
+            message: "The replacement was empty".into(),
+        }
     })
 }
 
