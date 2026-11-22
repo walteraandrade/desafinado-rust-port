@@ -1,3 +1,4 @@
+pub mod caret;
 pub mod diff;
 pub mod evals;
 pub mod history;

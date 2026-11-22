@@ -52,6 +52,7 @@ use futures::{FutureExt as _, StreamExt as _, channel::mpsc::UnboundedReceiver, 
 use gpui_kit::{component::TitleBar, prelude::FluentBuilder as _, *};
 
 use crate::{
+    caret,
     document::{
         Conflict, DiskState, ExternalFacts, ExternalVerdict, FileSession, SCRATCH_KEY,
         UNTITLED_NAME, decide_external_change, edited_session, has_unsaved_changes, history_key,
@@ -78,7 +79,15 @@ use desafinado_ai::quick_action_settings::{
     QuickActionSettings, default_quick_action_settings, enabled_quick_actions,
     parse_quick_action_settings, serialize_quick_action_settings,
 };
+use desafinado_features::caret::CaretSettings;
 use desafinado_platform::quick_actions::{load_quick_actions, save_quick_actions};
+
+/// The writes of Preferences that are still on their way to disk, each after the one before.
+#[derive(Default)]
+struct SettingsSaves {
+    quick_actions: Option<Task<()>>,
+    caret: Option<Task<()>>,
+}
 
 const HISTORY_IDLE_MS: i64 = 30_000;
 const UNSAVED_DELAY: Duration = Duration::from_millis(400);
@@ -431,7 +440,7 @@ pub struct Workspace {
     menu_focus: FocusHandle,
     menu_return: Option<FocusHandle>,
     quick_actions: QuickActionSettings,
-    quick_actions_saving: Option<Task<()>>,
+    settings_saves: SettingsSaves,
     key_present: bool,
     preferences: Option<Entity<PreferencesPanel>>,
     key_dialog: Option<Entity<KeyDialog>>,
@@ -530,7 +539,7 @@ impl Workspace {
             menu_focus: cx.focus_handle(),
             menu_return: None,
             quick_actions,
-            quick_actions_saving: None,
+            settings_saves: SettingsSaves::default(),
             key_present,
             preferences: None,
             key_dialog: None,
@@ -2161,6 +2170,7 @@ impl Workspace {
                 PreferencesEvent::QuickActions(settings) => {
                     this.change_quick_actions(settings.clone(), cx);
                 }
+                PreferencesEvent::Caret(settings) => this.change_caret(*settings, cx),
             },
         );
         self._dialog_subscriptions.push(events);
@@ -2195,9 +2205,9 @@ impl Workspace {
         });
         let user_data = self.services.user_data.clone();
         let text = serialize_quick_action_settings(&settings);
-        let previous = self.quick_actions_saving.take();
+        let previous = self.settings_saves.quick_actions.take();
         let write = cx.background_spawn(async move { save_quick_actions(&user_data, &text) });
-        self.quick_actions_saving = Some(cx.spawn(async move |this, cx| {
+        self.settings_saves.quick_actions = Some(cx.spawn(async move |this, cx| {
             if let Some(previous) = previous {
                 previous.await;
             }
@@ -2205,6 +2215,29 @@ impl Workspace {
                 log::error!("Quick actions could not be saved: {error}");
                 this.update(cx, |this, cx| {
                     this.notify("Quick actions could not be saved.", cx);
+                })
+                .log_warn();
+            }
+        }));
+    }
+
+    fn change_caret(&mut self, settings: CaretSettings, cx: &mut Context<Self>) {
+        let write = caret::choose(settings, cx);
+        self.pane.update(cx, |pane, cx| {
+            let editor = pane.editor.clone();
+            pane.caret.restart(&editor, cx);
+            cx.notify();
+        });
+        let previous = self.settings_saves.caret.take();
+        let write = cx.background_spawn(async move { write() });
+        self.settings_saves.caret = Some(cx.spawn(async move |this, cx| {
+            if let Some(previous) = previous {
+                previous.await;
+            }
+            if let Err(error) = write.await {
+                log::error!("Caret settings could not be saved: {error}");
+                this.update(cx, |this, cx| {
+                    this.notify("Caret settings could not be saved.", cx);
                 })
                 .log_warn();
             }
