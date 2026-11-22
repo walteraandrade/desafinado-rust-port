@@ -1154,6 +1154,35 @@ impl<M: InputModeKind> InputBaseState<M> {
         cx.notify();
     }
 
+    /// Show text inside lines that is not part of the document, such as a suggested
+    /// insertion. Replaces the previous inlays; they follow edits until set again.
+    pub fn set_inlays(&mut self, inlays: Vec<crate::input::Inlay>, cx: &mut Context<Self>) {
+        if self.display_map.inlays() == inlays.as_slice() {
+            return;
+        }
+        self.display_map.set_inlays(inlays);
+        cx.notify();
+    }
+
+    /// The inlays, sorted by offset.
+    pub fn inlays(&self) -> &[crate::input::Inlay] {
+        self.display_map.inlays()
+    }
+
+    /// Reserve empty rows below lines, where the application draws its own elements.
+    /// Replaces the previous zones; they follow edits until set again.
+    pub fn set_block_zones(&mut self, zones: Vec<crate::input::BlockZone>, cx: &mut Context<Self>) {
+        let mut zones: Vec<(usize, usize)> = zones
+            .iter()
+            .filter(|zone| zone.rows() > 0)
+            .map(|zone| (zone.offset().min(self.text.len()), zone.rows()))
+            .collect();
+        zones.sort_unstable();
+        if self.display_map.set_zones(zones.into(), cx) {
+            cx.notify();
+        }
+    }
+
     /// Fills each folded line across the editor, as VS Code's
     /// `editor.foldBackground`.
     pub fn set_fold_background(&mut self, color: Option<Hsla>, cx: &mut Context<Self>) {
@@ -3764,7 +3793,7 @@ impl<M: InputModeKind> InputBaseState<M> {
             .zip(last_line_pos)
             .zip(last_layout.visible_line_byte_offsets.last())
             .map(|((line_layout, pos), line_start)| {
-                let last_row_top = (line_layout.size(line_height).height - line_height).max(px(0.));
+                let last_row_top = (line_layout.text_height(line_height) - line_height).max(px(0.));
                 let pos = point(pos.x, last_row_top);
                 (
                     self.resolve_index(line_start + line_layout.len()),

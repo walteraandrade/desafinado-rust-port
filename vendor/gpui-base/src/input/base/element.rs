@@ -1,4 +1,6 @@
-use crate::input::{DisplayMap, FoldRange, InputExtras as _, InputModeKind, OverviewRulerLane};
+use crate::input::{
+    DisplayMap, FoldRange, Inlay, InputExtras as _, InputModeKind, OverviewRulerLane,
+};
 use gpui::Corners;
 use gpui::Half;
 use gpui::{
@@ -13,12 +15,17 @@ use gpui::{
     relative, size,
 };
 use ropey::Rope;
+use unicode_segmentation::UnicodeSegmentation as _;
 use smallvec::SmallVec;
 use std::{collections::BTreeSet, ops::Range, rc::Rc};
 
 use crate::{
     Scrollbar,
-    input::{RopeExt as _, blink_cursor::CURSOR_WIDTH, display_map::LineLayout},
+    input::{
+        RopeExt as _,
+        blink_cursor::CURSOR_WIDTH,
+        display_map::{InlineFragment, InputLine, LineLayout},
+    },
 };
 
 use super::{
@@ -1151,6 +1158,7 @@ impl<M: InputModeKind> TextElement<M> {
                 offset = end;
                 y += last_layout.line_height;
             }
+            y += line.zone_rows * last_layout.line_height;
         }
         (!corners.is_empty()).then_some(corners)
     }
@@ -1774,7 +1782,7 @@ impl<M: InputModeKind> TextElement<M> {
                     });
                 }
 
-                offset_y += line.wrapped_lines.len() * last_layout.line_height;
+                offset_y += line.size(last_layout.line_height).height;
             }
 
             infos
@@ -1905,7 +1913,7 @@ impl<M: InputModeKind> TextElement<M> {
                         last_layout.alignment_offset(line.longest_width) + indent + last.width;
                     folded.push((buffer_line, offset_y, rows, end));
                 }
-                offset_y += rows * line_height;
+                offset_y += (rows + line.zone_rows) * line_height;
                 if let Some((row, height)) = ghost_rows
                     && row == buffer_line
                 {
@@ -2176,6 +2184,70 @@ impl<M: InputModeKind> TextElement<M> {
             })
             .child(child)
             .into_any_element()
+    }
+
+    /// Give the wrapping the width of each inlay, as an inline metric on the grapheme it sticks
+    /// to: the one before its offset, or the one after it at a line start. Inlays on an empty
+    /// line take no width in the wrapping.
+    fn measure_inlays(&self, font_size: Pixels, window: &mut Window, cx: &mut App) {
+        let state = self.state.read(cx);
+        if state.tokens_visible() {
+            return;
+        }
+        let inlays = state.display_map.inlays();
+        let font = window.text_style().font();
+        let measure = |text: &str, window: &mut Window| {
+            window
+                .text_system()
+                .shape_line(
+                    text.to_owned().into(),
+                    font_size,
+                    &[TextRun {
+                        len: text.len(),
+                        font: font.clone(),
+                        color: gpui::black(),
+                        background_color: None,
+                        underline: None,
+                        strikethrough: None,
+                    }],
+                    None,
+                )
+                .width
+        };
+        let mut metrics: Vec<(Range<usize>, Pixels)> = Vec::new();
+        let mut ix = 0;
+        while ix < inlays.len() {
+            let offset = inlays[ix].offset().min(state.text.len());
+            let mut width = px(0.);
+            while ix < inlays.len() && inlays[ix].offset().min(state.text.len()) == offset {
+                width += measure(inlays[ix].text(), window);
+                ix += 1;
+            }
+            let row = state.text.offset_to_point(offset).row;
+            let line_start = state.text.line_start_offset(row);
+            let line: String = state.text.slice_line(row).into();
+            let local = offset - line_start;
+            let anchor = if local > 0 {
+                line[..local]
+                    .grapheme_indices(true)
+                    .next_back()
+                    .map(|(start, _)| start..local)
+            } else {
+                line.grapheme_indices(true).next().map(|(_, g)| 0..g.len())
+            };
+            let Some(anchor) = anchor else {
+                continue;
+            };
+            let range = line_start + anchor.start..line_start + anchor.end;
+            if metrics.last().is_some_and(|(last, _)| last.end > range.start) {
+                continue;
+            }
+            let width = width + measure(&line[anchor], window);
+            metrics.push((range, width));
+        }
+        self.state.update(cx, |state, cx| {
+            state.display_map.set_inline_metrics(metrics.into(), cx);
+        });
     }
 
     fn measure_tokens(
@@ -2603,6 +2675,70 @@ impl<M: InputModeKind> TextElement<M> {
     }
 
     #[allow(clippy::too_many_arguments)]
+    /// Shape one wrapped row that holds inlays: its text in pieces between the inlays, and
+    /// each inlay in its own style, as inline fragments that keep source byte offsets.
+    #[allow(clippy::too_many_arguments)]
+    fn shape_inlay_row(
+        sub_line: &SharedString,
+        row_start: usize,
+        line_start: usize,
+        runs: &[TextRun],
+        inlays: &[&Inlay],
+        font_size: Pixels,
+        tab_stop: Pixels,
+        window: &mut Window,
+    ) -> InputLine {
+        let mut fragments = Vec::with_capacity(inlays.len() * 2 + 1);
+        let mut x = px(0.);
+        let mut offset = 0;
+        let pieces = inlays
+            .iter()
+            .map(|inlay| {
+                let at = (inlay.offset() - line_start)
+                    .saturating_sub(row_start)
+                    .min(sub_line.len());
+                (at, Some(*inlay))
+            })
+            .chain(std::iter::once((sub_line.len(), None)));
+        for (at, inlay) in pieces {
+            if offset < at {
+                let part = offset..at;
+                let mut shaped = window.text_system().shape_line(
+                    sub_line[part.clone()].to_owned().into(),
+                    font_size,
+                    &runs_for_range(runs, 0, &part),
+                    None,
+                );
+                expand_tabs(&mut shaped, tab_stop);
+                let width = shaped.width;
+                fragments.push(InlineFragment {
+                    range: part,
+                    x,
+                    width,
+                    text: Some(shaped),
+                });
+                x += width;
+                offset = at;
+            }
+            if let Some(inlay) = inlay {
+                let text = inlay.text().clone();
+                let run = window.text_style().highlight(*inlay.style()).to_run(text.len());
+                let shaped = window
+                    .text_system()
+                    .shape_line(text, font_size, &[run], None);
+                let width = shaped.width;
+                fragments.push(InlineFragment {
+                    range: at..at,
+                    x,
+                    width,
+                    text: Some(shaped),
+                });
+                x += width;
+            }
+        }
+        InputLine::inline(sub_line.clone(), fragments)
+    }
+
     fn layout_lines(
         state: &InputBaseState<M>,
         display_text: &Rope,
@@ -2666,6 +2802,7 @@ impl<M: InputModeKind> TextElement<M> {
             return vec![line_layout];
         }
 
+        let inlays = state.display_map.inlays();
         let mut lines = Vec::with_capacity(last_layout.visible_buffer_lines.len());
         // run_offset tracks position in the runs vec coordinate space (only visible line bytes).
         // This is separate from the visible_text offset because runs from highlight_lines
@@ -2682,9 +2819,12 @@ impl<M: InputModeKind> TextElement<M> {
             debug_assert_eq!(line_item.len(), line_text.len());
 
             let mut wrapped_lines: SmallVec<[ShapedLine; 1]> = SmallVec::with_capacity(1);
+            let mut inline_rows: SmallVec<[InputLine; 1]> = SmallVec::new();
             let mut line_has_background = false;
+            let line_start = state.text.line_start_offset(buffer_line);
+            let line_inlays = line_inlays(inlays, line_start, line_text.len());
 
-            for range in &line_item.wrapped_lines {
+            for (row, range) in line_item.wrapped_lines.iter().enumerate() {
                 let line_runs = runs_for_range(runs, run_offset, &range);
                 let line_runs = if bg_segments.is_empty() {
                     line_runs
@@ -2699,29 +2839,58 @@ impl<M: InputModeKind> TextElement<M> {
                 let sub_line: SharedString = line_text[range.clone()].to_string().into();
                 let line_runs =
                     align_runs_to_char_boundaries(&sub_line, &line_runs).unwrap_or(line_runs);
+                line_has_background |= has_background(&line_runs);
+                let row_inlays: Vec<&Inlay> = line_inlays
+                    .iter()
+                    .filter(|(local, _)| inlay_row_holds(*local, row, range))
+                    .map(|(_, inlay)| *inlay)
+                    .collect();
+                if !row_inlays.is_empty() || !inline_rows.is_empty() {
+                    if inline_rows.is_empty() {
+                        inline_rows.extend(wrapped_lines.drain(..).map(InputLine::from));
+                    }
+                    inline_rows.push(Self::shape_inlay_row(
+                        &sub_line,
+                        range.start,
+                        line_start,
+                        &line_runs,
+                        &row_inlays,
+                        font_size,
+                        tab_stop,
+                        window,
+                    ));
+                    continue;
+                }
                 let mut shaped_line = window
                     .text_system()
                     .shape_line(sub_line, font_size, &line_runs, None);
                 expand_tabs(&mut shaped_line, tab_stop);
-
-                line_has_background |= has_background(&line_runs);
                 wrapped_lines.push(shaped_line);
             }
 
             // Use the first visual line's indentation width for continuation lines.
-            let wrap_indent = if line_item.indent > 0 && wrapped_lines.len() > 1 {
+            let rows = wrapped_lines.len().max(inline_rows.len());
+            let wrap_indent = if line_item.indent > 0 && rows > 1 {
                 let indent_byte_len = line_text
                     .char_indices()
                     .nth(line_item.indent as usize)
                     .map(|(ix, _)| ix)
                     .unwrap_or(line_text.len());
-                wrapped_lines[0].x_for_index(indent_byte_len)
+                match inline_rows.first() {
+                    Some(first) => first.x_for_index(indent_byte_len),
+                    None => wrapped_lines[0].x_for_index(indent_byte_len),
+                }
             } else {
                 px(0.)
             };
 
-            let line_layout = LineLayout::new()
-                .lines(wrapped_lines)
+            let line_layout = if inline_rows.is_empty() {
+                LineLayout::new().lines(wrapped_lines)
+            } else {
+                LineLayout::new().inline_lines(inline_rows)
+            };
+            let line_layout = line_layout
+                .zone_rows(line_item.zone_rows)
                 .wrap_indent(wrap_indent)
                 .with_background(line_has_background)
                 .with_whitespaces(whitespace_indicators.clone());
@@ -3229,6 +3398,7 @@ impl<M: InputModeKind> Element for TextElement<M> {
         }
 
         let line_height = window.line_height();
+        self.measure_inlays(text_size, window, cx);
         let token_elements = self.measure_tokens(
             (bounds.size.width - line_number_width - RIGHT_MARGIN).max(px(1.)),
             line_height,
@@ -3620,7 +3790,7 @@ impl<M: InputModeKind> Element for TextElement<M> {
                         .text_system()
                         .shape_line(line_no, text_size, &runs, None),
                 );
-                for _ in 0..line.wrapped_lines.len().saturating_sub(1) {
+                for _ in 0..(line.wrapped_lines.len() + line.zone_rows).saturating_sub(1) {
                     sub_lines.push(ShapedLine::default());
                 }
                 line_numbers.push(sub_lines);
@@ -4161,6 +4331,27 @@ fn placeholder_line_runs<'a>(
 /// Get the runs for the given range.
 ///
 /// The range is the byte range of the wrapped line.
+/// The inlays of one buffer line, with their offsets local to the line.
+fn line_inlays(inlays: &[Inlay], line_start: usize, line_len: usize) -> Vec<(usize, &Inlay)> {
+    let first = inlays.partition_point(|inlay| inlay.offset() < line_start);
+    inlays[first..]
+        .iter()
+        .take_while(|inlay| inlay.offset() <= line_start + line_len)
+        .map(|inlay| (inlay.offset() - line_start, inlay))
+        .collect()
+}
+
+/// Whether the wrapped row `row` spanning `range` shows an inlay at the line-local offset
+/// `local`. An inlay sticks to the grapheme before it, so a row boundary offset belongs to
+/// the row that ends there; at the line start it belongs to the first row.
+fn inlay_row_holds(local: usize, row: usize, range: &Range<usize>) -> bool {
+    if local == 0 {
+        row == 0
+    } else {
+        local > range.start && local <= range.end
+    }
+}
+
 pub(super) fn runs_for_range(
     runs: &[TextRun],
     line_offset: usize,

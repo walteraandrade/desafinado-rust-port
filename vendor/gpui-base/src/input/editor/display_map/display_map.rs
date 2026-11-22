@@ -29,6 +29,8 @@ use crate::input::rope_ext::RopeExt as _;
 pub struct DisplayMap {
     wrap_map: WrapMap,
     fold_map: FoldMap,
+    /// Sorted by offset.
+    inlays: std::rc::Rc<[super::Inlay]>,
 }
 
 impl DisplayMap {
@@ -36,7 +38,19 @@ impl DisplayMap {
         Self {
             wrap_map: WrapMap::new(font, font_size, wrap_width),
             fold_map: FoldMap::new(),
+            inlays: std::rc::Rc::from([]),
         }
+    }
+
+    /// The inlays, sorted by offset.
+    pub(crate) fn inlays(&self) -> &[super::Inlay] {
+        &self.inlays
+    }
+
+    /// Replace the inlays. Their widths reach the wrapping at the next layout.
+    pub(crate) fn set_inlays(&mut self, mut inlays: Vec<super::Inlay>) {
+        inlays.sort_by_key(super::Inlay::offset);
+        self.inlays = inlays.into();
     }
 
     // ==================== Core Coordinate Mapping ====================
@@ -220,6 +234,16 @@ impl DisplayMap {
         new_text: &Rope,
         cx: &mut App,
     ) {
+        if !self.inlays.is_empty() {
+            self.inlays = self
+                .inlays
+                .iter()
+                .filter_map(|inlay| {
+                    let offset = super::inlays::shift_offset(inlay.offset(), range, new_text.len())?;
+                    Some(super::Inlay::new(offset, inlay.text().clone(), *inlay.style()))
+                })
+                .collect();
+        }
         self.wrap_map
             .on_text_changed(changed_text, range, new_text, cx);
         self.rebuild_fold_projection();
@@ -233,6 +257,20 @@ impl DisplayMap {
     ) {
         self.wrap_map.set_inline_metrics(metrics, cx);
         self.rebuild_fold_projection();
+    }
+
+    /// Reserve empty rows after lines, as (byte offset in the line, rows), for block zones.
+    pub(crate) fn set_zones(&mut self, zones: std::rc::Rc<[(usize, usize)]>, cx: &mut App) -> bool {
+        let changed = self.wrap_map.set_zones(zones, cx);
+        if changed {
+            self.rebuild_fold_projection();
+        }
+        changed
+    }
+
+    /// The nearest wrap row that shows text when `wrap_row` belongs to a block zone.
+    pub(crate) fn skip_zone_row(&self, wrap_row: usize, down: bool) -> usize {
+        self.wrap_map.skip_zone_row(wrap_row, down)
     }
 
     pub fn on_layout_changed(&mut self, wrap_width: Option<Pixels>, cx: &mut App) {

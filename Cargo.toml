@@ -1,7 +1,7 @@
 [workspace]
 resolver = "3"
 members = ["crates/ai", "crates/core", "crates/features", "crates/platform", "crates/runtime", "crates/app"]
-exclude = ["spikes/gpui-editor"]
+exclude = ["spikes/gpui-editor", "vendor/gpui-base"]
 
 [workspace.package]
 version = "0.1.0"
@@ -70,3 +70,8 @@ clone_on_ref_ptr = "warn"
 let_underscore_must_use = "warn"
 map_err_ignore = "warn"
 unused_result_ok = "warn"
+
+# gpui-base 0.9.1 with inlays and block zones in the code editor, so a Suggestion's
+# Replacement shows in the text (ADR 0003). vendor/gpui-base/PATCH.md lists the changes.
+[patch.crates-io]
+gpui-base = { path = "vendor/gpui-base" }

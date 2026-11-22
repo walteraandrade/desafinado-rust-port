@@ -414,6 +414,29 @@ pub fn dialog_frame(id: impl Into<ElementId>, width: Pixels, roles: Roles) -> St
         .flex_col()
 }
 
+/// A block-level Replacement, drawn in the rows the editor reserves below the Original
+/// (ADR 0003): the Document's type on the AI tint, in the AI color.
+pub fn replacement_block(
+    id: impl Into<ElementId>,
+    text: impl Into<SharedString>,
+    width: Pixels,
+    line_height: Pixels,
+    roles: Roles,
+) -> Stateful<Div> {
+    div()
+        .id(id)
+        .relative()
+        .w(width)
+        .px(px(12.))
+        .py(px(4.))
+        .bg(roles.ai_fill)
+        .text_color(roles.ai)
+        .type_ui()
+        .type_document()
+        .line_height(line_height)
+        .child(text.into())
+}
+
 pub fn popover_frame(id: impl Into<ElementId>, roles: Roles) -> Stateful<Div> {
     popover_surface(roles).id(id).occlude()
 }

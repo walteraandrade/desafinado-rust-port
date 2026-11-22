@@ -133,6 +133,9 @@ impl<M: InputModeKind> InputBaseState<M> {
             .display_map
             .display_row_to_wrap_row(target_display_row)
             .unwrap_or(display_point.row);
+        let target_wrap_row = self
+            .display_map
+            .skip_zone_row(target_wrap_row, move_lines > 0);
 
         display_point.row = target_wrap_row;
         display_point.column = 0;

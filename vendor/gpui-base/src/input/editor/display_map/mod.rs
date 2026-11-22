@@ -11,6 +11,8 @@ mod display_map;
 mod inline_line;
 pub(crate) use inline_line::{InlineFragment, InputLine};
 mod fold_map;
+mod inlays;
+pub use inlays::{BlockZone, Inlay};
 mod folding;
 mod text_wrapper;
 mod wrap_map;

@@ -65,6 +65,10 @@ impl InputLine {
             Content::Inline(fragments) => {
                 for f in fragments {
                     if x <= f.x + f.width {
+                        // An inlay owns no source bytes: a point on it lands at its offset.
+                        if f.range.is_empty() {
+                            return f.range.start;
+                        }
                         return f.text.as_ref().map_or(
                             if x - f.x < f.width / 2. {
                                 f.range.start

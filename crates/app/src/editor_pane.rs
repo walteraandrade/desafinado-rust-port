@@ -20,6 +20,7 @@ use desafinado_ai::{
         card_placement::{CardPlacement, MARGIN_CARD_WIDTH, placement_for},
         focus_cycle::cycle_index,
         geometry::{Rect, Viewport},
+        inline_diff::{block_replacement, inline_inserts, zone_rows},
         popover_place::{Placed, PopoverInput, Side, place_popover, span_anchor},
         shown_cards::{CardKind, CardStatus, shown_cards},
     },
@@ -52,7 +53,7 @@ use desafinado_core::{
     },
 };
 use futures::{StreamExt as _, channel::mpsc};
-use gpui_kit::component::scroll::ScrollableElement as _;
+use gpui_kit::base::input::{BlockZone, Inlay};
 use gpui_kit::{
     component::input::{
         Editor, EditorState, Input, InputEditsEvent, InputState, RangeDecoration,
@@ -103,6 +104,15 @@ const COLUMN_PADDING: f32 = 24.;
 const MARGIN_GAP: f32 = 24.;
 const BUBBLE_WIDTH: f32 = 360.;
 const BUBBLE_KEY: &str = "\u{0}bubble";
+/// Space above and below an element drawn in the rows reserved under a Suggestion.
+const ZONE_TOP: f32 = 4.;
+const ZONE_BOTTOM: f32 = 4.;
+/// A thin space between struck text and the insertion that follows it.
+const ZONE_GAP_TEXT: &str = "\u{2009}";
+
+fn zone_key(id: &str) -> String {
+    format!("\u{0}zone-{id}")
+}
 
 const EDITOR_NOT_REFINING: &str = "EditorPane > Input && !RefineInput";
 const CARD_NOT_REFINING: &str = "SuggestionCard && !RefineInput";
@@ -687,6 +697,78 @@ impl EditorPane {
         }
         self.strike.set(strikes, cx);
         self.fills.set(fills, cx);
+        let inlays = self.inline_inlays(roles);
+        let zones = self.block_zones(cx);
+        self.editor.update(cx, |state, cx| {
+            state.set_inlays(inlays, cx);
+            state.set_block_zones(zones, cx);
+        });
+    }
+
+    fn inline_inlays(&self, roles: Roles) -> Vec<Inlay> {
+        let inserted = HighlightStyle {
+            color: Some(roles.ai),
+            background_color: Some(roles.ai_fill),
+            ..Default::default()
+        };
+        self.suggestions
+            .items
+            .iter()
+            .filter_map(Suggestion::as_ready)
+            .flat_map(|ready| inline_inserts(ready.from, &ready.diff))
+            .flat_map(|insert| {
+                let gap = insert
+                    .separated
+                    .then(|| Inlay::new(insert.offset, ZONE_GAP_TEXT, HighlightStyle::default()));
+                gap.into_iter()
+                    .chain([Inlay::new(insert.offset, insert.text, inserted)])
+            })
+            .collect()
+    }
+
+    /// The Suggestions whose Replacement or error shows in rows below their range.
+    fn zone_items(&self) -> Vec<&Suggestion> {
+        self.suggestions
+            .items
+            .iter()
+            .filter(|item| match item {
+                Suggestion::Ready(ready) => block_replacement(&ready.diff).is_some(),
+                Suggestion::Failed(_) => true,
+                Suggestion::Pending(_) => false,
+            })
+            .collect()
+    }
+
+    fn block_zones(&self, cx: &App) -> Vec<BlockZone> {
+        let line_height = self.line_height(cx);
+        let heights = self.heights.borrow();
+        self.zone_items()
+            .into_iter()
+            .map(|item| {
+                let height = heights
+                    .get(&zone_key(&item.id))
+                    .copied()
+                    .unwrap_or(line_height);
+                let rows = zone_rows(
+                    f32::from(height + px(ZONE_TOP + ZONE_BOTTOM)),
+                    f32::from(line_height),
+                );
+                BlockZone::new(item.to, rows)
+            })
+            .collect()
+    }
+
+    fn line_height(&self, cx: &App) -> Pixels {
+        self.editor
+            .read(cx)
+            .range_to_bounds(&(0..0))
+            .map_or(ui::TEXT_DOCUMENT * 1.5, |bounds| bounds.size.height)
+    }
+
+    fn sync_zones(&self, cx: &mut Context<Self>) {
+        let zones = self.block_zones(cx);
+        self.editor
+            .update(cx, |state, cx| state.set_block_zones(zones, cx));
     }
 
     fn ask(&mut self, _: &AskAi, window: &mut Window, cx: &mut Context<Self>) {
@@ -1691,7 +1773,7 @@ impl EditorPane {
         roles: Roles,
         cx: &mut Context<Self>,
     ) -> Option<(AnyElement, Pixels)> {
-        if item.is_pending() || self.above_view(item.to, cx) {
+        if item.is_pending() || kind == CardKind::Failed || self.above_view(item.to, cx) {
             return None;
         }
         let (bounds, height) = self.place_card(item, floor, cx)?;
@@ -1902,7 +1984,6 @@ impl EditorPane {
             .then(|| controls.get(self.card_index).copied())
             .flatten();
         let id = ready.id.clone();
-        let replacement_cap = (self.bounds.get().size.height * 0.45).max(px(96.));
         let refine_error = match &ready.refine {
             RefineState::Failed { error, .. } => Some(describe_error(error)),
             _ => None,
@@ -1941,13 +2022,6 @@ impl EditorPane {
                             .text_color(roles.ink)
                             .child(ready.rationale.clone()),
                     ),
-            )
-            .child(
-                div()
-                    .id(SharedString::from(format!("replacement-{id}")))
-                    .max_h(replacement_cap)
-                    .child(styled_replacement(&ready.diff.hunks, roles))
-                    .overflow_y_scrollbar(),
             )
             .children(
                 active
@@ -2205,6 +2279,98 @@ impl EditorPane {
                     ),
                 )
             })
+    }
+
+    /// The block-level Replacements and the errors of failed Suggestions, each in the rows
+    /// the editor reserves below the line its range ends on.
+    fn render_zones(&self, roles: Roles, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        let line_height = self.line_height(cx);
+        let mut zones = Vec::new();
+        for item in self.zone_items() {
+            let Some((left, top, width)) = self.zone_place(item.to, cx) else {
+                continue;
+            };
+            let key = zone_key(&item.id);
+            let measure = self.measure_zone(key.clone(), cx);
+            let element = match item {
+                Suggestion::Ready(ready) => {
+                    let Some(text) = block_replacement(&ready.diff) else {
+                        continue;
+                    };
+                    ui::replacement_block(
+                        SharedString::from(key),
+                        text.to_string(),
+                        width,
+                        line_height,
+                        roles,
+                    )
+                    .child(measure)
+                    .into_any_element()
+                }
+                Suggestion::Failed(failed) => {
+                    let frame = ui::dialog_frame(SharedString::from(key), width, roles)
+                        .p(px(12.))
+                        .gap(px(8.))
+                        .child(measure);
+                    self.render_failed_card(
+                        frame,
+                        &item.id,
+                        describe_error(&failed.error),
+                        roles,
+                        cx,
+                    )
+                    .into_any_element()
+                }
+                Suggestion::Pending(_) => continue,
+            };
+            zones.push(
+                div()
+                    .absolute()
+                    .left(left)
+                    .top(top)
+                    .child(element)
+                    .into_any_element(),
+            );
+        }
+        zones
+    }
+
+    /// Where a zone's element goes, relative to the pane: under the last row of the line
+    /// holding `offset`, from the text's left edge to the column's right edge.
+    fn zone_place(&self, offset: usize, cx: &App) -> Option<(Pixels, Pixels, Pixels)> {
+        let state = self.editor.read(cx);
+        let text = state.text();
+        let row = component::RopeExt::offset_to_point(text, offset.min(text.len())).row;
+        let start = component::RopeExt::line_start_offset(text, row);
+        let end = component::RopeExt::line_end_offset(text, row);
+        let line_end = state.range_to_bounds(&(end..end))?;
+        let line_start = state.range_to_bounds(&(start..start)).unwrap_or(line_end);
+        let origin = self.origin();
+        let left = line_start.left();
+        let pane = self.bounds.get();
+        let column_left = pane.origin.x
+            + (pane.size.width - px(COLUMN_WIDTH).min(pane.size.width)) / 2.
+            + px(COLUMN_PADDING);
+        let inset = (left - column_left).max(px(0.));
+        let width = (self.content_right() - left - inset).max(px(0.));
+        Some((
+            left - origin.x,
+            line_end.bottom() + px(ZONE_TOP) - origin.y,
+            width,
+        ))
+    }
+
+    fn measure_zone(&self, key: String, cx: &Context<Self>) -> impl IntoElement + use<> {
+        let heights = Rc::clone(&self.heights);
+        let entity = cx.entity().downgrade();
+        ui::measure(move |size, cx| {
+            let previous = heights.borrow_mut().insert(key.clone(), size.height);
+            if previous != Some(size.height)
+                && let Some(entity) = entity.upgrade()
+            {
+                entity.update(cx, |_, cx| cx.notify());
+            }
+        })
     }
 
     fn above_view(&self, offset: usize, cx: &App) -> bool {
@@ -2553,44 +2719,6 @@ fn accepted_change(ready: &ReadySuggestion) -> AcceptedChange {
     }
 }
 
-fn styled_replacement(hunks: &[DiffHunk], roles: Roles) -> StyledText {
-    let mut text = String::new();
-    let mut highlights = Vec::new();
-    for hunk in hunks {
-        match hunk {
-            DiffHunk::Equal { text: part, .. } => text.push_str(part),
-            DiffHunk::Deleted { text: part, .. } => {
-                let start = text.len();
-                text.push_str(part);
-                highlights.push((
-                    start..text.len(),
-                    HighlightStyle {
-                        color: Some(roles.muted),
-                        strikethrough: Some(StrikethroughStyle {
-                            thickness: px(1.),
-                            color: Some(roles.muted),
-                        }),
-                        ..Default::default()
-                    },
-                ));
-            }
-            DiffHunk::Inserted { text: part, .. } => {
-                let start = text.len();
-                text.push_str(part);
-                highlights.push((
-                    start..text.len(),
-                    HighlightStyle {
-                        color: Some(roles.ai),
-                        background_color: Some(roles.ai_fill),
-                        ..Default::default()
-                    },
-                ));
-            }
-        }
-    }
-    StyledText::new(text).with_highlights(highlights)
-}
-
 impl EditorPane {
     fn render_cards(
         &mut self,
@@ -2681,6 +2809,8 @@ impl Render for EditorPane {
             self.bubble_leaving = None;
         }
         self.bubble_shown = shown;
+        self.sync_zones(cx);
+        let zones = self.render_zones(roles, cx);
         let cards = self.render_cards(window, roles, cx);
         let caret = self.render_caret(roles, cx);
         let bubble = bubble
@@ -2726,6 +2856,7 @@ impl Render for EditorPane {
                         .child(Editor::new(&self.editor).h_full().bordered(false)),
                 ),
             )
+            .children(zones)
             .children(caret)
             .children(cards)
             .children(bubble)

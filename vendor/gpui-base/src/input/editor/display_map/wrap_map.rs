@@ -84,6 +84,16 @@ impl WrapMap {
         BufferPoint::new(point.row, col)
     }
 
+    /// Reserve empty rows after lines, as (byte offset in the line, rows).
+    pub(super) fn set_zones(&mut self, zones: std::rc::Rc<[(usize, usize)]>, cx: &mut App) -> bool {
+        self.wrapper.set_zones(zones, cx)
+    }
+
+    /// See [`TextWrapper::skip_zone_row`].
+    pub(super) fn skip_zone_row(&self, wrap_row: usize, down: bool) -> usize {
+        self.wrapper.skip_zone_row(wrap_row, down)
+    }
+
     /// Get the buffer line for a given wrap row
     pub(super) fn wrap_row_to_buffer_line(&self, wrap_row: usize) -> usize {
         self.wrapper.wrap_row_to_buffer_line(wrap_row)

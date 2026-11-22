@@ -233,6 +233,8 @@ pub(crate) struct LineItem {
     ///
     /// Not contains the line end `\n`.
     pub(crate) wrapped_lines: SmallVec<[Range<usize>; 1]>,
+    /// Empty rows reserved after the text of this line by a block zone.
+    pub(crate) zone_rows: usize,
     /// Width-only reuse is valid only while every measured fit decision stays unchanged.
     valid_widths: WidthRange,
 }
@@ -244,9 +246,16 @@ impl LineItem {
         self.len
     }
 
-    /// Get number of soft wrapped lines of this line (include the first line).
+    /// Get number of rows of this line: its soft wrapped lines (include the first line) and
+    /// the rows a block zone reserves after them.
     #[inline]
     pub(crate) fn lines_len(&self) -> usize {
+        self.wrapped_lines.len() + self.zone_rows
+    }
+
+    /// Get number of soft wrapped lines of this line, without block zone rows.
+    #[inline]
+    pub(crate) fn text_rows(&self) -> usize {
         self.wrapped_lines.len()
     }
 }
@@ -354,6 +363,8 @@ pub(crate) struct TextWrapper {
     pub(crate) lines: SumTree<LineItem>,
 
     inline_metrics: Rc<[(Range<usize>, Pixels)]>,
+    /// Block zones as (byte offset in the line they follow, reserved rows), sorted by offset.
+    zones: Rc<[(usize, usize)]>,
     /// Exact native widths avoid reshaping the same prefix when a drag crosses wrap thresholds.
     width_measurements: Rc<std::cell::RefCell<WidthMeasurements>>,
     _initialized: bool,
@@ -371,6 +382,7 @@ impl TextWrapper {
             tab_size: TabSize::default().tab_size,
             lines: SumTree::new(&()),
             inline_metrics: Rc::from([]),
+            zones: Rc::from([]),
             width_measurements: Rc::default(),
             _initialized: false,
         }
@@ -449,6 +461,26 @@ impl TextWrapper {
         match cursor.item() {
             Some(_) => cursor.start().1.0,
             None => self.lines_count().saturating_sub(1),
+        }
+    }
+
+    /// The nearest wrap row that shows text, when `wrap_row` is a row a block zone reserves:
+    /// the next line's first row when moving down, the zone line's last text row otherwise.
+    pub(crate) fn skip_zone_row(&self, wrap_row: usize, down: bool) -> usize {
+        let mut cursor = self.lines.cursor::<Dimensions<WrapRows, BufferRows>>(&());
+        cursor.seek(&WrapRows(wrap_row), Bias::Right);
+        let Some(line) = cursor.item() else {
+            return wrap_row;
+        };
+        let first = cursor.start().0.0;
+        let text_end = first + line.text_rows();
+        if wrap_row < text_end {
+            return wrap_row;
+        }
+        if down && first + line.lines_len() < self.len() {
+            first + line.lines_len()
+        } else {
+            text_end.saturating_sub(1)
         }
     }
 
@@ -614,6 +646,7 @@ impl TextWrapper {
     }
 
     pub(crate) fn adjust_inline_metrics(&mut self, range: &Range<usize>, new_len: usize) {
+        self.adjust_zones(range, new_len);
         if self.inline_metrics.is_empty() {
             return;
         }
@@ -633,6 +666,62 @@ impl TextWrapper {
                 Some((token, *width))
             })
             .collect();
+    }
+
+    fn adjust_zones(&mut self, range: &Range<usize>, new_len: usize) {
+        if self.zones.is_empty() {
+            return;
+        }
+        self.zones = self
+            .zones
+            .iter()
+            .filter_map(|&(offset, rows)| {
+                Some((super::inlays::shift_offset(offset, range, new_len)?, rows))
+            })
+            .collect();
+    }
+
+    /// Reserve `rows` empty rows after the text of the line holding each offset.
+    ///
+    /// Only the lines whose zones changed are measured again.
+    pub(crate) fn set_zones(&mut self, zones: Rc<[(usize, usize)]>, cx: &mut App) -> bool {
+        if self.zones == zones {
+            return false;
+        }
+        let text = self.text.clone();
+        let mut rows: Vec<usize> = self
+            .zones
+            .iter()
+            .chain(zones.iter())
+            .filter(|zone| !self.zones.contains(zone) || !zones.contains(zone))
+            .map(|&(offset, _)| text.offset_to_point(offset.min(text.len())).row)
+            .collect();
+        rows.sort_unstable();
+        rows.dedup();
+        self.zones = zones;
+        if !self._initialized {
+            return true;
+        }
+        for row in rows {
+            let start = text.line_start_offset(row);
+            let end = text.line_end_offset(row);
+            self.update(
+                &text,
+                &(start..end),
+                &Rope::from(text.slice(start..end).to_string()),
+                cx,
+            );
+        }
+        true
+    }
+
+    fn zone_rows_for_line(&self, start: usize, len: usize) -> usize {
+        let first = self.zones.partition_point(|&(offset, _)| offset < start);
+        self.zones[first..]
+            .iter()
+            .take_while(|&&(offset, _)| offset <= start + len)
+            .map(|&(_, rows)| rows)
+            .sum()
     }
 
     pub(crate) fn set_inline_metrics(
@@ -803,10 +892,13 @@ impl TextWrapper {
                 wrapped_lines.push(prev_boundary_ix..line.len());
             }
 
+            let zone_rows =
+                self.zone_rows_for_line(changed_text.line_start_offset(row), line.len());
             new_lines.push(LineItem {
                 len: line.len(),
                 indent: indent_chars,
                 wrapped_lines,
+                zone_rows,
                 valid_widths,
             });
         }
@@ -882,7 +974,7 @@ impl TextWrapper {
 
         // Otherwise return the eof of the line.
         let last_range = line.wrapped_lines.last().unwrap_or(&(0..0));
-        let ix = line.lines_len().saturating_sub(1);
+        let ix = line.text_rows().saturating_sub(1);
         return WrapDisplayPoint::new(wrapped_row + ix, ix, last_range.len());
     }
 
@@ -956,6 +1048,8 @@ pub(crate) struct LineLayout {
     /// Extra left offset applied to continuation wrapped lines, used to reserve the first line's
     /// indentation when [`WrappingIndent::Same`] is used.
     pub(crate) wrap_indent: Pixels,
+    /// Empty rows a block zone reserves after the text of this line.
+    pub(crate) zone_rows: usize,
     pub(crate) longest_width: Pixels,
     pub(crate) whitespace_indicators: Option<WhitespaceIndicators>,
     /// Whitespace indicators: (line_index, x_position, is_tab)
@@ -972,6 +1066,7 @@ impl LineLayout {
             longest_width: px(0.),
             wrapped_lines: SmallVec::new(),
             wrap_indent: px(0.),
+            zone_rows: 0,
             whitespace_chars: Vec::new(),
             whitespace_indicators: None,
             has_background: false,
@@ -988,6 +1083,17 @@ impl LineLayout {
     pub(crate) fn wrap_indent(mut self, wrap_indent: Pixels) -> Self {
         self.wrap_indent = wrap_indent;
         self
+    }
+
+    /// Reserve empty rows after the text, for a block zone.
+    pub(crate) fn zone_rows(mut self, zone_rows: usize) -> Self {
+        self.zone_rows = zone_rows;
+        self
+    }
+
+    /// Height of the text rows, without the block zone rows.
+    pub(crate) fn text_height(&self, line_height: Pixels) -> Pixels {
+        self.wrapped_lines.len() * line_height
     }
 
     /// The pixel indent applied to the given visual line, relative to the line's
@@ -1142,9 +1248,13 @@ impl LineLayout {
         let mut line_top = px(0.);
         let x_offset = last_layout.alignment_offset(self.longest_width);
 
+        let zone_bottom = self.size(last_layout.line_height).height;
+        let last = self.wrapped_lines.len().saturating_sub(1);
         for (i, line) in self.wrapped_lines.iter().enumerate() {
             let line_bottom = line_top + last_layout.line_height;
-            if pos.y >= line_top && pos.y < line_bottom {
+            // A point in the block zone below the text resolves on the last text row.
+            let in_zone = i == last && pos.y >= line_bottom && pos.y < zone_bottom;
+            if pos.y >= line_top && pos.y < line_bottom || in_zone {
                 return Some((i, offset, pos.x - x_offset - self.line_indent(i)));
             }
 
@@ -1227,7 +1337,7 @@ impl LineLayout {
             .map(|(ix, line)| line.width + self.line_indent(ix))
             .max()
             .unwrap_or(self.longest_width);
-        size(width, self.wrapped_lines.len() * line_height)
+        size(width, (self.wrapped_lines.len() + self.zone_rows) * line_height)
     }
 
     /// Paint only the glyph background quads of this line.
@@ -1461,6 +1571,63 @@ mod tests {
         assert_eq!(wrap("abc", 0., WrappingIndent::None), vec![1, 2]);
         // Closing punctuation stays with the preceding Chinese character.
         assert_eq!(wrap("你好，世界", 2., WrappingIndent::None), vec![3, 9]);
+    }
+
+    fn zoned_wrapper(text: &str, zones: &[(usize, usize)]) -> TextWrapper {
+        let mut wrapper = TextWrapper::new(test_font(), px(14.), None);
+        wrapper.zones = Rc::from(zones);
+        let text = Rope::from(text);
+        wrapper._update(&text, &(0..text.len()), &text, &mut |_, _, _| vec![]);
+        wrapper
+    }
+
+    #[test]
+    fn a_block_zone_adds_rows_after_its_line() {
+        // Lines "aa", "bbbb", "c"; a zone of 2 rows after "aa".
+        let wrapper = zoned_wrapper("aa\nbbbb\nc", &[(1, 2)]);
+        assert_eq!(wrapper.line(0).unwrap().lines_len(), 3);
+        assert_eq!(wrapper.line(0).unwrap().text_rows(), 1);
+        assert_eq!(wrapper.len(), 5);
+        assert_eq!(wrapper.buffer_line_to_first_wrap_row(1), 3);
+        assert_eq!(wrapper.wrap_row_to_buffer_line(2), 0);
+    }
+
+    #[test]
+    fn an_offset_never_maps_into_a_block_zone() {
+        let wrapper = zoned_wrapper("aa\nbbbb\nc", &[(2, 2)]);
+        // The end of "aa" stays on its own text row, not on a zone row.
+        assert_eq!(wrapper.offset_to_display_point(2).row, 0);
+        assert_eq!(wrapper.offset_to_display_point(3).row, 3);
+    }
+
+    #[test]
+    fn a_zone_row_maps_to_the_end_of_its_line() {
+        let wrapper = zoned_wrapper("aa\nbbbb\nc", &[(0, 2)]);
+        assert_eq!(wrapper.display_point_to_offset(WrapDisplayPoint::new(1, 0, 0)), 2);
+        assert_eq!(wrapper.display_point_to_offset(WrapDisplayPoint::new(2, 0, 1)), 2);
+    }
+
+    #[test]
+    fn moving_through_a_zone_skips_its_rows() {
+        let wrapper = zoned_wrapper("aa\nbbbb\nc", &[(0, 2)]);
+        assert_eq!(wrapper.skip_zone_row(1, true), 3);
+        assert_eq!(wrapper.skip_zone_row(2, false), 0);
+        assert_eq!(wrapper.skip_zone_row(3, true), 3);
+    }
+
+    #[test]
+    fn a_zone_at_the_last_line_moving_down_stays_on_its_text() {
+        let wrapper = zoned_wrapper("aa\nc", &[(4, 1)]);
+        assert_eq!(wrapper.skip_zone_row(2, true), 1);
+    }
+
+    #[test]
+    fn zones_follow_edits_before_them_and_drop_inside_them() {
+        let mut wrapper = zoned_wrapper("aa\nbbbb\nc", &[(5, 1), (8, 1)]);
+        wrapper.adjust_zones(&(0..0), 3);
+        assert_eq!(&*wrapper.zones, &[(8, 1), (11, 1)]);
+        wrapper.adjust_zones(&(6..10), 0);
+        assert_eq!(&*wrapper.zones, &[(7, 1)]);
     }
 
     #[test]
@@ -1725,18 +1892,21 @@ mod tests {
                     len: 2,
                     indent: 0,
                     wrapped_lines: smallvec::smallvec![0..2],
+                    zone_rows: 0,
                     valid_widths: WidthRange::empty(),
                 },
                 LineItem {
                     len: 4,
                     indent: 0,
                     wrapped_lines: smallvec::smallvec![0..2, 2..4],
+                    zone_rows: 0,
                     valid_widths: WidthRange::empty(),
                 },
                 LineItem {
                     len: 1,
                     indent: 0,
                     wrapped_lines: smallvec::smallvec![0..1],
+                    zone_rows: 0,
                     valid_widths: WidthRange::empty(),
                 },
             ],
@@ -1899,12 +2069,14 @@ mod tests {
                     len: Rope::from("first line").len(),
                     indent: 0,
                     wrapped_lines: smallvec::smallvec![0..10],
+                    zone_rows: 0,
                     valid_widths: WidthRange::empty(),
                 },
                 LineItem {
                     len: Rope::from("this one wraps").len(),
                     indent: 0,
                     wrapped_lines: smallvec::smallvec![0..9, 9..14],
+                    zone_rows: 0,
                     valid_widths: WidthRange::empty(),
                 },
             ],
@@ -1957,6 +2129,7 @@ mod tests {
                     len: Rope::from("Hello, 世界!\r").len(),
                     indent: 0,
                     wrapped_lines: smallvec::smallvec![0..15],
+                    zone_rows: 0,
                     valid_widths: WidthRange::empty(),
                 },
                 // range: 16..36
@@ -1964,6 +2137,7 @@ mod tests {
                     len: Rope::from("This is second line.\n").len(),
                     indent: 0,
                     wrapped_lines: smallvec::smallvec![0..10, 10..20],
+                    zone_rows: 0,
                     valid_widths: WidthRange::empty(),
                 },
                 // range: 37..56
@@ -1971,6 +2145,7 @@ mod tests {
                     len: Rope::from("This is third line.\n").len(),
                     indent: 0,
                     wrapped_lines: smallvec::smallvec![0..9, 9..15, 15..20],
+                    zone_rows: 0,
                     valid_widths: WidthRange::empty(),
                 },
                 // range: 57..79
@@ -1978,6 +2153,7 @@ mod tests {
                     len: Rope::from("这里是第 4 行。").len(),
                     indent: 0,
                     wrapped_lines: smallvec::smallvec![0..22],
+                    zone_rows: 0,
                     valid_widths: WidthRange::empty(),
                 },
             ],
