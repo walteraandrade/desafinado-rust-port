@@ -286,9 +286,21 @@ pub fn ai_option_row(id: impl Into<ElementId>, active: bool, roles: Roles) -> St
 
 pub fn ask_option_row(id: impl Into<ElementId>, active: bool, roles: Roles) -> Stateful<Div> {
     ai_option_row(id, active, roles)
-        .h(px(28.))
+        .min_h(px(28.))
         .px(px(8.))
+        .py(px(4.))
+        .gap(px(8.))
         .justify_between()
+}
+
+/// The label of an Ask AI row: wraps inside the bubble, up to three lines, then an ellipsis.
+pub fn ask_option_label(text: impl IntoElement) -> Div {
+    div()
+        .flex_1()
+        .min_w_0()
+        .line_clamp(3)
+        .text_ellipsis()
+        .child(text)
 }
 
 /// An option row that can hold the keyboard focus, shown by the focus ring.
