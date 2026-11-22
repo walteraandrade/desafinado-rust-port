@@ -139,7 +139,7 @@ cargo fmt --all
 
 Rules for changes, for people and coding agents alike, are in [AGENTS.md](AGENTS.md). CI runs those three checks on every pull request and push to `main`, builds the app and starts it off-screen under Xvfb ([`scripts/smoke.sh`](scripts/smoke.sh)). A separate `deny` job runs [`cargo deny`](deny.toml) for known vulnerabilities, licenses and crate sources, and a `gpui-base` job checks the format of the vendored, patched `gpui-base` and runs its tests. A pull request should pass all three jobs before it merges.
 
-To check a change against the real model, `cargo run -p desafinado-runtime --bin ai-check` sends one suggestion, two review-mode decisions to Jev, one Comment review and one review pass to OpenRouter and prints what they cost. It spends real money (a fraction of a cent).
+To check a change against the real model, `cargo run -p desafinado-runtime --bin ai-check` sends one suggestion, two review-mode decisions to Jev, one Comment review and one review pass to OpenRouter and prints what they cost. It spends real money (a fraction of a cent). Past runs, kept to compare new models against, are in [docs/model-baselines.md](docs/model-baselines.md).
 
 **Workspace.** Logic lives in plain Rust crates with unit tests; only `app` knows about GPUI.
 
