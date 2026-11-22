@@ -397,6 +397,72 @@ pub fn dot_button(
         })
 }
 
+/// A Note's mark in the margin: its number on the AI tint, the AI color once open, and plain
+/// fill when the text under it changed since the AI read it.
+pub fn note_mark(
+    id: impl Into<ElementId>,
+    number: usize,
+    open: bool,
+    stale: bool,
+    roles: Roles,
+) -> Stateful<Div> {
+    let (background, text) = match (open, stale) {
+        (true, _) => (roles.ai, roles.canvas),
+        (false, true) => (roles.fill, roles.muted),
+        (false, false) => (roles.ai_fill, roles.ai),
+    };
+    div()
+        .id(id)
+        .size(px(24.))
+        .flex_none()
+        .rounded_full()
+        .flex()
+        .items_center()
+        .justify_center()
+        .type_small()
+        .weight_strong()
+        .bg(background)
+        .text_color(text)
+        .cursor_pointer()
+        .hover(move |this| this.bg(roles.ai).text_color(roles.canvas))
+        .child(number.to_string())
+}
+
+/// The column beside the text that holds a Comment review: General notes and the list of Notes.
+pub fn side_panel(id: impl Into<ElementId>, width: Pixels, roles: Roles) -> Stateful<Div> {
+    div()
+        .id(id)
+        .w(width)
+        .flex_none()
+        .h_full()
+        .p(px(16.))
+        .flex()
+        .flex_col()
+        .gap(px(16.))
+        .bg(roles.raised)
+        .text_color(roles.ink)
+        .type_body()
+}
+
+/// A short label in the AI color, such as a Note's kind.
+pub fn ai_label(text: impl Into<SharedString>, roles: Roles) -> Div {
+    div()
+        .flex_none()
+        .type_small()
+        .weight_strong()
+        .text_color(roles.ai)
+        .child(text.into())
+}
+
+/// A Note in the panel's list: number, title and kind on one row.
+pub fn note_row(id: impl Into<ElementId>, open: bool, roles: Roles) -> Stateful<Div> {
+    option_row(id, open, false, roles)
+        .px(px(8.))
+        .py(px(4.))
+        .gap(px(8.))
+        .items_start()
+}
+
 /// Covers the window to catch the click that closes a menu.
 pub fn scrim(id: impl Into<ElementId>) -> Stateful<Div> {
     div().id(id).occlude().absolute().inset_0()

@@ -1,5 +1,6 @@
 use desafinado_core::log_err::LogErr;
 mod caret;
+mod comment_review;
 mod document;
 mod editor_pane;
 mod eval_run_dialog;

@@ -15,7 +15,7 @@ The AI proposes; your voice wins. Every change it suggests sits in your text as 
 - Select text, or put the cursor in a paragraph, and press `Ctrl+K`. Pick a Quick action (Shorter, Clearer, Fix grammar, or one of your own) or type any instruction.
 - The answer shows in place: the old text struck through and the new text next to it, or in a block under the paragraph when most of it changes, with a one-line rationale on a card in the margin. Accept (`Ctrl+Enter`), Reject (`Esc`), or Refine it ("shorter", then "now more formal") and step between versions with `Ctrl+H` and `Ctrl+L`.
 - Accept is a normal edit, so `Ctrl+Z` undoes it.
-- **Edit → Review…** reads the whole document, optionally with a focus such as "tone only", and streams up to six suggestions, with Accept all and Reject all.
+- **Edit → Review…** reads the whole document as an editor who comments. Without a focus, or with one that asks for an opinion ("what about the tone?"), it leaves Notes and does not touch the text: General notes in a panel beside the text, and a numbered mark in the margin for each Note, the 15 most important first. Click a mark to read its Note; **Suggest rewrite** turns that one Note into a Suggestion. When the focus asks for changes ("fix the spelling"), it streams up to six suggestions instead, with Accept all and Reject all. Jev, a small decision model on OpenRouter, reads the focus and picks the mode; the chip in the header shows its choice, and clicking it runs the Review again in the other mode.
 
 **Read it rendered.** `Ctrl+Alt+R` (or **Edit → Reading view**) swaps the editor for the rendered Markdown: real heading sizes, lists, quotes, links, and code in a monospace font whose long lines scroll sideways (Shift+wheel) instead of wrapping, without the frontmatter. Press it again to edit.
 
@@ -139,7 +139,7 @@ cargo fmt --all
 
 Rules for changes, for people and coding agents alike, are in [AGENTS.md](AGENTS.md). CI runs those three checks on every pull request and push to `main`, builds the app and starts it off-screen under Xvfb ([`scripts/smoke.sh`](scripts/smoke.sh)). A separate `deny` job runs [`cargo deny`](deny.toml) for known vulnerabilities, licenses and crate sources, and a `gpui-base` job checks the format of the vendored, patched `gpui-base` and runs its tests. A pull request should pass all three jobs before it merges.
 
-To check a change against the real model, `cargo run -p desafinado-runtime --bin ai-check` sends one suggestion and one review pass to OpenRouter and prints what they cost. It spends real money (a fraction of a cent).
+To check a change against the real model, `cargo run -p desafinado-runtime --bin ai-check` sends one suggestion, two review-mode decisions to Jev, one Comment review and one review pass to OpenRouter and prints what they cost. It spends real money (a fraction of a cent).
 
 **Workspace.** Logic lives in plain Rust crates with unit tests; only `app` knows about GPUI.
 

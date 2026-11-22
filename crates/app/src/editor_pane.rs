@@ -259,12 +259,16 @@ pub struct EditorPane {
     restored: Vec<ReadySuggestion>,
     pub quick_actions: Vec<QuickAction>,
     pub is_skill: bool,
-    ai: Arc<dyn AiBackend>,
+    pub(crate) ai: Arc<dyn AiBackend>,
     bounds: Rc<Cell<Bounds<Pixels>>>,
     heights: Rc<RefCell<HashMap<String, Pixels>>>,
     card_rects: CardRects,
     hovered: Option<String>,
     pub review: Option<ReviewRun>,
+    pub(crate) pending: Option<crate::comment_review::PendingReview>,
+    pub(crate) mode: Option<crate::comment_review::ReviewModeState>,
+    pub notes: Option<desafinado_ai::notes::NoteBoard>,
+    pub(crate) notes_scroll: ScrollHandle,
     reveal_pending: bool,
     _subscriptions: Vec<Subscription>,
 }
@@ -367,6 +371,10 @@ impl EditorPane {
             card_rects: Rc::new(RefCell::new(Vec::new())),
             hovered: None,
             review: None,
+            pending: None,
+            mode: None,
+            notes: None,
+            notes_scroll: ScrollHandle::new(),
             reveal_pending: false,
             _subscriptions: vec![edits, moves, typing],
         }
@@ -393,6 +401,7 @@ impl EditorPane {
             if let Some(review) = self.review.as_mut() {
                 review.changes = review.changes.compose(&changes);
             }
+            self.map_notes(&changes);
             next = match &applying {
                 Some(Applying::One(id)) => accept_suggestions(
                     &next,
@@ -473,6 +482,9 @@ impl EditorPane {
 
     fn reset(&mut self, cx: &mut Context<Self>) {
         self.stop_review_quietly(cx);
+        self.pending = None;
+        self.mode = None;
+        self.notes = None;
         self.tasks.clear();
         self.suggestions = empty_suggestions();
         self.bubble = BubbleState::default();
@@ -695,6 +707,16 @@ impl EditorPane {
                 }
             })
             .collect();
+        if let Some(range) = self
+            .active_note_range()
+            .filter(|range| range.end > range.start)
+        {
+            fills.push(
+                RangeDecoration::new(range)
+                    .with_style(RangeDecorationStyle::Fill)
+                    .with_color(roles.ai_fill),
+            );
+        }
         if let Some(preview) = self
             .target_preview(cx)
             .filter(|range| range.end > range.start)
@@ -952,7 +974,12 @@ impl EditorPane {
         self.focus(window, cx);
     }
 
-    fn ask_with(&mut self, instruction: Instruction, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn ask_with(
+        &mut self,
+        instruction: Instruction,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let text = self.text(cx);
         let blocks = extract_blocks(&text);
         let Some(target) = resolve_target(&blocks, &text, self.selection(cx)) else {
@@ -1304,7 +1331,7 @@ impl EditorPane {
         self.focus(window, cx);
     }
 
-    pub fn start_review(&mut self, focus: String, cx: &mut Context<Self>) {
+    pub(crate) fn start_revise(&mut self, focus: String, cx: &mut Context<Self>) {
         if self.review.is_some() {
             return;
         }
@@ -1458,13 +1485,22 @@ impl EditorPane {
         cx.notify();
     }
 
-    fn stop_review_quietly(&mut self, _: &mut Context<Self>) {
+    pub(crate) fn stop_review_quietly(&mut self, _: &mut Context<Self>) {
         if let Some(run) = self.review.take() {
             run.stop.store(true, Ordering::SeqCst);
         }
     }
 
     pub fn stop_review(&mut self, cx: &mut Context<Self>) {
+        if self.stop_pending() {
+            cx.emit(PaneEvent::Toast {
+                text: review_summary(0, true),
+                tone: ToastTone::Neutral,
+                actions: Vec::new(),
+            });
+            self.review_ended(cx);
+            return;
+        }
         let Some(run) = self.review.take() else {
             return;
         };
@@ -1811,19 +1847,23 @@ impl EditorPane {
         self.bounds.get().origin
     }
 
-    fn content_left(&self) -> Pixels {
+    pub(crate) fn pane_bounds(&self) -> Bounds<Pixels> {
+        self.bounds.get()
+    }
+
+    pub(crate) fn content_left(&self) -> Pixels {
         let pane = self.bounds.get();
         let column = px(COLUMN_WIDTH).min(pane.size.width);
         pane.origin.x + (pane.size.width - column) / 2. + px(COLUMN_PADDING)
     }
 
-    fn content_right(&self) -> Pixels {
+    pub(crate) fn content_right(&self) -> Pixels {
         let pane = self.bounds.get();
         let column = px(COLUMN_WIDTH).min(pane.size.width);
         pane.origin.x + (pane.size.width + column) / 2. - px(COLUMN_PADDING)
     }
 
-    fn card_placement(&self) -> CardPlacement {
+    pub(crate) fn card_placement(&self) -> CardPlacement {
         let pane = self.bounds.get();
         let right = f64::from(f32::from(self.content_right() - pane.origin.x));
         placement_for(right, f64::from(f32::from(pane.size.width)))
@@ -2889,7 +2929,10 @@ impl Render for EditorPane {
                     .map(|(ghost, _)| render_bubble_ghost(ghost, roles))
             });
         let press = Rc::clone(&self.pointer_down);
-        div()
+        let marks = self.render_note_marks(roles, cx);
+        let note_card = self.render_note_card(roles, cx);
+        let panel = self.render_notes_panel(roles, cx);
+        let text = div()
             .id("editor-pane")
             .key_context("EditorPane")
             .on_action(cx.listener(Self::ask))
@@ -2910,7 +2953,9 @@ impl Render for EditorPane {
                 this.track_hover(Some(window.mouse_position()), cx);
             }))
             .relative()
-            .size_full()
+            .flex_1()
+            .min_w_0()
+            .h_full()
             .child(self.track_bounds(cx))
             .child(
                 div().size_full().flex().justify_center().child(
@@ -2937,8 +2982,16 @@ impl Render for EditorPane {
                 roles,
             ))
             .children(caret)
+            .children(marks)
+            .children(note_card)
             .children(cards)
-            .children(bubble)
+            .children(bubble);
+        div()
+            .size_full()
+            .flex()
+            .flex_row()
+            .child(text)
+            .children(panel)
     }
 }
 

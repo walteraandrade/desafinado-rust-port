@@ -134,9 +134,13 @@ impl OpenRouterClient {
     }
 
     fn post(&self, body: &Value, stream: bool) -> Result<Sent, ClientError> {
+        self.post_to(&format!("{}/chat/completions", self.base_url), body, stream)
+    }
+
+    fn post_to(&self, url: &str, body: &Value, stream: bool) -> Result<Sent, ClientError> {
         let mut config = self
             .agent
-            .post(format!("{}/chat/completions", self.base_url))
+            .post(url)
             .header("Authorization", self.authorization())
             .header("Content-Type", "application/json")
             .header(
@@ -221,6 +225,43 @@ impl OpenRouterClient {
         parse_completion(model, &text).map_err(|e| (e, retry_after))
     }
 
+    /// Asks a decision model, such as Jev, on OpenRouter's Decisions API. It is not the chat
+    /// endpoint: the answer is a JSON object of typed answers, returned as it came.
+    pub fn decide(&self, body: &Value) -> Result<Value, ClientError> {
+        let mut attempt = 0;
+        loop {
+            match self.decide_once(body) {
+                Err((error, retry_after))
+                    if is_retryable_transport_error(&error) && attempt < self.retry.max_retries =>
+                {
+                    attempt += 1;
+                    std::thread::sleep(retry_delay(self.retry, retry_after));
+                }
+                result => return result.map_err(|(error, _)| error),
+            }
+        }
+    }
+
+    fn decide_once(&self, body: &Value) -> Result<Value, (ClientError, Option<Duration>)> {
+        let sent = self
+            .post_to(&decisions_url(&self.base_url), body, false)
+            .map_err(|e| (e, None))?;
+        let (status, retry_after) = (sent.status, sent.retry_after);
+        if !(200..300).contains(&status) {
+            return Err((self.failure_from(sent), retry_after));
+        }
+        let text = sent
+            .body
+            .into_with_config()
+            .lossy_utf8(true)
+            .read_to_string()
+            .map_err(|e| (classify_transport(&e), None))?;
+        match serde_json::from_str::<Value>(&text) {
+            Ok(value) if value.get("error").is_none() => Ok(value),
+            _ => Err((classify_status(200, &text), retry_after)),
+        }
+    }
+
     pub fn chat_stream(
         &self,
         body: &Value,
@@ -293,6 +334,12 @@ impl OpenRouterClient {
 pub struct ChatOutput {
     pub content: String,
     pub observation: CallObservation,
+}
+
+/// The Decisions API sits beside the versioned API: `…/api/v1` becomes `…/api/alpha/decisions`.
+pub fn decisions_url(base_url: &str) -> String {
+    let root = base_url.strip_suffix("/v1").unwrap_or(base_url);
+    format!("{root}/alpha/decisions")
 }
 
 fn with_stream(body: &Value, stream: bool) -> Value {
@@ -474,6 +521,39 @@ mod tests {
         assert_eq!(body["response_format"]["json_schema"]["name"], "answer");
         assert_eq!(body["usage"]["include"], true);
         assert_eq!(body["stream"], false);
+    }
+
+    #[test]
+    fn asks_the_decisions_api_and_returns_its_answer() {
+        let answer = r#"{"id":"dec-1","model":"typesafe/jev-1.14-20261014","answers":{"mode":{"type":"choice","choice":"comment"}},"usage":{"input_tokens":200,"output_tokens":0,"cost":0.0000084}}"#;
+        let server = TestServer::start(vec![Reply::json(200, answer)]);
+        let body = json!({"model": "typesafe/jev-1.14", "state": "x", "questions": {}});
+        let value = client(&server, Some("sk-key")).decide(&body).unwrap();
+        assert_eq!(value["answers"]["mode"]["choice"], "comment");
+        let sent = &server.requests()[0];
+        assert_eq!(sent.path, "/api/alpha/decisions");
+        assert_eq!(sent.headers["authorization"], "Bearer sk-key");
+        let sent_body: Value = serde_json::from_str(&sent.body).unwrap();
+        assert_eq!(sent_body["model"], "typesafe/jev-1.14");
+        assert!(sent_body.get("stream").is_none());
+    }
+
+    #[test]
+    fn a_failed_decision_is_classified_like_a_chat_call() {
+        let server = TestServer::start(vec![Reply::json(
+            402,
+            r#"{"error":{"code":402,"message":"Insufficient credits"}}"#,
+        )]);
+        let error = client(&server, Some("k")).decide(&json!({})).unwrap_err();
+        assert!(matches!(error, ClientError::OutOfCredit { .. }));
+        assert_eq!(
+            decisions_url("https://openrouter.ai/api/v1"),
+            "https://openrouter.ai/api/alpha/decisions"
+        );
+        assert_eq!(
+            decisions_url("http://proxy/x"),
+            "http://proxy/x/alpha/decisions"
+        );
     }
 
     #[test]

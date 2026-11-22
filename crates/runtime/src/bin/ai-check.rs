@@ -2,6 +2,7 @@ use std::{sync::Arc, thread, time::Duration};
 
 use desafinado_ai::{
     edits::ReviewValidationContext,
+    notes::{CommentPromptInput, build_comment_prompt},
     prompts::{ReviewPromptInput, TargetPromptInput, build_review_prompt, build_target_prompt},
     records::{format_records_table, summarize_costs},
 };
@@ -10,7 +11,7 @@ use desafinado_core::{
     sample::SAMPLE_DOCUMENT,
 };
 use desafinado_runtime::{
-    ai_backend::{AiBackend, ReviewCall, ReviewEvent, TargetCall},
+    ai_backend::{AiBackend, CommentCall, ModeCall, ReviewCall, ReviewEvent, TargetCall},
     openrouter_ai::OpenRouterAi,
     services::Services,
 };
@@ -51,6 +52,7 @@ fn main() {
         ),
         Err(error) => println!("target failed: {error:?}"),
     }
+    check_comment_review(&ai, &blocks);
     let parts = build_review_prompt(&ReviewPromptInput {
         blocks: blocks.clone(),
         focus: None,
@@ -86,7 +88,7 @@ fn main() {
     let deadline = std::time::Instant::now() + Duration::from_secs(280);
     let records = loop {
         let records = services.log.read_all().unwrap_or_default();
-        let done = records.len().saturating_sub(before) >= 2;
+        let done = records.len().saturating_sub(before) >= 5;
         if done || std::time::Instant::now() >= deadline {
             break records;
         }
@@ -99,4 +101,43 @@ fn main() {
         "calls: {}, priced: {}, total cost: US${:.6}",
         summary.total.calls, summary.total.priced_calls, summary.total.cost_usd
     );
+}
+
+fn check_comment_review(ai: &OpenRouterAi, blocks: &[desafinado_core::blocks::Block]) {
+    for focus in ["what do you think of the tone?", "fix the spelling"] {
+        match ai.review_mode(ModeCall {
+            task: format!("ai-check: choose review mode → {focus}"),
+            focus: focus.into(),
+        }) {
+            Ok(choice) => println!("review mode for {focus:?}: {}", choice.chip_label()),
+            Err(error) => println!("review mode failed for {focus:?}: {error:?}"),
+        }
+    }
+    match ai.comment(CommentCall {
+        task: "ai-check: comment on document → default criteria".into(),
+        parts: build_comment_prompt(&CommentPromptInput {
+            blocks: blocks.to_vec(),
+            focus: None,
+        }),
+        blocks: blocks.to_vec(),
+    }) {
+        Ok(board) => {
+            println!(
+                "comment ok: {} general notes, {} notes, {} dropped",
+                board.general.len(),
+                board.notes.len(),
+                board.dropped
+            );
+            for note in board.shown() {
+                println!(
+                    "  {} {} [{}]: {}",
+                    note.number,
+                    note.block_id,
+                    note.kind.label(),
+                    note.title
+                );
+            }
+        }
+        Err(error) => println!("comment failed: {error:?}"),
+    }
 }
