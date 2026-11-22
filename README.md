@@ -41,7 +41,7 @@ Linux only. There is no distribution package yet: you build and install it from 
 
 You need a Rust toolchain and a few system libraries.
 
-**Rust.** Install it with [rustup](https://rustup.rs). The workspace uses edition 2024 (Rust 1.85 or newer); CI builds with Rust 1.97.
+**Rust.** Install it with [rustup](https://rustup.rs). The workspace uses edition 2024 and needs Rust 1.97 or newer, the version CI builds with.
 
 **System libraries.** GPUI draws with Vulkan and talks to Wayland or X11 directly.
 
@@ -138,7 +138,7 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all
 ```
 
-CI runs those three checks on every pull request and push to `main`, builds the app and starts it off-screen under Xvfb ([`scripts/smoke.sh`](scripts/smoke.sh)). A pull request should pass the `checks` job before it merges.
+Rules for changes, for people and coding agents alike, are in [AGENTS.md](AGENTS.md). CI runs those three checks on every pull request and push to `main`, builds the app and starts it off-screen under Xvfb ([`scripts/smoke.sh`](scripts/smoke.sh)). A pull request should pass the `checks` job before it merges.
 
 To check a change against the real model, `cargo run -p desafinado-runtime --bin ai-check` sends one suggestion and one review pass to OpenRouter and prints what they cost. It spends real money (a fraction of a cent).
 

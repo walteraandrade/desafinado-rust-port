@@ -20,6 +20,13 @@ log = "0.4"
 rustix = { version = "1.1.6", features = ["fs", "process"] }
 gpui-kit = { version = "=0.9.1", features = ["tree-sitter-markdown"] }
 
+# Smaller, faster installed binary: thin LTO across crates, one codegen unit and
+# no symbols. A panic message still names its file and line.
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "symbols"
+
 [workspace.lints.rust]
 unsafe_code = "forbid"
 redundant_lifetimes = "warn"
