@@ -22,7 +22,7 @@ use desafinado_ai::{
         geometry::{Rect, Viewport},
         inline_diff::{block_replacement, inline_inserts, rows_before, zone_rows},
         popover_place::{
-            LineAt, Placed, PopoverInput, Side, pinned_line, place_popover, span_anchor,
+            BubbleEnds, LineAt, Placed, PopoverInput, Side, bubble_anchor, place_popover,
         },
         shown_cards::{CardKind, CardStatus, shown_cards},
     },
@@ -2444,22 +2444,20 @@ impl EditorPane {
         })
     }
 
-    fn line_at(&self, offset: usize, cx: &App) -> LineAt {
-        if self.above_view(offset, cx) {
-            return LineAt::Above;
-        }
+    /// Where the line holding `offset` sits against the view, or `None` before
+    /// the editor's first layout.
+    fn line_at(&self, offset: usize, cx: &App) -> Option<LineAt> {
+        let state = self.editor.read(cx);
+        let rows = state.visible_row_range()?;
+        let first_shown = component::RopeExt::line_start_offset(state.text(), rows.start);
         let origin = self.bounds.get().origin;
-        self.editor
-            .read(cx)
-            .range_to_bounds(&(offset..offset))
-            .map_or(LineAt::Below, |line| {
-                LineAt::Shown(Rect {
-                    left: to_f64(line.left() - origin.x),
-                    right: to_f64(line.left() - origin.x),
-                    top: to_f64(line.top() - origin.y),
-                    bottom: to_f64(line.bottom() - origin.y),
-                })
-            })
+        let bounds = state.range_to_bounds(&(offset..offset)).map(|line| Rect {
+            left: to_f64(line.left() - origin.x),
+            right: to_f64(line.left() - origin.x),
+            top: to_f64(line.top() - origin.y),
+            bottom: to_f64(line.bottom() - origin.y),
+        });
+        Some(LineAt::locate(offset, first_shown, bounds))
     }
 
     fn above_view(&self, offset: usize, cx: &App) -> bool {
@@ -2601,15 +2599,14 @@ impl EditorPane {
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
         self.last_bubble.replace(None);
-        self.editor.read(cx).visible_row_range()?;
-        let pane = self.bounds.get();
-        let origin = pane.origin;
-        let area = area_of(pane);
-        let head_left = match self.line_at(anchor.head, cx) {
-            LineAt::Shown(rect) => rect.left,
-            LineAt::Above | LineAt::Below => to_f64(self.content_left() - origin.x),
+        let ends = BubbleEnds {
+            head: self.line_at(anchor.head, cx)?,
+            start: self.line_at(anchor.span.start, cx)?,
+            end: self.line_at(anchor.span.end, cx)?,
         };
-        let pinned = |offset: usize| pinned_line(self.line_at(offset, cx), head_left, &area);
+        let pane = self.bounds.get();
+        let area = area_of(pane);
+        let column_left = to_f64(self.content_left() - pane.origin.x);
         let height = self
             .heights
             .borrow()
@@ -2617,11 +2614,7 @@ impl EditorPane {
             .copied()
             .unwrap_or(px(120.));
         let placed = place_popover(&PopoverInput {
-            anchor: span_anchor(
-                pinned(anchor.span.start),
-                pinned(anchor.span.end),
-                head_left - 12.,
-            ),
+            anchor: bubble_anchor(ends, column_left, &area),
             width: f64::from(BUBBLE_WIDTH),
             height: to_f64(height),
             area,

@@ -55,17 +55,6 @@ fn room_on(side: Side, input: &PopoverInput) -> f64 {
     }
 }
 
-/// The anchor for a popover that belongs to a range of lines, so that
-/// flipping to the other side never puts it over the range itself.
-pub fn span_anchor(first: Rect, last: Rect, left: f64) -> Rect {
-    Rect {
-        left,
-        right: left,
-        top: first.top.min(last.top),
-        bottom: first.bottom.max(last.bottom),
-    }
-}
-
 /// Where a line sits against the visible area: laid out on screen, or past
 /// one of its edges.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -75,19 +64,58 @@ pub enum LineAt {
     Below,
 }
 
-/// The rect to anchor on for a line, with a line past an edge of the area
-/// pinned to that edge, so a span that runs off screen still anchors inside.
-pub fn pinned_line(line: LineAt, left: f64, area: &Viewport) -> Rect {
-    let edge = |y: f64| Rect {
+impl LineAt {
+    /// Locates the line holding `offset`, given the offset where the first
+    /// laid-out row starts and the line's bounds when the editor laid it out.
+    /// The editor lays out a run of rows from the top of the view, so a line
+    /// with no bounds that is not above them is past the bottom.
+    pub fn locate(offset: usize, first_shown: usize, bounds: Option<Rect>) -> Self {
+        if offset < first_shown {
+            Self::Above
+        } else {
+            bounds.map_or(Self::Below, Self::Shown)
+        }
+    }
+
+    /// The line's top and bottom, with a line past an edge of the area pinned
+    /// to that edge.
+    fn pinned(self, area: &Viewport) -> (f64, f64) {
+        match self {
+            Self::Above => (0.0, 0.0),
+            Self::Shown(rect) => (rect.top, rect.bottom),
+            Self::Below => (area.height, area.height),
+        }
+    }
+}
+
+/// The ends of the selection the Ask AI bubble belongs to, and its head (the
+/// end the caret is on).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct BubbleEnds {
+    pub head: LineAt,
+    pub start: LineAt,
+    pub end: LineAt,
+}
+
+/// How far left of the head the bubble starts.
+pub const BUBBLE_INSET: f64 = 12.0;
+
+/// The anchor for the Ask AI bubble: it spans the selection, with ends past
+/// the view pinned to its edges, so a selection that runs off screen (Select
+/// all in a long document) still anchors inside the area. It starts at the
+/// head, or at the text column's left edge when the head is off screen.
+pub fn bubble_anchor(ends: BubbleEnds, column_left: f64, area: &Viewport) -> Rect {
+    let left = match ends.head {
+        LineAt::Shown(rect) => rect.left,
+        LineAt::Above | LineAt::Below => column_left,
+    } - BUBBLE_INSET;
+    let (start_top, start_bottom) = ends.start.pinned(area);
+    let (end_top, end_bottom) = ends.end.pinned(area);
+    Rect {
         left,
         right: left,
-        top: y,
-        bottom: y,
-    };
-    match line {
-        LineAt::Above => edge(0.0),
-        LineAt::Shown(rect) => rect,
-        LineAt::Below => edge(area.height),
+        top: start_top.min(end_top),
+        bottom: start_bottom.max(end_bottom),
     }
 }
 
@@ -120,12 +148,20 @@ pub fn place_popover(input: &PopoverInput) -> Option<Placed> {
 mod tests {
     use super::*;
 
+    fn ends(head: Rect, start: Rect, end: Rect) -> BubbleEnds {
+        BubbleEnds {
+            head: LineAt::Shown(head),
+            start: LineAt::Shown(start),
+            end: LineAt::Shown(end),
+        }
+    }
+
     #[test]
-    fn a_span_anchor_runs_from_the_first_line_to_the_last_at_the_given_left() {
+    fn a_bubble_anchor_runs_from_the_first_line_to_the_last_at_the_head() {
         let first = line(40.0, 100.0);
-        let last = line(10.0, 160.0);
+        let last = line(37.0, 160.0);
         assert_eq!(
-            span_anchor(first, last, 25.0),
+            bubble_anchor(ends(last, first, last), 0.0, &AREA),
             Rect {
                 left: 25.0,
                 right: 25.0,
@@ -136,16 +172,17 @@ mod tests {
     }
 
     #[test]
-    fn a_span_anchor_keeps_a_last_line_reported_above_the_first() {
+    fn a_bubble_anchor_keeps_a_last_line_reported_above_the_first() {
         let first = line(40.0, 100.0);
         let last = line(10.0, 60.0);
-        let anchor = span_anchor(first, last, 40.0);
+        let anchor = bubble_anchor(ends(first, first, last), 0.0, &AREA);
         assert_eq!((anchor.top, anchor.bottom), (60.0, 120.0));
     }
 
     #[test]
     fn a_popover_flipped_off_a_span_never_covers_the_span() {
-        let span = span_anchor(line(40.0, 30.0), line(40.0, 130.0), 40.0);
+        let first = line(40.0, 30.0);
+        let span = bubble_anchor(ends(first, first, line(40.0, 130.0)), 0.0, &AREA);
         let placed = place_popover(&input(span, Side::Above)).unwrap();
         assert_eq!(placed.side, Side::Below);
         assert!(placed.top >= span.bottom);
@@ -169,10 +206,10 @@ mod tests {
         PopoverInput {
             anchor,
             width: 360.0,
-            height: 200.0,
+            height: HEIGHT,
             area: AREA,
             side,
-            gap: 6.0,
+            gap: GAP,
             flip: true,
         }
     }
@@ -242,47 +279,98 @@ mod tests {
         assert_eq!(placed.top, 600.0 - 8.0 - 200.0);
     }
 
-    fn span_of(first: LineAt, last: LineAt, side: Side) -> Option<Placed> {
-        let span = span_anchor(
-            pinned_line(first, 40.0, &AREA),
-            pinned_line(last, 40.0, &AREA),
-            40.0,
-        );
-        place_popover(&input(span, side))
+    const HEIGHT: f64 = 200.0;
+    const GAP: f64 = 6.0;
+    const COLUMN_LEFT: f64 = 60.0;
+
+    fn bubble(head: LineAt, start: LineAt, end: LineAt, area: Viewport) -> Option<Placed> {
+        let preferred = if head == start {
+            Side::Above
+        } else {
+            Side::Below
+        };
+        let anchor = bubble_anchor(BubbleEnds { head, start, end }, COLUMN_LEFT, &area);
+        place_popover(&PopoverInput {
+            area,
+            ..input(anchor, preferred)
+        })
     }
 
-    fn inside(placed: Placed) -> bool {
-        placed.top >= EDGE_GAP && placed.top + 200.0 <= AREA.height - EDGE_GAP
+    fn select_all(area: Viewport) -> Option<Placed> {
+        bubble(LineAt::Below, LineAt::Above, LineAt::Below, area)
     }
 
     #[test]
-    fn a_selection_past_both_edges_shows_at_the_edge_of_its_head() {
-        let forward = span_of(LineAt::Above, LineAt::Below, Side::Below).unwrap();
-        assert!(inside(forward));
-        assert_eq!(forward.top, AREA.height - EDGE_GAP - 200.0);
-        let reversed = span_of(LineAt::Above, LineAt::Below, Side::Above).unwrap();
-        assert!(inside(reversed));
-        assert_eq!(reversed.top, EDGE_GAP);
+    fn a_line_before_the_first_laid_out_row_is_above() {
+        assert_eq!(LineAt::locate(10, 40, None), LineAt::Above);
     }
 
     #[test]
-    fn a_selection_running_past_the_bottom_shows_above_its_start() {
-        let placed = span_of(LineAt::Shown(line(40.0, 300.0)), LineAt::Below, Side::Below).unwrap();
+    fn a_laid_out_line_is_shown_where_the_editor_put_it() {
+        let at = line(40.0, 300.0);
+        assert_eq!(LineAt::locate(50, 40, Some(at)), LineAt::Shown(at));
+        assert_eq!(LineAt::locate(0, 0, Some(at)), LineAt::Shown(at));
+    }
+
+    #[test]
+    fn a_line_after_the_laid_out_rows_is_below() {
+        assert_eq!(LineAt::locate(9000, 40, None), LineAt::Below);
+    }
+
+    #[test]
+    fn select_all_in_a_long_document_shows_the_bubble_at_the_bottom_edge() {
+        let placed = select_all(AREA).unwrap();
+        assert_eq!(placed.top, AREA.height - EDGE_GAP - HEIGHT);
+        assert_eq!(placed.left, COLUMN_LEFT - BUBBLE_INSET);
+    }
+
+    #[test]
+    fn select_all_shows_the_bubble_inside_the_smallest_window() {
+        let small = Viewport {
+            width: 380.0,
+            height: 300.0,
+        };
+        let placed = select_all(small).unwrap();
+        assert!(placed.top >= EDGE_GAP && placed.top + HEIGHT <= small.height - EDGE_GAP);
+        assert!(placed.left >= EDGE_GAP && placed.left + 360.0 <= small.width - EDGE_GAP);
+    }
+
+    #[test]
+    fn a_reversed_selection_past_both_edges_shows_the_bubble_at_the_top_edge() {
+        let placed = bubble(LineAt::Above, LineAt::Above, LineAt::Below, AREA).unwrap();
+        assert_eq!(placed.top, EDGE_GAP);
+    }
+
+    #[test]
+    fn a_shown_head_keeps_the_bubble_at_the_caret() {
+        let head = line(300.0, 200.0);
+        let placed = bubble(head_at(head), LineAt::Above, head_at(head), AREA).unwrap();
+        assert_eq!(placed.left, 300.0 - BUBBLE_INSET);
+        assert_eq!(placed.top, 220.0 + GAP);
+    }
+
+    #[test]
+    fn a_selection_running_past_the_bottom_shows_the_bubble_above_its_start() {
+        let start = head_at(line(40.0, 300.0));
+        let placed = bubble(LineAt::Below, start, LineAt::Below, AREA).unwrap();
         assert_eq!(placed.side, Side::Above);
-        assert_eq!(placed.top, 300.0 - 6.0 - 200.0);
+        assert_eq!(placed.top, 300.0 - GAP - HEIGHT);
     }
 
     #[test]
-    fn a_selection_running_past_the_top_shows_below_its_end() {
-        let placed = span_of(LineAt::Above, LineAt::Shown(line(40.0, 200.0)), Side::Above).unwrap();
-        assert_eq!(placed.side, Side::Below);
-        assert_eq!(placed.top, 220.0 + 6.0);
+    fn a_selection_wholly_past_one_edge_shows_no_bubble() {
+        assert_eq!(
+            bubble(LineAt::Below, LineAt::Below, LineAt::Below, AREA),
+            None
+        );
+        assert_eq!(
+            bubble(LineAt::Above, LineAt::Above, LineAt::Above, AREA),
+            None
+        );
     }
 
-    #[test]
-    fn a_selection_wholly_past_one_edge_hides() {
-        assert_eq!(span_of(LineAt::Below, LineAt::Below, Side::Below), None);
-        assert_eq!(span_of(LineAt::Above, LineAt::Above, Side::Above), None);
+    fn head_at(rect: Rect) -> LineAt {
+        LineAt::Shown(rect)
     }
 
     #[test]
