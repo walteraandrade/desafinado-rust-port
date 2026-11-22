@@ -104,7 +104,8 @@ const MARGIN_GAP: f32 = 24.;
 const BUBBLE_WIDTH: f32 = 360.;
 const BUBBLE_KEY: &str = "\u{0}bubble";
 
-const CARD_KEYS: &str = "SuggestionCard && !RefineInput";
+const EDITOR_NOT_REFINING: &str = "EditorPane > Input && !RefineInput";
+const CARD_NOT_REFINING: &str = "SuggestionCard && !RefineInput";
 
 pub fn init(cx: &mut App) {
     cx.bind_keys(key_bindings());
@@ -118,13 +119,13 @@ fn key_bindings() -> Vec<KeyBinding> {
         KeyBinding::new("ctrl-shift-z", PaneRedo, Some("EditorPane > Input")),
         KeyBinding::new("ctrl-y", PaneRedo, Some("EditorPane > Input")),
         KeyBinding::new("ctrl-z", PaneUndo, Some("EditorPane > Input")),
-        KeyBinding::new("ctrl-k", AskAi, Some("EditorPane > Input")),
-        KeyBinding::new("ctrl-enter", AcceptActive, Some("EditorPane > Input")),
+        KeyBinding::new("ctrl-k", AskAi, Some(EDITOR_NOT_REFINING)),
+        KeyBinding::new("ctrl-enter", AcceptActive, Some(EDITOR_NOT_REFINING)),
         KeyBinding::new("escape", EscapeAtCursor, Some("EditorPane > Input")),
-        KeyBinding::new("ctrl-h", PreviousVersion, Some("EditorPane > Input")),
-        KeyBinding::new("ctrl-l", NextVersion, Some("EditorPane > Input")),
-        KeyBinding::new("alt-]", NextSuggestion, Some("EditorPane > Input")),
-        KeyBinding::new("alt-[", PreviousSuggestion, Some("EditorPane > Input")),
+        KeyBinding::new("ctrl-h", PreviousVersion, Some(EDITOR_NOT_REFINING)),
+        KeyBinding::new("ctrl-l", NextVersion, Some(EDITOR_NOT_REFINING)),
+        KeyBinding::new("alt-]", NextSuggestion, Some(EDITOR_NOT_REFINING)),
+        KeyBinding::new("alt-[", PreviousSuggestion, Some(EDITOR_NOT_REFINING)),
         KeyBinding::new("tab", FocusCard, Some("EditorPane > Input")),
         KeyBinding::new("shift-tab", FocusCardBack, Some("EditorPane > Input")),
         KeyBinding::new("up", BubbleUp, Some("AskBubble > Input")),
@@ -139,11 +140,11 @@ fn key_bindings() -> Vec<KeyBinding> {
         KeyBinding::new("shift-tab", CardPrevious, Some("RefineInput > Input")),
         KeyBinding::new("tab", CardNext, Some("SuggestionCard")),
         KeyBinding::new("shift-tab", CardPrevious, Some("SuggestionCard")),
-        KeyBinding::new("enter", CardPress, Some(CARD_KEYS)),
-        KeyBinding::new("space", CardPress, Some(CARD_KEYS)),
+        KeyBinding::new("enter", CardPress, Some(CARD_NOT_REFINING)),
+        KeyBinding::new("space", CardPress, Some(CARD_NOT_REFINING)),
         KeyBinding::new("escape", CardLeave, Some("SuggestionCard")),
-        KeyBinding::new("ctrl-h", PreviousVersion, Some("SuggestionCard")),
-        KeyBinding::new("ctrl-l", NextVersion, Some("SuggestionCard")),
+        KeyBinding::new("ctrl-h", PreviousVersion, Some(CARD_NOT_REFINING)),
+        KeyBinding::new("ctrl-l", NextVersion, Some(CARD_NOT_REFINING)),
     ]
 }
 
@@ -2872,6 +2873,20 @@ mod tests {
     }
 
     #[test]
+    fn editor_shortcuts_still_work_in_the_text() {
+        let text = &["EditorPane", "Input"];
+        assert_eq!(
+            bound("ctrl-enter", text).first(),
+            Some(&"editor_pane::AcceptActive")
+        );
+        assert_eq!(bound("ctrl-k", text).first(), Some(&"editor_pane::AskAi"));
+        assert_eq!(
+            bound("ctrl-h", CARD).first(),
+            Some(&"editor_pane::PreviousVersion")
+        );
+    }
+
+    #[test]
     fn space_types_in_the_refine_field() {
         assert!(bound("space", REFINE_FIELD).is_empty());
     }
@@ -2887,6 +2902,15 @@ mod tests {
             Some(&"editor_pane::RefineCancel")
         );
         assert!(!bound("enter", REFINE_FIELD).contains(&"editor_pane::CardPress"));
+        for key in ["ctrl-enter", "ctrl-k", "ctrl-h", "ctrl-l", "alt-[", "alt-]"] {
+            let actions = bound(key, REFINE_FIELD);
+            assert!(
+                actions
+                    .iter()
+                    .all(|name| !name.starts_with("editor_pane::")),
+                "{key} reaches {actions:?}"
+            );
+        }
         for key in ["a", "r", "shift-a"] {
             assert!(bound(key, REFINE_FIELD).is_empty(), "{key} is bound");
         }
