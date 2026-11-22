@@ -112,7 +112,11 @@ pub fn claim(
         hand_over(&socket, message)?;
         return Ok(Claim::HandedOver);
     }
-    std::fs::remove_file(&socket).log_warn();
+    if let Err(error) = std::fs::remove_file(&socket)
+        && error.kind() != io::ErrorKind::NotFound
+    {
+        log::warn!("Could not remove the old instance socket: {error}");
+    }
     let listener = UnixListener::bind(&socket)?;
     serve(listener, deliver);
     Ok(Claim::Primary(PrimaryInstance {

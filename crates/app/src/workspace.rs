@@ -328,6 +328,24 @@ fn touches(path: &Path, changed: &str) -> bool {
     path == changed || path.starts_with(&format!("{changed}/"))
 }
 
+/// What fills the window under the header while the AI spend page is closed.
+/// Evals show only while a Skill is open; otherwise the text does.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Page {
+    Text,
+    Reading,
+    Evals,
+}
+
+/// A file the Library asked to open, kept until the open goes through or is cancelled.
+struct LibraryRequest {
+    path: PathBuf,
+    /// Move the focus to the text once the file is open.
+    focus_text: bool,
+    /// The request came from Library search, so a cancel returns there.
+    from_search: bool,
+}
+
 /// The file the watcher was last told to follow.
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Watching {
@@ -342,6 +360,7 @@ pub struct Workspace {
     session: Option<FileSession>,
     conflict: Option<Conflict>,
     writing: Option<String>,
+    save_again: bool,
     noticed: Option<DiskState<String>>,
     last_text: String,
     pub(crate) history: SwitchableHistory<PathBuf>,
@@ -375,7 +394,7 @@ pub struct Workspace {
     leaving: Leaving,
     search_unfolded: bool,
     search_opening: bool,
-    library_request: Option<(PathBuf, bool, bool)>,
+    library_request: Option<LibraryRequest>,
     viewport_width: Pixels,
     new_skill: Option<Entity<NewSkillDialog>>,
     frontmatter: Entity<FrontmatterView>,
@@ -383,8 +402,7 @@ pub struct Workspace {
     frontmatter_scrolled: std::rc::Rc<std::cell::Cell<Pixels>>,
     frontmatter_height: std::rc::Rc<std::cell::Cell<Pixels>>,
     evals: Entity<EvalsView>,
-    evals_page: bool,
-    reading: bool,
+    page: Page,
     unsaved_checked: Option<(String, bool)>,
     menu_active: Option<usize>,
     menu_focus: FocusHandle,
@@ -441,6 +459,7 @@ impl Workspace {
             session,
             conflict,
             writing: None,
+            save_again: false,
             noticed: None,
             last_text: initial,
             history,
@@ -482,8 +501,7 @@ impl Workspace {
             frontmatter_scrolled: std::rc::Rc::new(std::cell::Cell::new(px(0.))),
             frontmatter_height: std::rc::Rc::new(std::cell::Cell::new(px(0.))),
             evals,
-            evals_page: false,
-            reading: false,
+            page: Page::Text,
             unsaved_checked: None,
             menu_active: None,
             menu_focus: cx.focus_handle(),
@@ -1108,7 +1126,11 @@ impl Workspace {
             LeaveIntent::OpenPath(path) => {
                 self.load(path.clone(), window, cx);
                 let request = self.library_request.take();
-                if let Some((requested, true, _)) = request
+                if let Some(LibraryRequest {
+                    path: requested,
+                    focus_text: true,
+                    ..
+                }) = request
                     && requested == path
                     && self.session_path() == Some(path.as_path())
                 {
@@ -1193,7 +1215,11 @@ impl Workspace {
             }
             return;
         }
-        self.library_request = Some((path.clone(), focus_text, self.search_opening));
+        self.library_request = Some(LibraryRequest {
+            path: path.clone(),
+            focus_text,
+            from_search: self.search_opening,
+        });
         self.guard(LeaveIntent::OpenPath(path), window, cx);
     }
 
@@ -1209,8 +1235,18 @@ impl Workspace {
         skill_of_file(self.library.read(cx).roots(), &|path| path == active).map(EvalSkill::from)
     }
 
+    fn reading(&self) -> bool {
+        self.page == Page::Reading
+    }
+
+    fn leave_reading(&mut self) {
+        if self.reading() {
+            self.page = Page::Text;
+        }
+    }
+
     fn evals_shown(&self, cx: &App) -> bool {
-        self.evals_page && self.open_skill(cx).is_some()
+        self.page == Page::Evals && self.open_skill(cx).is_some()
     }
 
     fn busy_name(&self, cx: &App) -> Option<String> {
@@ -1238,7 +1274,7 @@ impl Workspace {
 
     fn open_evals(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.mode = HistoryMode::Editing;
-        self.evals_page = true;
+        self.page = Page::Evals;
         self.hovered = None;
         self.open_menu = None;
         self.unsaved_checked = None;
@@ -1564,7 +1600,7 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         self.open_menu = None;
-        self.reading = false;
+        self.leave_reading();
         self.close_history(window, cx);
         self.frontmatter
             .update(cx, |view, cx| view.focus_panel(window, cx));
@@ -1579,10 +1615,10 @@ impl Workspace {
             LeaveChoice::Cancel => {
                 self.focus_text(window, cx);
                 if let LeaveIntent::OpenPath(_) = intent
-                    && let Some((_, _, search)) = self.library_request.take()
+                    && let Some(request) = self.library_request.take()
                 {
                     self.library.update(cx, |library, cx| {
-                        if search {
+                        if request.from_search {
                             library.focus_search(window, cx);
                         } else {
                             library.focus_tree(window, cx);
@@ -1665,6 +1701,10 @@ impl Workspace {
 
     fn save(&mut self, save_as: bool, window: &mut Window, cx: &mut Context<Self>) {
         self.open_menu = None;
+        if self.writing.is_some() {
+            self.save_again = true;
+            return;
+        }
         let text = self.text(cx);
         self.writing = Some(text.clone());
         self.history.saving(text.clone(), now_ms());
@@ -1679,12 +1719,20 @@ impl Workspace {
                 saved_text,
                 ..
             }) if !save_as => {
-                let result = save_markdown(&SaveRequest {
+                let request = SaveRequest {
                     path,
                     text: text.clone(),
                     expected: saved_text,
-                });
-                self.finish_save(result, text, name, window, cx);
+                };
+                let write = cx.background_spawn(async move { save_markdown(&request) });
+                cx.spawn_in(window, async move |this, cx| {
+                    let result = write.await;
+                    this.update_in(cx, |this, window, cx| {
+                        this.finish_save(result, text, name, window, cx);
+                    })
+                    .log_warn();
+                })
+                .detach();
             }
             _ => self.prompt_save_as(text, name, window, cx),
         }
@@ -1706,7 +1754,11 @@ impl Workspace {
         let target = cx.prompt_for_new_path(&directory, Some(&name));
         cx.spawn_in(window, async move |this, cx| {
             let result = match target.await {
-                Ok(Ok(Some(chosen))) => save_as_target(&chosen, &text),
+                Ok(Ok(Some(chosen))) => {
+                    let text = text.clone();
+                    cx.background_spawn(async move { save_as_target(&chosen, &text) })
+                        .await
+                }
                 _ => FileSaveResult::Cancelled,
             };
             this.update_in(cx, |this, window, cx| {
@@ -1756,6 +1808,11 @@ impl Workspace {
                 self.watch();
             }
         }
+        if std::mem::take(&mut self.save_again) && saved {
+            self.save(false, window, cx);
+            cx.notify();
+            return;
+        }
         match self.after_save.take() {
             Some(intent) if saved => self.continue_with(intent, window, cx),
             _ => {}
@@ -1789,7 +1846,9 @@ impl Workspace {
         } else {
             self.visible_mode()
         };
-        self.evals_page = false;
+        if self.page == Page::Evals {
+            self.page = Page::Text;
+        }
         self.mode = next_history_mode(&ids, from, action);
         let editing = self.visible_mode() == HistoryMode::Editing;
         if editing {
@@ -1805,7 +1864,7 @@ impl Workspace {
     }
 
     fn show_editing(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.reading = false;
+        self.leave_reading();
         if self.visible_mode() != HistoryMode::Editing {
             self.close_history(window, cx);
         }
@@ -2189,7 +2248,7 @@ impl Workspace {
                 MenuRow {
                     separated: true,
                     ..row(
-                        if self.reading {
+                        if self.reading() {
                             "Edit text"
                         } else {
                             "Reading view"
@@ -2334,7 +2393,7 @@ impl Workspace {
 
     fn open_review(&mut self, _: &StartReview, window: &mut Window, cx: &mut Context<Self>) {
         self.open_menu = None;
-        self.reading = false;
+        self.leave_reading();
         if self.pane.read(cx).review.is_some() {
             return;
         }
@@ -2784,17 +2843,15 @@ impl Render for Workspace {
         let busy_name = self.busy_name(cx);
         self.evals
             .update(cx, |evals, _| evals.set_busy_name(busy_name));
-        let evals_shown = self.evals_page && open_skill.is_some();
+        let evals_shown = self.page == Page::Evals && open_skill.is_some();
         if evals_shown {
             self.check_unsaved(false, cx);
         }
-        if self.reading
-            && (evals_shown || self.spend.is_some() || self.visible_mode() != HistoryMode::Editing)
-        {
-            self.reading = false;
+        if self.spend.is_some() || self.visible_mode() != HistoryMode::Editing {
+            self.leave_reading();
         }
         let text_shown = !evals_shown
-            && !self.reading
+            && !self.reading()
             && self.spend.is_none()
             && self.visible_mode() == HistoryMode::Editing;
         if !text_shown {
@@ -3058,7 +3115,7 @@ impl Workspace {
     }
 
     fn focus_text(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.reading {
+        if self.reading() {
             window.focus(&self.focus, cx);
         } else {
             self.pane.update(cx, |pane, cx| pane.focus(window, cx));
@@ -3083,13 +3140,16 @@ impl Workspace {
         {
             return;
         }
-        let next = !self.reading;
+        let next = if self.reading() {
+            Page::Text
+        } else {
+            Page::Reading
+        };
         self.open_menu = None;
         self.spend = None;
-        self.evals_page = false;
         self.show_editing(window, cx);
-        self.reading = next;
-        if self.reading {
+        self.page = next;
+        if next == Page::Reading {
             self.pane.update(cx, |pane, cx| pane.put_away(window, cx));
             self.focus.focus(window, cx);
         } else {
@@ -3120,7 +3180,7 @@ impl Workspace {
                 gpui_kit::IntoElement::into_any_element,
             ),
             _ if evals_shown => self.evals.clone().into_any_element(),
-            HistoryMode::Editing if self.reading => crate::reading_view::render_reading(
+            HistoryMode::Editing if self.reading() => crate::reading_view::render_reading(
                 &self.text(cx),
                 roles,
                 crate::theme::reading_code(cx),
@@ -3273,13 +3333,17 @@ impl Workspace {
                     .gap(px(8.))
                     .type_small()
                     .text_color(roles.muted)
-                    .child(if self.reading {
+                    .child(if self.reading() {
                         "Reading. Edit with"
                     } else {
                         "Select text and press"
                     })
                     .child(ui::kbd(
-                        if self.reading { "Ctrl+Alt+R" } else { "Ctrl+K" },
+                        if self.reading() {
+                            "Ctrl+Alt+R"
+                        } else {
+                            "Ctrl+K"
+                        },
                         roles,
                     )),
             )
