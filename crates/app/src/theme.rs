@@ -46,7 +46,6 @@ pub struct Roles {
     pub fill_hover: Hsla,
     pub hairline: Hsla,
     pub scrollbar: Hsla,
-    pub caret_fill: Hsla,
     pub dark: bool,
 }
 
@@ -64,7 +63,6 @@ pub fn hex(code: &str) -> Hsla {
 }
 
 const HOVER_SHARE: f64 = 0.2;
-const CARET_FILL_SHARE: f64 = 0.5;
 
 pub fn roles_of(tokens: &ThemeTokens) -> Roles {
     let r = &tokens.roles;
@@ -90,7 +88,6 @@ pub fn roles_of(tokens: &ThemeTokens) -> Roles {
         fill_hover: hex(&r.fill_hover),
         hairline: hex(&r.hairline),
         scrollbar: hex(&r.scrollbar),
-        caret_fill: hex(&mix_hex(&r.canvas, &r.accent, CARET_FILL_SHARE)),
         dark: tokens.mode == ThemeMode::Dark,
     }
 }
@@ -157,7 +154,6 @@ impl ThemeState {
 }
 
 pub fn init(user_data: &Path, cx: &mut App) {
-    cx.set_global(crate::ui::CaretStyle::from_env());
     let state = ThemeState::load(user_data);
     apply(roles_of(state.tokens()), cx);
     cx.set_global(state);
@@ -236,9 +232,10 @@ pub fn apply(roles: Roles, cx: &mut App) {
         None,
         cx,
     );
-    let caret = crate::ui::caret_style(cx);
+    let caret = crate::caret::settings(cx);
     Theme::update(cx, |theme| {
         theme.scrollbar_mode = gpui_kit::component::scroll::ScrollbarMode::Always;
+        crate::caret::apply_to_theme(theme, caret);
         let c = &mut theme.colors;
         c.background = roles.canvas;
         c.foreground = roles.ink;
@@ -247,13 +244,7 @@ pub fn apply(roles: Roles, cx: &mut App) {
         c.border = roles.hairline;
         c.input = roles.hairline;
         c.ring = roles.accent;
-        c.caret = caret.color(&roles);
-        theme.cursor_blink = if caret.blinks() {
-            gpui_kit::base::input::CursorBlink::default()
-        } else {
-            gpui_kit::base::input::CursorBlink::steady()
-        };
-        let c = &mut theme.colors;
+        c.caret = roles.accent;
         c.selection = roles.selection;
         c.popover = roles.overlay;
         c.popover_foreground = roles.ink;

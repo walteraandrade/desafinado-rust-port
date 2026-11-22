@@ -5,6 +5,7 @@ use desafinado_ai::quick_action_settings::{
 };
 use desafinado_ai::ui::list_motion::{ListStep, plan_list_change};
 use desafinado_core::log_err::LogErr;
+use desafinado_features::caret::{CaretBlink, CaretSettings, CaretShape, MAX_WIDTH, MIN_WIDTH};
 use desafinado_features::theme::{
     catalog::{ThemeOption, themes_of_mode},
     tokens::ThemeMode,
@@ -16,6 +17,7 @@ use gpui_kit::{
 };
 
 use crate::{
+    caret,
     theme::{self, Roles},
     ui::{self, ButtonKind, ButtonSize, Type as _},
 };
@@ -57,6 +59,7 @@ pub enum PreferencesEvent {
     OpenKey,
     OpenSpend,
     QuickActions(QuickActionSettings),
+    Caret(CaretSettings),
 }
 
 impl EventEmitter<PreferencesEvent> for PreferencesPanel {}
@@ -677,6 +680,75 @@ impl PreferencesPanel {
             ).mt(px(20.)))
     }
 
+    fn render_caret_choices(
+        &self,
+        label: &'static str,
+        choices: Vec<(SharedString, CaretSettings, bool)>,
+        roles: Roles,
+        cx: &mut Context<Self>,
+    ) -> Div {
+        let current = caret::settings(cx);
+        div().mt(px(16.)).child(ui::label(label, roles)).child(
+            ui::row()
+                .flex_wrap()
+                .gap(px(4.))
+                .children(choices.into_iter().map(|(name, settings, disabled)| {
+                    let id = SharedString::from(format!("caret-{label}-{name}"));
+                    ui::toggle_button(
+                        id,
+                        name,
+                        settings == current,
+                        ui::Control::disabled(disabled),
+                        roles,
+                    )
+                    .when(!disabled, |this| {
+                        this.on_click(cx.listener(move |_, _, _, cx| {
+                            cx.emit(PreferencesEvent::Caret(settings));
+                        }))
+                    })
+                })),
+        )
+    }
+
+    fn render_caret_section(&self, roles: Roles, cx: &mut Context<Self>) -> Div {
+        let current = caret::settings(cx);
+        let shapes = CaretShape::ALL
+            .iter()
+            .map(|&shape| {
+                (
+                    shape.label().into(),
+                    CaretSettings { shape, ..current },
+                    false,
+                )
+            })
+            .collect();
+        let widths = (MIN_WIDTH..=MAX_WIDTH)
+            .map(|width| {
+                (
+                    format!("{width} px").into(),
+                    current.with_width(width),
+                    !current.shape.has_width(),
+                )
+            })
+            .collect();
+        let blinks = CaretBlink::ALL
+            .iter()
+            .map(|&blink| {
+                (
+                    blink.label().into(),
+                    CaretSettings { blink, ..current },
+                    false,
+                )
+            })
+            .collect();
+        div()
+            .child(ui::title("Caret", roles).mt(px(24.)))
+            .child(self.render_caret_choices("Shape", shapes, roles, cx))
+            .child(self.render_caret_choices("Width", widths, roles, cx))
+            .child(self.render_caret_choices("Blink", blinks, roles, cx))
+            .child(ui::meta("The caret takes the theme's accent color. A block covers the next character, as in Vim.", roles).mt(px(8.)))
+    }
+
     fn render_ai_section(&self, roles: Roles, cx: &mut Context<Self>) -> Div {
         div()
             .child(ui::title("AI", roles).mt(px(24.)))
@@ -832,6 +904,7 @@ impl Render for PreferencesPanel {
                     .px(px(20.))
                     .pb(px(20.))
                     .child(self.render_theme_section(roles, cx))
+                    .child(self.render_caret_section(roles, cx))
                     .child(self.render_ai_section(roles, cx))
                     .child(self.render_quick_actions_section(roles, window, cx))
                     .child(ui::meta(version_line(), roles).mt(px(32.))),

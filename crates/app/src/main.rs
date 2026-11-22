@@ -1,4 +1,5 @@
 use desafinado_core::log_err::LogErr;
+mod caret;
 mod document;
 mod editor_pane;
 mod eval_run_dialog;
@@ -134,6 +135,7 @@ fn main() {
             cx.text_system()
                 .add_fonts(FONTS.iter().map(|font| Cow::Borrowed(*font)).collect())
                 .log_err();
+            caret::init(&services.user_data, cx);
             theme::init(&services.user_data, cx);
             workspace::init(cx);
             preferences_view::init(cx);

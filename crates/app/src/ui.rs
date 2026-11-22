@@ -8,6 +8,8 @@ use std::rc::Rc;
 use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::{base::TextViewStyle, prelude::FluentBuilder as _, *};
 
+use desafinado_features::caret::{CaretSettings, CaretShape};
+
 use crate::theme::Roles;
 
 pub const TEXT_SMALL: Pixels = px(12.);
@@ -1071,10 +1073,76 @@ pub fn dot_opacity(phase: f32) -> f32 {
 
 #[cfg(test)]
 mod tests {
+    use super::{CaretInk, CaretSpot, caret_quads};
     use super::{
         Enter, cascade_delay, column_share, delayed, dot_opacity, ease_in_out_sine, ease_out_expo,
         ease_out_quart, enter_offset, lead_of,
     };
+    use desafinado_features::caret::{CaretSettings, CaretShape};
+    use gpui_kit::{point, px};
+
+    fn spot(next: Option<f32>, selecting: bool) -> CaretSpot {
+        CaretSpot {
+            origin: point(px(100.), px(40.)),
+            height: px(24.),
+            next_width: next.map(px),
+            selecting,
+        }
+    }
+
+    fn shape(shape: CaretShape, width: u8) -> CaretSettings {
+        CaretSettings {
+            shape,
+            ..CaretSettings::default()
+        }
+        .with_width(width)
+    }
+
+    #[test]
+    fn a_bar_is_as_wide_as_the_setting() {
+        let quads = caret_quads(shape(CaretShape::Bar, 4), true, spot(Some(9.), false));
+        assert_eq!(quads.len(), 1);
+        assert_eq!(quads[0].0.size.width, px(4.));
+        assert_eq!(quads[0].0.size.height, px(24.));
+        assert_eq!(quads[0].1, CaretInk::Accent);
+    }
+
+    #[test]
+    fn a_hidden_caret_only_erases_the_editor_s_own() {
+        for kind in CaretShape::ALL {
+            let quads = caret_quads(shape(kind, 3), false, spot(Some(9.), false));
+            assert_eq!(quads.len(), 1, "{kind:?}");
+            assert_eq!(quads[0].1, CaretInk::Erase);
+            assert_eq!(quads[0].0.size.width, px(1.));
+        }
+    }
+
+    #[test]
+    fn an_underline_spans_the_next_character_at_the_bottom() {
+        let quads = caret_quads(shape(CaretShape::Underline, 2), true, spot(Some(9.), false));
+        let (foot, ink) = quads[1];
+        assert_eq!(quads[0].1, CaretInk::Erase);
+        assert_eq!(ink, CaretInk::Accent);
+        assert_eq!(foot.size.width, px(9.));
+        assert_eq!(foot.size.height, px(2.));
+        assert_eq!(foot.bottom(), px(64.));
+    }
+
+    #[test]
+    fn a_block_is_a_decoration_except_at_the_end_of_a_line() {
+        assert!(caret_quads(shape(CaretShape::Block, 3), true, spot(Some(9.), false)).is_empty());
+        let end = caret_quads(shape(CaretShape::Block, 3), true, spot(None, false));
+        assert_eq!(end[0].0.size.width, px(12.));
+    }
+
+    #[test]
+    fn a_selection_shows_a_steady_bar() {
+        let bar = caret_quads(shape(CaretShape::Underline, 5), false, spot(Some(9.), true));
+        assert_eq!(bar.len(), 1);
+        assert_eq!(bar[0].0.size.width, px(5.));
+        let block = caret_quads(shape(CaretShape::Block, 5), false, spot(Some(9.), true));
+        assert_eq!(block[0].0.size.width, px(2.));
+    }
 
     #[test]
     fn a_rise_starts_below_a_drop_above_a_slide_on_its_side() {
@@ -1146,162 +1214,130 @@ mod tests {
     }
 }
 
-/// How the text caret is drawn. A study: `DESAFINADO_CARET` picks one at start.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum CaretStyle {
-    /// One pixel in the ink color, blinking: the editor's own caret.
-    #[default]
-    Thin,
-    /// One pixel in the accent color, blinking.
-    ThinColor,
-    /// A steady three-pixel bar in the accent color.
-    Bar,
-    /// A soft block behind the next character, with a one-pixel accent edge.
-    Block,
-    /// A one-pixel accent bar standing on a three-pixel line under the next character.
-    Underline,
-    /// The three-pixel accent bar, and a mark of the same color in the left
-    /// margin on the caret's row.
-    BarMark,
-    /// The three-pixel bar in the AI color, to compare with the AI caret.
-    AiBar,
+/// What a caret quad is painted with: the accent, or the canvas that hides
+/// the editor's own one-pixel caret while ours blinks off.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CaretInk {
+    Accent,
+    Erase,
 }
 
-impl Global for CaretStyle {}
-
-impl CaretStyle {
-    pub fn from_env() -> Self {
-        match std::env::var("DESAFINADO_CARET").as_deref() {
-            Ok("thin-color") => Self::ThinColor,
-            Ok("bar") => Self::Bar,
-            Ok("block") => Self::Block,
-            Ok("underline") => Self::Underline,
-            Ok("bar-mark") => Self::BarMark,
-            Ok("ai-bar") => Self::AiBar,
-            _ => Self::Thin,
-        }
-    }
-
-    /// The color the editor paints its own one-pixel caret in.
-    pub fn color(self, roles: &Roles) -> Hsla {
-        match self {
-            Self::Thin => roles.ink,
-            Self::AiBar => roles.ai,
-            _ => roles.accent,
-        }
-    }
-
-    pub fn blinks(self) -> bool {
-        matches!(self, Self::Thin | Self::ThinColor)
-    }
-
-    pub fn fills_next_character(self) -> bool {
-        self == Self::Block
-    }
+/// Where the caret sits this frame, in window pixels.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CaretSpot {
+    pub origin: Point<Pixels>,
+    pub height: Pixels,
+    /// The width of the character after the caret, on the same row.
+    pub next_width: Option<Pixels>,
+    pub selecting: bool,
 }
 
-pub fn caret_style(cx: &App) -> CaretStyle {
-    cx.try_global::<CaretStyle>().copied().unwrap_or_default()
-}
+const CARET_SELECTING_BLOCK: Pixels = px(2.);
 
-const CARET_BAR: Pixels = px(3.);
-const CARET_FOOT: Pixels = px(3.);
-const CARET_MARK_GAP: Pixels = px(12.);
-
-/// Paints the caret shapes the editor cannot draw itself, over the editor,
-/// after the editor has laid out this frame.
-pub fn caret_layer(
-    editor: Entity<gpui_kit::base::input::EditorState>,
-    roles: Roles,
-    cx: &App,
-) -> Option<AnyElement> {
-    let style = caret_style(cx);
-    if matches!(style, CaretStyle::Thin | CaretStyle::ThinColor) {
-        return None;
+/// The quads that draw the writer's caret over the editor. The editor still
+/// paints its own one-pixel caret in the accent; every shape covers it or erases it.
+pub fn caret_quads(
+    settings: CaretSettings,
+    shown: bool,
+    spot: CaretSpot,
+) -> Vec<(Bounds<Pixels>, CaretInk)> {
+    let CaretSpot {
+        origin,
+        height,
+        next_width,
+        selecting,
+    } = spot;
+    let line = px(f32::from(settings.width));
+    let bar = |width: Pixels| (Bounds::new(origin, size(width, height)), CaretInk::Accent);
+    let erase = (Bounds::new(origin, size(px(1.), height)), CaretInk::Erase);
+    if selecting {
+        let width = if settings.shape.has_width() {
+            line
+        } else {
+            CARET_SELECTING_BLOCK
+        };
+        return vec![bar(width)];
     }
-    let color = style.color(&roles);
-    let fill_color = roles.caret_fill;
-    Some(
-        canvas(
-            |_, _, _| (),
-            move |pane, (), window, cx| {
-                let state = editor.read(cx);
-                if !state.focus_handle(cx).is_focused(window) || !window.is_window_active() {
-                    return;
-                }
-                let cursor = state.cursor();
-                let Some(caret) = state.range_to_bounds(&(cursor..cursor)) else {
-                    return;
-                };
-                let next = next_character(state.text(), cursor);
-                let next_bounds = next
-                    .clone()
-                    .and_then(|range| state.range_to_bounds(&range))
-                    .filter(|bounds| (bounds.top() - caret.top()).abs() < px(1.));
-                let next_width = next_bounds
-                    .map(|bounds| bounds.size.width)
-                    .filter(|width| *width > px(0.));
-                let text = state.input_bounds();
-                let quads = caret_quads(style, caret, next_width, text.left());
-                let mask = ContentMask {
-                    bounds: Bounds::from_corners(
-                        point(pane.left(), text.top()),
-                        point(pane.right(), text.bottom()),
-                    ),
-                };
-                window.with_content_mask(Some(mask), |window| {
-                    for (bounds, soft) in quads {
-                        window.paint_quad(fill(bounds, if soft { fill_color } else { color }));
-                    }
-                });
-            },
-        )
-        .absolute()
-        .top_0()
-        .left_0()
-        .size_full()
-        .into_any_element(),
-    )
-}
-
-/// The quads of a caret at `caret`, before a character `next_width` wide, or
-/// at the end of a line; `true` marks the soft block fill. The block behind a
-/// character is a decoration under the text, so only the end of a line needs one here.
-fn caret_quads(
-    style: CaretStyle,
-    caret: Bounds<Pixels>,
-    next_width: Option<Pixels>,
-    margin_left: Pixels,
-) -> Vec<(Bounds<Pixels>, bool)> {
-    let origin = caret.origin;
-    let height = caret.size.height;
-    let width = next_width.unwrap_or(height * 0.5);
-    match style {
-        CaretStyle::Block if next_width.is_none() => {
-            vec![(Bounds::new(origin, size(width, height)), true)]
-        }
-        CaretStyle::Thin | CaretStyle::ThinColor | CaretStyle::Block => vec![],
-        CaretStyle::Bar | CaretStyle::AiBar => {
-            vec![(Bounds::new(origin, size(CARET_BAR, height)), false)]
-        }
-        CaretStyle::BarMark => vec![
-            (Bounds::new(origin, size(CARET_BAR, height)), false),
+    if !shown {
+        return vec![erase];
+    }
+    let cell = next_width.unwrap_or(height * 0.5);
+    match settings.shape {
+        CaretShape::Bar => vec![bar(line)],
+        CaretShape::Block if next_width.is_none() => vec![bar(cell)],
+        CaretShape::Block => vec![],
+        CaretShape::Underline => vec![
+            erase,
             (
-                Bounds::new(
-                    point(margin_left - CARET_MARK_GAP - CARET_BAR, origin.y),
-                    size(CARET_BAR, height),
-                ),
-                false,
+                Bounds::new(point(origin.x, origin.y + height - line), size(cell, line)),
+                CaretInk::Accent,
             ),
         ],
-        CaretStyle::Underline => vec![(
-            Bounds::new(
-                point(origin.x, origin.y + height - CARET_FOOT),
-                size(width, CARET_FOOT),
-            ),
-            false,
-        )],
     }
+}
+
+/// Paints the writer's caret over the editor, after the editor has laid out
+/// this frame, so it never trails the text.
+pub fn caret_layer(
+    editor: Entity<gpui_kit::base::input::EditorState>,
+    settings: CaretSettings,
+    shown: bool,
+    roles: Roles,
+) -> AnyElement {
+    canvas(
+        |_, _, _| (),
+        move |_, (), window, cx| {
+            let state = editor.read(cx);
+            if !state.focus_handle(cx).is_focused(window) || !window.is_window_active() {
+                return;
+            }
+            let cursor = state.cursor();
+            let Some(caret) = state.range_to_bounds(&(cursor..cursor)) else {
+                return;
+            };
+            let next_width = next_character(state.text(), cursor)
+                .and_then(|range| state.range_to_bounds(&range))
+                .filter(|bounds| (bounds.top() - caret.top()).abs() < px(1.))
+                .map(|bounds| bounds.size.width)
+                .filter(|width| *width > px(0.));
+            let scale = window.scale_factor();
+            let spot = CaretSpot {
+                origin: point((caret.origin.x * scale).round() / scale, caret.origin.y),
+                height: caret.size.height,
+                next_width,
+                selecting: !state.selected_range().is_empty(),
+            };
+            let mask = ContentMask {
+                bounds: state.input_bounds(),
+            };
+            window.with_content_mask(Some(mask), |window| {
+                for (bounds, ink) in caret_quads(settings, shown, spot) {
+                    let color = match ink {
+                        CaretInk::Accent => roles.accent,
+                        CaretInk::Erase => roles.canvas,
+                    };
+                    window.paint_quad(fill(bounds, color));
+                }
+            });
+        },
+    )
+    .absolute()
+    .top_0()
+    .left_0()
+    .size_full()
+    .into_any_element()
+}
+
+/// The block caret: the accent behind the next character, and the character
+/// in the canvas color, as Vim draws it.
+pub fn caret_block_ink(roles: Roles) -> (Hsla, HighlightStyle) {
+    (
+        roles.accent,
+        HighlightStyle {
+            color: Some(roles.canvas),
+            ..HighlightStyle::default()
+        },
+    )
 }
 
 /// The byte range of the character after `cursor`, unless it ends a line.
