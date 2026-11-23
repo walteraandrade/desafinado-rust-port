@@ -648,19 +648,19 @@ impl Workspace {
                 let service = Arc::clone(&evals_service);
                 async move { service.shutdown() }
             }),
+            // Closing the window releases the Workspace before the app quits, so the place is
+            // written here, at once, like the unsaved text in `flush_all`.
             cx.on_release(|this, cx| {
                 if let Some((db, key, json)) = this.take_place(cx) {
                     db.save_place(&key, &json, now_ms()).log_err();
                 }
                 this.flush_all();
             }),
-            cx.on_app_quit(|this, cx| {
-                let place = this.keep_place(cx);
+            cx.on_app_quit(|this, _| {
                 this.flush_all();
                 this.services.flush_records();
                 let write = this.saves.task.clone();
                 async move {
-                    place.await;
                     if let Some(write) = write {
                         write.await;
                     }
@@ -941,13 +941,23 @@ impl Workspace {
         self.history.settled();
     }
 
+    /// Remembers where the writer is in the open Document for this run only, for a text that
+    /// changes under the same file and comes straight back to its place.
+    fn remember_place(&mut self, cx: &App) -> String {
+        let key = history_key(self.session_path());
+        let place = self.pane.read(cx).place(cx);
+        self.places.insert(key.clone(), place);
+        key
+    }
+
     /// Takes where the writer is in the open Document and remembers it for this run; returns
     /// what to write to keep it across runs.
     fn take_place(&mut self, cx: &App) -> Option<(Arc<HistoryDb>, String, String)> {
-        let key = history_key(self.session_path());
-        let place = self.pane.read(cx).place(cx);
-        let json = place_to_json(&place).log_err();
-        self.places.insert(key.clone(), place);
+        let key = self.remember_place(cx);
+        let json = self
+            .places
+            .get(&key)
+            .and_then(|place| place_to_json(place).log_err());
         Some((self.db.clone()?, key, json?))
     }
 
@@ -970,6 +980,11 @@ impl Workspace {
             place_from_json(&json).log_warn()
         });
         let text = self.text(cx);
+        if let Some(db) = self.db.clone() {
+            let forget = key.clone();
+            cx.background_spawn(async move { db.clear_place(&forget).log_err() })
+                .detach();
+        }
         let restored = restore_place(&saved?, &text)?;
         let dropped = restored.dropped;
         self.pane
@@ -1035,7 +1050,11 @@ impl Workspace {
             None
         };
         let arrived = restore_unsaved(&text, stored.as_ref());
-        self.keep_place(cx).detach();
+        if self.session_path() == Some(path.as_path()) {
+            self.remember_place(cx);
+        } else {
+            self.keep_place(cx).detach();
+        }
         self.settle_before(&arrived.text, cx);
         self.saves.document += 1;
         self.session = Some(opened_session(
@@ -1120,6 +1139,7 @@ impl Workspace {
         self.session = Some(opened_session(&name, &path, &text, &text));
         let change = minimal_change(&self.text(cx), &text);
         self.last_text.clone_from(&text);
+        self.remember_place(cx);
         self.pane
             .update(cx, |pane, cx| pane.refresh_text(&change, window, cx));
         self.arrived();
@@ -1128,6 +1148,13 @@ impl Workspace {
         self.replaced(window, cx);
         self.announce(&text, cx);
         self.notify(format!("Reloaded {name}: it changed on disk"), cx);
+        // The editor reports the reload's edit after this update; returning to the place
+        // before it would move the restored Suggestions a second time.
+        cx.defer_in(window, |this, _, cx| {
+            if let Some(dropped) = this.return_to_place(cx).filter(|dropped| *dropped > 0) {
+                this.notify(dropped_text(dropped), cx);
+            }
+        });
         self.watch();
     }
 
@@ -1765,8 +1792,9 @@ impl Workspace {
     }
 
     fn clear_document(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.keep_place(cx).detach();
-        self.places.remove(SCRATCH_KEY);
+        if self.session_path().is_some() {
+            self.keep_place(cx).detach();
+        }
         self.settle_before("", cx);
         self.saves.document += 1;
         self.session = None;
