@@ -18,6 +18,7 @@ pub mod story;
 pub mod summary;
 pub mod thin;
 pub mod time;
+pub mod timeline;
 pub mod types;
 pub mod view_mode;
 pub mod word_delta;

@@ -406,13 +406,12 @@ pub struct Workspace {
     toast_serial: u64,
     pub(crate) mode: HistoryMode,
     pub(crate) hovered: Option<VersionId>,
-    pub(crate) dot_hovered: Option<VersionId>,
     pub(crate) flash: Option<(VersionId, Task<()>)>,
     pub(crate) compare: Option<(VersionId, String, Option<Vec<LineChange>>)>,
     pub(crate) entry_diffs: HashMap<(VersionId, VersionId), Option<Vec<LineChange>>>,
     pub(crate) history_scroll: ScrollHandle,
     pub(crate) compare_scroll: ScrollHandle,
-    pub(crate) timeline_width: std::rc::Rc<std::cell::Cell<Pixels>>,
+    pub(crate) timeline: crate::history_view::Timeline,
     pub(crate) utc_offset: i64,
     open_menu: Option<MenuKind>,
     leave: Option<LeaveIntent>,
@@ -505,13 +504,12 @@ impl Workspace {
             toast_serial: 0,
             mode: HistoryMode::Editing,
             hovered: None,
-            dot_hovered: None,
             flash: None,
             compare: None,
             entry_diffs: HashMap::new(),
             history_scroll: ScrollHandle::new(),
             compare_scroll: ScrollHandle::new(),
-            timeline_width: std::rc::Rc::new(std::cell::Cell::new(px(560.))),
+            timeline: crate::history_view::Timeline::default(),
             utc_offset,
             open_menu: None,
             leave: None,
@@ -1324,6 +1322,8 @@ impl Workspace {
         self.mode = HistoryMode::Editing;
         self.page = Page::Evals;
         self.hovered = None;
+        self.timeline.focus = None;
+        self.timeline.hovered = None;
         self.open_menu = None;
         self.unsaved_checked = None;
         window.focus(&self.focus, cx);
@@ -1954,9 +1954,14 @@ impl Workspace {
             self.page = Page::Text;
         }
         self.mode = next_history_mode(&ids, from, action);
+        self.timeline.hovered = None;
         let editing = self.visible_mode() == HistoryMode::Editing;
+        if let HistoryMode::Version { id } = self.visible_mode() {
+            self.timeline.focus = Some(id);
+        }
         if editing {
             self.hovered = None;
+            self.timeline.focus = None;
             if !was_editing {
                 self.focus_text(window, cx);
             }
@@ -1979,6 +1984,8 @@ impl Workspace {
     }
 
     pub(crate) fn on_dot(&mut self, id: VersionId, window: &mut Window, cx: &mut Context<Self>) {
+        self.timeline.hovered = None;
+        self.timeline.focus = Some(id);
         if self.visible_mode() != HistoryMode::Full {
             self.apply_mode(HistoryModeAction::Show { id }, window, cx);
             self.compare_scroll.set_offset(point(px(0.), px(0.)));
@@ -2028,7 +2035,8 @@ impl Workspace {
         let ids = self.history_ids();
         let current = match self.visible_mode() {
             HistoryMode::Version { id } => Some(id),
-            _ => None,
+            HistoryMode::Full => self.timeline.focus,
+            HistoryMode::Editing => None,
         };
         if let Some(target) =
             desafinado_features::history::view_mode::dot_target(&ids, current, key)

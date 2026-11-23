@@ -25,7 +25,7 @@ Every feature of `desafinado`'s Electron build (as of `b269c9c`, 2026-11-14) and
 
 ## History
 - [x] Versions with Cause (Started, Edited, Accepted, Opened, Restored, External, Saved mark) in `history.sqlite`, one History per file
-- [x] Timeline under the header, a dot per Version, compare with the current text, Restore (`←` `→` `Home` `End` step between dots while a Version or the full history is shown, not from a focused dot in the editing view; Now has no hover title)
+- [x] Timeline under the header, a dot per Version (once they no longer fit, the newest stay as dots and the rest fold into a strip that jumps to any stretch; the Electron app always shows one dot per Version), compare with the current text, Restore (`←` `→` `Home` `End` step between dots while a Version or the full history is shown, not from a focused dot in the editing view; Now has no hover title)
 - [x] Full history page "How this Document changed" (entry diffs are computed for every entry, not only near the viewport; the flash on a dot click ends without a fade)
 - [x] Undo/redo keys (`Ctrl+Z`, `Ctrl+Shift+Z`, `Ctrl+Y`) (opening a file or Reload from disk starts a fresh undo stack, where CodeMirror kept it as one undoable change; Restore and a watcher reload are undoable as in Electron)
 
