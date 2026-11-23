@@ -1,5 +1,5 @@
 use desafinado_core::log_err::LogErr;
-use std::rc::Rc;
+use std::{cell::Cell, ops::Range, rc::Rc};
 
 use desafinado_features::{
     diff::DiffHunk,
@@ -10,6 +10,7 @@ use desafinado_features::{
             plural,
         },
         time::{format_ago, format_clock},
+        timeline::{StripCell, TimelineFit, cell_span_label, cell_summary, timeline_window},
         types::{VersionCause, VersionId, VersionSummary},
         view_mode::HistoryMode,
     },
@@ -18,11 +19,16 @@ use gpui_kit::{prelude::FluentBuilder as _, *};
 
 use crate::{
     theme::Roles,
-    ui::{self, ButtonKind, ButtonSize, Pip, Type as _},
+    ui::{self, ButtonKind, ButtonSize, CellState, Pip, Type as _},
     workspace::{Workspace, column_row, now_ms},
 };
 
 const DOT_SIZE: f32 = 24.;
+const LEAST_DOT: f32 = 16.;
+const MOST_RECENT: usize = 16;
+const STRIP_SHARE: f32 = 0.4;
+const STRIP_GAP: f32 = 16.;
+const CELL_STEP: f32 = 8.;
 const TOOLTIP_WIDTH: f32 = 256.;
 const BLANK_LINE: &str = "\u{a0}";
 
@@ -176,6 +182,82 @@ fn centered(content: impl IntoElement) -> Div {
         .child(div().w(px(768.)).max_w_full().px(px(24.)).child(content))
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum TimelineHover {
+    Dot(VersionId),
+    Cell(VersionId),
+}
+
+pub(crate) struct Timeline {
+    pub width: Rc<Cell<Pixels>>,
+    pub focus: Option<VersionId>,
+    pub hovered: Option<TimelineHover>,
+}
+
+impl Default for Timeline {
+    fn default() -> Self {
+        Self {
+            width: Rc::new(Cell::new(px(560.))),
+            focus: None,
+            hovered: None,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct TrackLayout {
+    width: f32,
+    strip: f32,
+    fit: TimelineFit,
+}
+
+fn track_layout(width: Pixels) -> TrackLayout {
+    let width = f32::from(width);
+    let strip = (width * STRIP_SHARE / CELL_STEP).floor() * CELL_STEP;
+    let dots = width - strip - STRIP_GAP;
+    TrackLayout {
+        width,
+        strip,
+        fit: TimelineFit {
+            all: (width / LEAST_DOT) as usize + 1,
+            recent: ((dots / DOT_SIZE) as usize + 1).min(MOST_RECENT),
+            cells: (strip / CELL_STEP) as usize,
+        },
+    }
+}
+
+fn cell_tooltip(cell: &StripCell, utc_offset: i64, roles: Roles) -> Div {
+    div()
+        .child(
+            div()
+                .weight_medium()
+                .text_color(roles.heading)
+                .child(cell_span_label(cell, now_ms(), utc_offset)),
+        )
+        .child(div().mt(px(4.)).child(cell_summary(cell)))
+        .child(ui::meta("Click to show these Versions", roles).mt(px(4.)))
+}
+
+fn tooltip_at(body: Div, share: f32, half: Pixels, roles: Roles) -> Deferred {
+    let side = div().absolute().top(px(36.)).w(px(TOOLTIP_WIDTH));
+    let side = if share < 0.25 {
+        side.left(-half)
+    } else if share > 0.75 {
+        side.right(-half)
+    } else {
+        side.left(px(-TOOLTIP_WIDTH / 2.))
+    };
+    deferred(
+        side.bg(roles.overlay)
+            .p(px(12.))
+            .type_small()
+            .line_height(relative(1.4))
+            .text_color(roles.ink)
+            .child(body),
+    )
+    .with_priority(2)
+}
+
 impl Workspace {
     fn clock(&self, at: i64, now: i64) -> String {
         format_clock(at, now, self.utc_offset)
@@ -256,21 +338,71 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) -> Stateful<Div> {
         let versions = self.history.snapshot().clone();
+        let layout = track_layout(self.timeline.width.get());
+        let window = timeline_window(&versions, self.timeline.focus, layout.fit);
         let selected = match mode {
             HistoryMode::Version { id } => Some(id),
             _ => None,
         };
-        let gaps = versions.len().saturating_sub(1).max(1) as f32;
-        let dot_width = px(DOT_SIZE).min(self.timeline_width.get() / gaps);
-        let measured = Rc::clone(&self.timeline_width);
-        let dots: Vec<Div> = versions
+        let dots_width = if window.strip.is_empty() {
+            layout.width
+        } else {
+            layout.width - layout.strip - STRIP_GAP
+        };
+        let dots = self.render_dots(&versions, window.dots, dots_width, selected, roles, cx);
+        let measured = Rc::clone(&self.timeline.width);
+        div()
+            .id("timeline")
+            .relative()
+            .h(px(32.))
+            .flex_1()
+            .mr(px(8.))
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(px(STRIP_GAP))
+            .child(
+                canvas(
+                    move |bounds, _, _| measured.set(bounds.size.width),
+                    |_, (), _, _| {},
+                )
+                .absolute()
+                .size_full(),
+            )
+            .when(!window.strip.is_empty(), |this| {
+                this.child(self.render_strip(&versions, &window.strip, layout, roles, cx))
+            })
+            .child(
+                div()
+                    .relative()
+                    .h_full()
+                    .flex_1()
+                    .child(ui::axis(roles).absolute().left_0().right_0().top(px(16.)))
+                    .children(dots),
+            )
+    }
+
+    fn render_dots(
+        &self,
+        versions: &[VersionSummary],
+        range: Range<usize>,
+        width: f32,
+        selected: Option<VersionId>,
+        roles: Roles,
+        cx: &mut Context<Self>,
+    ) -> Vec<Div> {
+        let gaps = range.len().saturating_sub(1).max(1) as f32;
+        let dot_width = px(DOT_SIZE.min(width / gaps));
+        versions[range]
             .iter()
             .enumerate()
-            .map(|(index, version)| {
+            .map(|(offset, version)| {
                 let id = version.id;
-                let share = index as f32 / gaps;
-                let tooltip = (self.dot_hovered == Some(id))
-                    .then(|| self.render_dot_tooltip(&versions, version, share, dot_width, roles));
+                let share = offset as f32 / gaps;
+                let tooltip = (self.timeline.hovered == Some(TimelineHover::Dot(id))).then(|| {
+                    let body = self.dot_tooltip(versions, version, roles);
+                    tooltip_at(body, share, dot_width / 2., roles)
+                });
                 div()
                     .absolute()
                     .top_0()
@@ -290,12 +422,7 @@ impl Workspace {
                         )
                         .child(mark(&version.cause, roles))
                         .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
-                            if *hovered {
-                                this.dot_hovered = Some(id);
-                            } else if this.dot_hovered == Some(id) {
-                                this.dot_hovered = None;
-                            }
-                            cx.notify();
+                            this.hover_timeline(TimelineHover::Dot(id), *hovered, cx);
                         }))
                         .on_click(
                             cx.listener(move |this, _, window, cx| this.on_dot(id, window, cx)),
@@ -303,63 +430,93 @@ impl Workspace {
                     )
                     .children(tooltip)
             })
-            .collect();
-        div()
-            .id("timeline")
-            .relative()
-            .h(px(32.))
-            .flex_1()
-            .mr(px(8.))
-            .child(
-                canvas(
-                    move |bounds, _, _| measured.set(bounds.size.width),
-                    |_, (), _, _| {},
-                )
-                .absolute()
-                .size_full(),
-            )
-            .child(ui::axis(roles).absolute().left_0().right_0().top(px(16.)))
-            .children(dots)
+            .collect()
     }
 
-    fn render_dot_tooltip(
+    fn hover_timeline(&mut self, target: TimelineHover, hovered: bool, cx: &mut Context<Self>) {
+        if hovered {
+            self.timeline.hovered = Some(target);
+        } else if self.timeline.hovered == Some(target) {
+            self.timeline.hovered = None;
+        }
+        cx.notify();
+    }
+
+    fn render_strip(
+        &self,
+        versions: &[VersionSummary],
+        cells: &[StripCell],
+        layout: TrackLayout,
+        roles: Roles,
+        cx: &mut Context<Self>,
+    ) -> Div {
+        let count = cells.len() as f32;
+        let strip_share = layout.strip / layout.width.max(1.);
+        div()
+            .flex_none()
+            .w(px(layout.strip))
+            .flex()
+            .flex_row()
+            .items_center()
+            .children(cells.iter().enumerate().map(|(index, cell)| {
+                let key = versions[cell.range.start].id;
+                let last = versions[cell.range.end - 1].id;
+                let state = if cell.shown {
+                    CellState::Shown
+                } else if cell.mostly_ai {
+                    CellState::Ai
+                } else {
+                    CellState::Plain
+                };
+                let hover = TimelineHover::Cell(key);
+                let tooltip = (self.timeline.hovered == Some(hover)).then(|| {
+                    let share = (index as f32 + 0.5) / count * strip_share;
+                    div()
+                        .absolute()
+                        .top_0()
+                        .left(relative(0.5))
+                        .w(px(0.))
+                        .child(tooltip_at(
+                            cell_tooltip(cell, self.utc_offset, roles),
+                            share,
+                            px(CELL_STEP / 2.),
+                            roles,
+                        ))
+                });
+                ui::strip_cell(("timeline-cell", key as u64), state, roles)
+                    .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
+                        this.hover_timeline(hover, *hovered, cx);
+                    }))
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        if this.visible_mode() != (HistoryMode::Version { id: last }) {
+                            this.on_dot(last, window, cx);
+                        }
+                    }))
+                    .children(tooltip)
+            }))
+    }
+
+    fn dot_tooltip(
         &self,
         versions: &[VersionSummary],
         version: &VersionSummary,
-        share: f32,
-        dot_width: Pixels,
         roles: Roles,
-    ) -> Deferred {
+    ) -> Div {
         let now = now_ms();
         let offset = self.utc_offset;
         let clock_of = move |at: i64| format_clock(at, now, offset);
         let description = describe_version(versions, version, clock_of);
-        let side = div().absolute().top(px(36.)).w(px(TOOLTIP_WIDTH));
-        let side = if share < 0.25 {
-            side.left(-dot_width / 2.)
-        } else if share > 0.75 {
-            side.right(-dot_width / 2.)
-        } else {
-            side.left(px(-TOOLTIP_WIDTH / 2.))
-        };
-        deferred(
-            side.bg(roles.overlay)
-                .p(px(12.))
-                .type_small()
-                .line_height(relative(1.4))
-                .text_color(roles.ink)
-                .child(
-                    div()
-                        .weight_medium()
-                        .text_color(roles.heading)
-                        .child(format!("{} · {}", description.label, clock_of(version.at))),
-                )
-                .child(div().mt(px(4.)).child(description.headline.clone()))
-                .when_some(version.saved.clone(), |this, saved| {
-                    this.child(ui::meta(format!("Saved to {saved}"), roles).mt(px(4.)))
-                }),
-        )
-        .with_priority(2)
+        div()
+            .child(
+                div()
+                    .weight_medium()
+                    .text_color(roles.heading)
+                    .child(format!("{} · {}", description.label, clock_of(version.at))),
+            )
+            .child(div().mt(px(4.)).child(description.headline.clone()))
+            .when_some(version.saved.clone(), |this, saved| {
+                this.child(ui::meta(format!("Saved to {saved}"), roles).mt(px(4.)))
+            })
     }
 
     pub(crate) fn render_version_bar(

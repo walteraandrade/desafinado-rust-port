@@ -397,6 +397,35 @@ pub fn dot_button(
         })
 }
 
+/// A cell of the Timeline's strip, which stands for a run of Versions: a bar in the accent
+/// color where the dots show, in the AI color where accepted Suggestions are a good share of
+/// the run, plain fill otherwise. The whole slot takes the pointer, gaps included.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CellState {
+    Plain,
+    Ai,
+    Shown,
+}
+
+pub fn strip_cell(id: impl Into<ElementId>, state: CellState, roles: Roles) -> Stateful<Div> {
+    let color = match state {
+        CellState::Plain => roles.fill_hover,
+        CellState::Ai => roles.ai,
+        CellState::Shown => roles.accent,
+    };
+    div()
+        .id(id)
+        .relative()
+        .flex_1()
+        .h(px(24.))
+        .flex()
+        .items_center()
+        .justify_center()
+        .cursor_pointer()
+        .hover(move |this| this.bg(roles.fill))
+        .child(div().w(px(4.)).h(px(12.)).bg(color))
+}
+
 /// A Note's mark in the margin: its number on the AI tint, the AI color once open, and plain
 /// fill when the text under it changed since the AI read it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
