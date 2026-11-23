@@ -264,9 +264,67 @@ impl ChangeSet {
     }
 }
 
+/// The changes that turn `before` into `after`, line by line, so that an edit in one paragraph
+/// leaves the positions in the others untouched.
+pub fn changes_between(before: &str, after: &str) -> ChangeSet {
+    let diff = similar::TextDiff::from_lines(before, after);
+    let line_starts = |text: &str| -> Vec<usize> {
+        std::iter::once(0)
+            .chain(text.match_indices('\n').map(|(at, _)| at + 1))
+            .collect()
+    };
+    let (starts_a, starts_b) = (line_starts(before), line_starts(after));
+    let offset =
+        |starts: &[usize], line: usize, len: usize| starts.get(line).copied().unwrap_or(len);
+    let changes: Vec<TextChange> = diff
+        .ops()
+        .iter()
+        .filter(|op| !matches!(op, similar::DiffOp::Equal { .. }))
+        .map(|op| {
+            let (a, b) = (op.old_range(), op.new_range());
+            let from = offset(&starts_a, a.start, before.len());
+            let to = offset(&starts_a, a.end, before.len());
+            let insert_from = offset(&starts_b, b.start, after.len());
+            let insert_to = offset(&starts_b, b.end, after.len());
+            TextChange::new(from, to, &after[insert_from..insert_to])
+        })
+        .collect();
+    ChangeSet::of(&changes, before.len())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn apply(text: &str, changes: &ChangeSet) -> String {
+        changes
+            .changes()
+            .iter()
+            .rev()
+            .fold(text.to_string(), |mut text, change| {
+                text.replace_range(change.from..change.to, &change.insert);
+                text
+            })
+    }
+
+    #[test]
+    fn changes_between_two_texts_touch_only_the_lines_that_differ() {
+        let before = "one\ntwo\nthree\nfour";
+        let after = "zero\none\nTWO\nthree\nfour!";
+        let changes = changes_between(before, after);
+        assert_eq!(apply(before, &changes), after);
+        assert_eq!(
+            changes.map_pos(before.find("three").unwrap(), Assoc::After),
+            after.find("three").unwrap()
+        );
+        let touched: Vec<(usize, usize)> = changes
+            .changes()
+            .iter()
+            .map(|change| (change.from, change.to))
+            .collect();
+        assert_eq!(touched, vec![(0, 0), (4, 8), (14, 18)]);
+        assert!(changes_between(before, before).is_empty());
+    }
 
     fn of(changes: &[TextChange], length: usize) -> ChangeSet {
         ChangeSet::of(changes, length)

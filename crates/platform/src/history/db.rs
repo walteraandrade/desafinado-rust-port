@@ -46,6 +46,15 @@ const SCHEMA: &str = "
   );
 ";
 
+/// Added after version 1 without a version bump, so that an older build still opens the file.
+const PLACES: &str = "
+  create table if not exists places (
+    file_id integer primary key references files(id),
+    place text not null,
+    at integer not null
+  );
+";
+
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[error("{0}")]
 pub struct HistoryError(pub String);
@@ -137,6 +146,7 @@ fn prepare_schema(connection: &Connection) -> Result<()> {
             connection.execute_batch(SCHEMA)?;
             connection.execute_batch(&format!("pragma user_version = {SCHEMA_VERSION}"))?;
         }
+        connection.execute_batch(PLACES)?;
         Ok(())
     })
 }
@@ -299,6 +309,32 @@ impl HistoryDb {
                 params![path],
             )?;
             Ok(())
+        })
+    }
+
+    /// Where the writer was in a file, as the editor saved it.
+    pub fn load_place(&self, path: &str) -> Result<Option<String>> {
+        self.with(|connection| {
+            Ok(connection
+                .query_row(
+                    "select p.place from places p join files f on f.id = p.file_id where f.path = ?",
+                    params![path],
+                    |row| row.get(0),
+                )
+                .optional()?)
+        })
+    }
+
+    pub fn save_place(&self, path: &str, place: &str, at: i64) -> Result<()> {
+        self.with(|connection| {
+            in_transaction(connection, || {
+                let file_id = Self::file_id_of(connection, path)?;
+                connection.execute(
+                    "insert into places (file_id, place, at) values (?, ?, ?) on conflict (file_id) do update set place = excluded.place, at = excluded.at",
+                    params![file_id, place, at],
+                )?;
+                Ok(())
+            })
         })
     }
 
@@ -500,7 +536,7 @@ mod tests {
     }
 
     #[test]
-    fn creates_the_tables_of_adr_0015() {
+    fn creates_the_tables_of_adr_0015_and_places() {
         let f = fixture();
         open(&f);
         let names: Vec<String> = inspect(&f, |c| {
@@ -514,7 +550,14 @@ mod tests {
         });
         assert_eq!(
             names,
-            ["blobs", "drafts", "files", "versions", "versions_by_file"]
+            [
+                "blobs",
+                "drafts",
+                "files",
+                "places",
+                "versions",
+                "versions_by_file"
+            ]
         );
     }
 
@@ -561,6 +604,47 @@ mod tests {
                 .unwrap()),
             1
         );
+    }
+
+    #[test]
+    fn keeps_the_latest_place_of_each_file_across_a_restart() {
+        let f = fixture();
+        let db = open(&f);
+        assert_eq!(db.load_place(PATH).unwrap(), None);
+        db.save_place(PATH, "{\"first\":1}", 1).unwrap();
+        db.save_place(PATH, "{\"second\":2}", 2).unwrap();
+        db.save_place("/other.md", "{\"other\":3}", 2).unwrap();
+        db.close();
+        let db = open(&f);
+        assert_eq!(
+            db.load_place(PATH).unwrap().as_deref(),
+            Some("{\"second\":2}")
+        );
+        assert_eq!(
+            db.load_place("/other.md").unwrap().as_deref(),
+            Some("{\"other\":3}")
+        );
+    }
+
+    #[test]
+    fn adds_places_to_a_database_made_before_them_and_keeps_its_version() {
+        let f = fixture();
+        {
+            let connection = Connection::open(&f.file).unwrap();
+            connection.execute_batch(SCHEMA).unwrap();
+            connection
+                .execute_batch(&format!("pragma user_version = {SCHEMA_VERSION}"))
+                .unwrap();
+        }
+        let db = open(&f);
+        db.save_place(PATH, "{}", 1).unwrap();
+        assert_eq!(db.load_place(PATH).unwrap().as_deref(), Some("{}"));
+        db.close();
+        let version: i64 = Connection::open(&f.file)
+            .unwrap()
+            .query_row("pragma user_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, SCHEMA_VERSION);
     }
 
     #[test]

@@ -1,6 +1,7 @@
 //! Which kind of Review the writer asked for: comments from an editor, or changes to the text.
 //! A decision model (Jev, on OpenRouter's Decisions API) reads the Focus and picks one.
 
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::errors::ClientError;
@@ -11,7 +12,8 @@ pub const DECISION_MODEL: &str = "typesafe/jev-1.14";
 pub const DECISION_PROVIDER: &str = "TypeSafe";
 const QUESTION: &str = "mode";
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum ReviewMode {
     Comment,
     Revise,
@@ -49,14 +51,15 @@ impl ReviewMode {
 
 /// Who picked the mode: no Focus means Comment without asking, the decision model reads a
 /// Focus, and the writer can switch it.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "lowercase")]
 pub enum ModeSource {
     Default,
     Decided { probability: Option<f64> },
     Writer,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct ModeChoice {
     pub mode: ReviewMode,
     pub source: ModeSource,
