@@ -268,12 +268,18 @@ impl ChangeSet {
 /// leaves the positions in the others untouched.
 pub fn changes_between(before: &str, after: &str) -> ChangeSet {
     let diff = similar::TextDiff::from_lines(before, after);
-    let line_starts = |text: &str| -> Vec<usize> {
+    let line_starts = |slices: &[&str]| -> Vec<usize> {
         std::iter::once(0)
-            .chain(text.match_indices('\n').map(|(at, _)| at + 1))
+            .chain(slices.iter().scan(0, |at, slice| {
+                *at += slice.len();
+                Some(*at)
+            }))
             .collect()
     };
-    let (starts_a, starts_b) = (line_starts(before), line_starts(after));
+    let (starts_a, starts_b) = (
+        line_starts(diff.old_slices()),
+        line_starts(diff.new_slices()),
+    );
     let offset =
         |starts: &[usize], line: usize, len: usize| starts.get(line).copied().unwrap_or(len);
     let changes: Vec<TextChange> = diff
@@ -324,6 +330,26 @@ mod tests {
             .collect();
         assert_eq!(touched, vec![(0, 0), (4, 8), (14, 18)]);
         assert!(changes_between(before, before).is_empty());
+    }
+
+    #[test]
+    fn changes_between_handles_empty_texts_missing_newlines_crlf_and_multibyte_lines() {
+        let cases = [
+            ("", "new\n"),
+            ("old\n", ""),
+            ("a\nb", "a\nb and more"),
+            ("a\r\nb\r\n", "a\r\nB\r\n"),
+            ("a\rb\nc\n", "a\rb\nC\n"),
+            ("ação\né\n", "ação\nê\n"),
+            ("one", "two"),
+        ];
+        for (before, after) in cases {
+            let changes = changes_between(before, after);
+            assert_eq!(apply(before, &changes), after, "{before:?} -> {after:?}");
+            for change in changes.changes() {
+                assert!(before.is_char_boundary(change.from) && before.is_char_boundary(change.to));
+            }
+        }
     }
 
     fn of(changes: &[TextChange], length: usize) -> ChangeSet {

@@ -19,7 +19,7 @@ The AI proposes; your voice wins. Every change it suggests sits in your text as 
 
 **Read it rendered.** `Ctrl+Alt+R` (or **Edit → Reading view**) swaps the editor for the rendered Markdown: real heading sizes, lists, quotes, links, and code in a monospace font whose long lines scroll sideways (Shift+wheel) instead of wrapping, without the frontmatter. Press it again to edit.
 
-**Come back where you left off.** Close the app, or open another file, and when you return the text is scrolled to the same spot with the caret where it was, and the Suggestions and Notes you had not answered yet are still there. If the file changed outside the app in the meantime, Suggestions over the changed lines are dropped and the rest stay.
+**Come back where you left off.** Close the app, or open another file, and when you return the text is scrolled to the same spot with the caret where it was, and the Suggestions ready for review and the Notes you had not answered yet are still there (one still waiting for the model is not kept). If the file changed outside the app in the meantime, Suggestions over the changed lines are dropped and the rest stay.
 
 **Keep the history.** The timeline under the header keeps a version after each accept, open, restore, save and pause in your typing, marked by who made it. Once the versions no longer fit as dots, the newest ones stay as dots and the whole history folds into a strip on their left, with stretches of accepted Suggestions in the AI color; click the strip to jump there. Compare any version with the current text and restore it. Each document keeps its own history, with no cap, in a SQLite database in the settings folder.
 

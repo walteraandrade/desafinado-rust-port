@@ -330,11 +330,23 @@ impl HistoryDb {
             in_transaction(connection, || {
                 let file_id = Self::file_id_of(connection, path)?;
                 connection.execute(
-                    "insert into places (file_id, place, at) values (?, ?, ?) on conflict (file_id) do update set place = excluded.place, at = excluded.at",
+                    "insert into places (file_id, place, at) values (?, ?, ?) on conflict (file_id) do update set place = excluded.place, at = excluded.at where excluded.at >= places.at",
                     params![file_id, place, at],
                 )?;
                 Ok(())
             })
+        })
+    }
+
+    /// Forgets a file's place once the editor has gone back to it, so that a run that ends
+    /// without saving it again does not bring back what the writer has since answered.
+    pub fn clear_place(&self, path: &str) -> Result<()> {
+        self.with(|connection| {
+            connection.execute(
+                "delete from places where file_id in (select id from files where path = ?)",
+                params![path],
+            )?;
+            Ok(())
         })
     }
 

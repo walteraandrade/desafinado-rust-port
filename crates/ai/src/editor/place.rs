@@ -205,7 +205,11 @@ pub fn restore_place(saved: &SavedPlace, text: &str) -> Option<RestoredPlace> {
             notes: board
                 .notes
                 .iter()
-                .filter(|note| note.from <= note.to && note.to <= text.len())
+                .filter(|note| {
+                    note.from <= note.to
+                        && text.is_char_boundary(note.from)
+                        && text.is_char_boundary(note.to)
+                })
                 .cloned()
                 .collect(),
             ..board
@@ -521,5 +525,48 @@ mod tests {
         let saved = taken(&state);
         let json = place_to_json(&saved).unwrap();
         assert_eq!(place_from_json(&json).unwrap(), saved);
+    }
+
+    #[test]
+    fn a_selection_over_a_changed_line_stays_in_order_inside_the_text() {
+        let saved = SavedPlace {
+            selection: PlaceSelection {
+                start: 2,
+                end: 10,
+                reversed: true,
+            },
+            ..taken(&empty_suggestions())
+        };
+        let restored = restore_place(&saved, "Fé\n\nSecond paragraph, too long by far.\n").unwrap();
+        let PlaceSelection { start, end, .. } = restored.selection;
+        assert!(start <= end);
+        assert!(end <= "Fé\n\nSecond paragraph, too long by far.\n".len());
+    }
+
+    #[test]
+    fn drops_a_suggestion_whose_shown_version_is_missing_and_a_note_off_the_text() {
+        let mut saved = taken(&with_ready(
+            &empty_suggestions(),
+            "s1",
+            "First paragraph here.",
+            "First.",
+        ));
+        saved.suggestions[0].shown = 5;
+        if let Some(board) = saved.notes.as_mut() {
+            board.notes[0].to = TEXT.len() + 10;
+        }
+        let restored = restore_place(&saved, TEXT).unwrap();
+        assert!(restored.suggestions.items.is_empty());
+        assert_eq!(restored.notes.unwrap().notes.len(), 0);
+    }
+
+    #[test]
+    fn reads_a_place_saved_without_suggestions_notes_or_mode() {
+        let json = r#"{"version":1,"text":"Hi","selection":{"start":1,"end":1,"reversed":false},"scroll_y":40.0}"#;
+        let restored = restore_place(&place_from_json(json).unwrap(), "Hi").unwrap();
+        assert_eq!(restored.selection.start, 1);
+        assert!(restored.suggestions.items.is_empty());
+        assert_eq!(restored.notes, None);
+        assert_eq!(restored.mode, None);
     }
 }
