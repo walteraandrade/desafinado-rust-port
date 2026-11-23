@@ -11,6 +11,7 @@ pub mod interaction_state;
 pub mod keep_in_view;
 pub mod minimal_change;
 pub mod motion_field;
+pub mod place;
 pub mod popover_place;
 pub mod refine_draft;
 pub mod refine_input;

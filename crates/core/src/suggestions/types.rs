@@ -97,7 +97,7 @@ impl Instruction {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SuggestionBase {
     pub id: SuggestionId,
     pub from: usize,
@@ -109,7 +109,7 @@ pub struct SuggestionBase {
     pub origin: SuggestionOrigin,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RefineStep {
     pub instruction: Instruction,
     pub replacement: String,

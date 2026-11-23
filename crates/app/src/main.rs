@@ -3,6 +3,7 @@ mod caret;
 mod comment_review;
 mod document;
 mod editor_pane;
+mod editor_place;
 mod eval_run_dialog;
 mod evals_view;
 mod frontmatter_view;

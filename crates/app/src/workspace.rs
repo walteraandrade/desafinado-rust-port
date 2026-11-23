@@ -75,6 +75,7 @@ use crate::{
     theme::{self, Roles},
     ui::{self, ButtonKind, ToastTone, Type as _},
 };
+use desafinado_ai::editor::place::{SavedPlace, place_from_json, place_to_json, restore_place};
 use desafinado_ai::quick_action_settings::{
     QuickActionSettings, default_quick_action_settings, enabled_quick_actions,
     parse_quick_action_settings, serialize_quick_action_settings,
@@ -290,6 +291,14 @@ fn with_reason(text: String, reason: Option<&str>) -> String {
     }
 }
 
+fn dropped_text(count: usize) -> String {
+    if count == 1 {
+        "1 Suggestion no longer matched the text and was dropped".to_string()
+    } else {
+        format!("{count} Suggestions no longer matched the text and were dropped")
+    }
+}
+
 fn load_unsaved(db: Option<&HistoryDb>, key: &str) -> Option<Unsaved> {
     db.and_then(|db| db.load_unsaved(key).log_err().flatten())
 }
@@ -399,6 +408,9 @@ pub struct Workspace {
     history_tick: Option<Task<()>>,
     unsaved: HashMap<String, Unsaved>,
     unsaved_task: Option<Task<()>>,
+    /// Places taken in this run, by History key, so a file opened again finds its place
+    /// before the background write of it lands.
+    places: HashMap<String, SavedPlace>,
     remembered: Option<PathBuf>,
     watcher: Option<ExternalChangesController>,
     watched: Option<Watching>,
@@ -497,6 +509,7 @@ impl Workspace {
             history_tick: None,
             unsaved: HashMap::new(),
             unsaved_task: None,
+            places: HashMap::new(),
             remembered,
             watcher: None,
             watched: None,
@@ -557,9 +570,16 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let returned = self.return_to_place(cx);
+        if returned.is_some() {
+            self.focus_text(window, cx);
+        }
+        let dropped = returned.unwrap_or(0);
         self.start_watcher(window, cx);
         self.sync_library(cx);
         self.listen_for_launches(launches, window, cx);
+        let notice =
+            notice.or_else(|| (dropped > 0).then(|| (dropped_text(dropped), ToastTone::Neutral)));
         if let Some((text, tone)) = notice {
             self.notify_with(text, tone, Vec::new(), cx);
         }
@@ -628,12 +648,19 @@ impl Workspace {
                 let service = Arc::clone(&evals_service);
                 async move { service.shutdown() }
             }),
-            cx.on_release(|this, _| this.flush_all()),
-            cx.on_app_quit(|this, _| {
+            cx.on_release(|this, cx| {
+                if let Some((db, key, json)) = this.take_place(cx) {
+                    db.save_place(&key, &json, now_ms()).log_err();
+                }
+                this.flush_all();
+            }),
+            cx.on_app_quit(|this, cx| {
+                let place = this.keep_place(cx);
                 this.flush_all();
                 this.services.flush_records();
                 let write = this.saves.task.clone();
                 async move {
+                    place.await;
                     if let Some(write) = write {
                         write.await;
                     }
@@ -914,6 +941,42 @@ impl Workspace {
         self.history.settled();
     }
 
+    /// Takes where the writer is in the open Document and remembers it for this run; returns
+    /// what to write to keep it across runs.
+    fn take_place(&mut self, cx: &App) -> Option<(Arc<HistoryDb>, String, String)> {
+        let key = history_key(self.session_path());
+        let place = self.pane.read(cx).place(cx);
+        let json = place_to_json(&place).log_err();
+        self.places.insert(key.clone(), place);
+        Some((self.db.clone()?, key, json?))
+    }
+
+    /// Keeps where the writer is in the open Document, to come back to it later.
+    fn keep_place(&mut self, cx: &mut Context<Self>) -> Task<()> {
+        match self.take_place(cx) {
+            Some((db, key, json)) => cx.background_spawn(async move {
+                db.save_place(&key, &json, now_ms()).log_err();
+            }),
+            None => Task::ready(()),
+        }
+    }
+
+    /// Returns to the place kept for the open Document, if there is one, and says how many
+    /// of its Suggestions no longer fit the text.
+    fn return_to_place(&mut self, cx: &mut Context<Self>) -> Option<usize> {
+        let key = history_key(self.session_path());
+        let saved = self.places.remove(&key).or_else(|| {
+            let json = self.db.as_deref()?.load_place(&key).log_err().flatten()?;
+            place_from_json(&json).log_warn()
+        });
+        let text = self.text(cx);
+        let restored = restore_place(&saved?, &text)?;
+        let dropped = restored.dropped;
+        self.pane
+            .update(cx, |pane, cx| pane.restore_place(restored, cx));
+        Some(dropped)
+    }
+
     fn settle_history(&mut self, cx: &mut Context<Self>) {
         self.history.settled();
         self.schedule_history(cx);
@@ -972,6 +1035,7 @@ impl Workspace {
             None
         };
         let arrived = restore_unsaved(&text, stored.as_ref());
+        self.keep_place(cx).detach();
         self.settle_before(&arrived.text, cx);
         self.saves.document += 1;
         self.session = Some(opened_session(
@@ -993,6 +1057,7 @@ impl Workspace {
         self.settle_history(cx);
         self.replaced(window, cx);
         self.announce(&arrived.text, cx);
+        let dropped = self.return_to_place(cx).unwrap_or(0);
         let done = match kind {
             Arrival::Opened => "Opened",
             Arrival::Reloaded => "Reloaded",
@@ -1000,6 +1065,8 @@ impl Workspace {
         self.notify(
             if arrived.restored {
                 format!("Restored unsaved changes to {name}")
+            } else if dropped > 0 {
+                dropped_text(dropped)
             } else {
                 format!("{done} {name}")
             },
@@ -1698,6 +1765,8 @@ impl Workspace {
     }
 
     fn clear_document(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.keep_place(cx).detach();
+        self.places.remove(SCRATCH_KEY);
         self.settle_before("", cx);
         self.saves.document += 1;
         self.session = None;
