@@ -1322,6 +1322,8 @@ impl Workspace {
         self.mode = HistoryMode::Editing;
         self.page = Page::Evals;
         self.hovered = None;
+        self.timeline.focus = None;
+        self.timeline.hovered = None;
         self.open_menu = None;
         self.unsaved_checked = None;
         window.focus(&self.focus, cx);
@@ -1952,6 +1954,7 @@ impl Workspace {
             self.page = Page::Text;
         }
         self.mode = next_history_mode(&ids, from, action);
+        self.timeline.hovered = None;
         let editing = self.visible_mode() == HistoryMode::Editing;
         if let HistoryMode::Version { id } = self.visible_mode() {
             self.timeline.focus = Some(id);
@@ -2032,7 +2035,8 @@ impl Workspace {
         let ids = self.history_ids();
         let current = match self.visible_mode() {
             HistoryMode::Version { id } => Some(id),
-            _ => None,
+            HistoryMode::Full => self.timeline.focus,
+            HistoryMode::Editing => None,
         };
         if let Some(target) =
             desafinado_features::history::view_mode::dot_target(&ids, current, key)

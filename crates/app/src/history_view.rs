@@ -238,14 +238,29 @@ fn cell_tooltip(cell: &StripCell, utc_offset: i64, roles: Roles) -> Div {
         .child(ui::meta("Click to show these Versions", roles).mt(px(4.)))
 }
 
-fn tooltip_at(body: Div, share: f32, half: Pixels, roles: Roles) -> Deferred {
-    let side = div().absolute().top(px(36.)).w(px(TOOLTIP_WIDTH));
-    let side = if share < 0.25 {
-        side.left(-half)
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Side {
+    Left,
+    Center,
+    Right,
+}
+
+fn side_of(share: f32) -> Side {
+    if share < 0.25 {
+        Side::Left
     } else if share > 0.75 {
-        side.right(-half)
+        Side::Right
     } else {
-        side.left(px(-TOOLTIP_WIDTH / 2.))
+        Side::Center
+    }
+}
+
+fn tooltip_at(body: Div, side: Side, half: Pixels, roles: Roles) -> Deferred {
+    let anchor = div().absolute().top(px(36.)).w(px(TOOLTIP_WIDTH));
+    let side = match side {
+        Side::Left => anchor.left(-half),
+        Side::Right => anchor.right(-half),
+        Side::Center => anchor.left(px(-TOOLTIP_WIDTH / 2.)),
     };
     deferred(
         side.bg(roles.overlay)
@@ -401,7 +416,7 @@ impl Workspace {
                 let share = offset as f32 / gaps;
                 let tooltip = (self.timeline.hovered == Some(TimelineHover::Dot(id))).then(|| {
                     let body = self.dot_tooltip(versions, version, roles);
-                    tooltip_at(body, share, dot_width / 2., roles)
+                    tooltip_at(body, side_of(share), dot_width / 2., roles)
                 });
                 div()
                     .absolute()
@@ -450,8 +465,6 @@ impl Workspace {
         roles: Roles,
         cx: &mut Context<Self>,
     ) -> Div {
-        let count = cells.len() as f32;
-        let strip_share = layout.strip / layout.width.max(1.);
         div()
             .flex_none()
             .w(px(layout.strip))
@@ -470,7 +483,11 @@ impl Workspace {
                 };
                 let hover = TimelineHover::Cell(key);
                 let tooltip = (self.timeline.hovered == Some(hover)).then(|| {
-                    let share = (index as f32 + 0.5) / count * strip_share;
+                    let side = if (index as f32 + 0.5) * CELL_STEP < TOOLTIP_WIDTH / 2. {
+                        Side::Left
+                    } else {
+                        Side::Center
+                    };
                     div()
                         .absolute()
                         .top_0()
@@ -478,7 +495,7 @@ impl Workspace {
                         .w(px(0.))
                         .child(tooltip_at(
                             cell_tooltip(cell, self.utc_offset, roles),
-                            share,
+                            side,
                             px(CELL_STEP / 2.),
                             roles,
                         ))

@@ -399,7 +399,8 @@ pub fn dot_button(
 
 /// A cell of the Timeline's strip, which stands for a run of Versions: a bar in the accent
 /// color where the dots show, in the AI color where accepted Suggestions are a good share of
-/// the run, plain fill otherwise. The whole slot takes the pointer, gaps included.
+/// the run, and the scrollbar thumb's color otherwise: plain runs are the track the data sits on,
+/// like a scrollbar's, so the colored runs stand out. The whole slot takes the pointer.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CellState {
     Plain,
@@ -409,7 +410,7 @@ pub enum CellState {
 
 pub fn strip_cell(id: impl Into<ElementId>, state: CellState, roles: Roles) -> Stateful<Div> {
     let color = match state {
-        CellState::Plain => roles.fill_hover,
+        CellState::Plain => roles.scrollbar,
         CellState::Ai => roles.ai,
         CellState::Shown => roles.accent,
     };
