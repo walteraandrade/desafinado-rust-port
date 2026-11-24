@@ -3089,7 +3089,9 @@ impl Render for EditorPane {
             .on_action(cx.listener(Self::focus_card_back))
             .on_action(cx.listener(Self::pane_undo))
             .on_action(cx.listener(Self::pane_redo))
-            .on_action(cx.listener(Self::open_spell_menu))
+            .capture_key_down(cx.listener(Self::spell_key_down))
+            .on_action(cx.listener(Self::spell_menu_ctrl_period))
+            .on_action(cx.listener(Self::spell_menu_alt_enter))
             .on_mouse_up(MouseButton::Left, cx.listener(Self::spell_mouse_up))
             .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _, cx| {
                 this.drag_map(event, cx);

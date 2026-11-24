@@ -6,6 +6,7 @@ use desafinado_ai::quick_action_settings::{
 use desafinado_ai::ui::list_motion::{ListStep, plan_list_change};
 use desafinado_core::log_err::LogErr;
 use desafinado_features::caret::{CaretBlink, CaretSettings, CaretShape, MAX_WIDTH, MIN_WIDTH};
+use desafinado_features::spelling::settings::{MenuKey, SpellSettings};
 use desafinado_features::theme::{
     catalog::{ThemeOption, themes_of_mode},
     tokens::ThemeMode,
@@ -17,7 +18,7 @@ use gpui_kit::{
 };
 
 use crate::{
-    caret,
+    caret, spelling,
     theme::{self, Roles},
     ui::{self, ButtonKind, ButtonSize, Type as _},
 };
@@ -60,6 +61,7 @@ pub enum PreferencesEvent {
     OpenSpend,
     QuickActions(QuickActionSettings),
     Caret(CaretSettings),
+    Spelling(SpellSettings),
 }
 
 impl EventEmitter<PreferencesEvent> for PreferencesPanel {}
@@ -680,30 +682,32 @@ impl PreferencesPanel {
             ).mt(px(20.)))
     }
 
-    fn render_caret_choices(
+    /// A labeled row of toggle buttons, one per choice; the pressed one equals `current`.
+    fn render_choices<T: Copy + PartialEq + 'static>(
         &self,
         label: &'static str,
-        choices: Vec<(SharedString, CaretSettings, bool)>,
+        choices: Vec<(SharedString, T, bool)>,
+        current: T,
+        event: fn(T) -> PreferencesEvent,
         roles: Roles,
         cx: &mut Context<Self>,
     ) -> Div {
-        let current = caret::settings(cx);
         div().mt(px(16.)).child(ui::label(label, roles)).child(
             ui::row()
                 .flex_wrap()
                 .gap(px(4.))
-                .children(choices.into_iter().map(|(name, settings, disabled)| {
-                    let id = SharedString::from(format!("caret-{label}-{name}"));
+                .children(choices.into_iter().map(|(name, value, disabled)| {
+                    let id = SharedString::from(format!("choice-{label}-{name}"));
                     ui::toggle_button(
                         id,
                         name,
-                        settings == current,
+                        value == current,
                         ui::Control::disabled(disabled),
                         roles,
                     )
                     .when(!disabled, |this| {
                         this.on_click(cx.listener(move |_, _, _, cx| {
-                            cx.emit(PreferencesEvent::Caret(settings));
+                            cx.emit(event(value));
                         }))
                     })
                 })),
@@ -743,10 +747,36 @@ impl PreferencesPanel {
             .collect();
         div()
             .child(ui::title("Caret", roles).mt(px(24.)))
-            .child(self.render_caret_choices("Shape", shapes, roles, cx))
-            .child(self.render_caret_choices("Width", widths, roles, cx))
-            .child(self.render_caret_choices("Blink", blinks, roles, cx))
+            .child(self.render_choices("Shape", shapes, current, PreferencesEvent::Caret, roles, cx))
+            .child(self.render_choices("Width", widths, current, PreferencesEvent::Caret, roles, cx))
+            .child(self.render_choices("Blink", blinks, current, PreferencesEvent::Caret, roles, cx))
             .child(ui::meta("The caret takes the theme's accent color. A block covers the next character, as in Vim.", roles).mt(px(8.)))
+    }
+
+    fn render_spelling_section(&self, roles: Roles, cx: &mut Context<Self>) -> Div {
+        let current = spelling::settings(cx);
+        let switch = [("On", true), ("Off", false)]
+            .into_iter()
+            .map(|(name, enabled)| (name.into(), SpellSettings { enabled, ..current }, false))
+            .collect();
+        let keys = MenuKey::ALL
+            .iter()
+            .map(|&menu_key| {
+                (
+                    menu_key.label().into(),
+                    SpellSettings {
+                        menu_key,
+                        ..current
+                    },
+                    !current.enabled,
+                )
+            })
+            .collect();
+        div()
+            .child(ui::title("Spelling", roles).mt(px(24.)))
+            .child(self.render_choices("Check spelling", switch, current, PreferencesEvent::Spelling, roles, cx))
+            .child(self.render_choices("Suggestions key", keys, current, PreferencesEvent::Spelling, roles, cx))
+            .child(ui::meta("The key opens the suggestions of the marked word under the caret. \"?\" does it only inside the word; at its end it types \"?\". F8 opens the word under the caret too, then goes to the next mistake; Shift+F8 to the previous one.", roles).mt(px(8.)))
     }
 
     fn render_ai_section(&self, roles: Roles, cx: &mut Context<Self>) -> Div {
@@ -905,6 +935,7 @@ impl Render for PreferencesPanel {
                     .pb(px(20.))
                     .child(self.render_theme_section(roles, cx))
                     .child(self.render_caret_section(roles, cx))
+                    .child(self.render_spelling_section(roles, cx))
                     .child(self.render_ai_section(roles, cx))
                     .child(self.render_quick_actions_section(roles, window, cx))
                     .child(ui::meta(version_line(), roles).mt(px(32.))),
