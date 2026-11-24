@@ -436,11 +436,17 @@ pub fn map_suggestions(
     if changes.is_empty() || state.items.is_empty() {
         return state.clone();
     }
+    let ends: Vec<usize> = state
+        .items
+        .iter()
+        .filter(|item| item.is_pending())
+        .map(|item| item.to)
+        .collect();
     let survivors: Vec<Suggestion> = state
         .items
         .iter()
         .filter_map(|item| match item {
-            Suggestion::Pending(pending) => follow_edits(pending, changes),
+            Suggestion::Pending(pending) => follow_edits(pending, changes, &ends),
             _ if touches_interior(item, changes) => None,
             _ => Some(remap(item, changes)),
         })
@@ -468,22 +474,34 @@ pub fn map_suggestions(
 
 /// A request keeps running while the writer edits its text, typing at its edges included; only
 /// deleting all of it ends it.
-fn follow_edits(pending: &PendingSuggestion, changes: &ChangeDesc) -> Option<Suggestion> {
-    let edits = pending
-        .edits
-        .compose(&edits_inside(pending.from, pending.to, changes));
-    let edge = |at: usize, joins: Assoc, stays: Assoc| {
-        changes.map_pos(
-            at,
-            if inserts_at(changes, at) {
-                joins
-            } else {
-                stays
-            },
-        )
+/// `ends` are where the pending requests end: text typed where one ends and another starts
+/// joins the one that ends there.
+fn follow_edits(
+    pending: &PendingSuggestion,
+    changes: &ChangeDesc,
+    ends: &[usize],
+) -> Option<Suggestion> {
+    let joins_start = inserts_at(changes, pending.from) && !ends.contains(&pending.from);
+    let edits = pending.edits.compose(&edits_inside(
+        pending.from,
+        pending.to,
+        changes,
+        joins_start,
+    ));
+    let from = changes.map_pos(
+        pending.from,
+        if joins_start {
+            Assoc::Before
+        } else {
+            Assoc::After
+        },
+    );
+    let to_assoc = if inserts_at(changes, pending.to) {
+        Assoc::After
+    } else {
+        Assoc::Before
     };
-    let from = edge(pending.from, Assoc::Before, Assoc::After);
-    let to = edge(pending.to, Assoc::After, Assoc::Before).max(from);
+    let to = changes.map_pos(pending.to, to_assoc).max(from);
     (to > from || pending.from == pending.to).then(|| {
         Suggestion::Pending(PendingSuggestion {
             base: SuggestionBase {
@@ -1338,6 +1356,24 @@ mod tests {
             let next = resolve_suggestion(&typed, "a", &result("The feline rested"));
             assert_eq!(next.items, vec![]);
             assert_eq!(notice_kind(&next), Some(NoticeKind::TextChanged));
+        }
+
+        #[test]
+        fn gives_text_typed_between_two_requests_to_the_one_that_ends_there() {
+            let state = begun(vec![
+                SuggestionDraft {
+                    original: "l1\nl2\n".into(),
+                    ..draft("a", 0, 6)
+                },
+                SuggestionDraft {
+                    original: "l3\nl4\n".into(),
+                    ..draft("b", 6, 12)
+                },
+            ]);
+            let typed = map_suggestions(&state, &change(6, 6, "X"), None);
+            assert_eq!(spans(&typed), [(0, 7), (7, 13)]);
+            assert_eq!(pending_of(&typed, "a").current(), "l1\nl2\nX");
+            assert_eq!(pending_of(&typed, "b").current(), "l3\nl4\n");
         }
 
         #[test]

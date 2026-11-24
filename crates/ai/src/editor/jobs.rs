@@ -131,10 +131,15 @@ pub fn review_job(added: usize, elapsed: Duration) -> Job {
 }
 
 /// The row for a request that has just answered with Suggestion `id`, or `None` when the answer
-/// is gone (accepted, rejected, discarded). `left_out` says some of its changes were dropped
+/// is gone (accepted, rejected, discarded) or is being refined, which has its own row. `left_out` says some of its changes were dropped
 /// because the writer edited those lines meanwhile.
 pub fn ready_job(state: &SuggestionsState, id: &str, left_out: bool) -> Option<Job> {
-    let ready = state.items.iter().find(|item| item.id == id)?.as_ready()?;
+    let ready = state
+        .items
+        .iter()
+        .find(|item| item.id == id)?
+        .as_ready()
+        .filter(|ready| !matches!(ready.refine, RefineState::Working { .. }))?;
     let changes = change_ranges(ready.from, &ready.diff).len().max(1);
     let mut detail = format!("Ready · {}", plural(changes, "change", "changes"));
     if left_out {
@@ -260,5 +265,7 @@ mod tests {
             "Ready · 1 change, some left out"
         );
         assert_eq!(ready_job(&state, "gone", false), None);
+        let refining = begin_refine(&state, "a", free("warmer"));
+        assert_eq!(ready_job(&refining, "a", false), None);
     }
 }

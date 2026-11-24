@@ -11,18 +11,24 @@ pub fn inserts_at(changes: &ChangeSet, at: usize) -> bool {
     changes
         .changes()
         .iter()
-        .any(|change| change.from == at && change.to == at && !change.insert.is_empty())
+        .any(|change| is_insert_at(change, at))
+}
+
+fn is_insert_at(change: &TextChange, at: usize) -> bool {
+    change.from == at && change.to == at && !change.insert.is_empty()
 }
 
 /// The part of `changes` (over the whole Document) that falls inside `from..to`, as changes over
-/// that range. An insertion at either edge joins the range, so typing on at the end of the text a
-/// request covers counts as an edit to its last line; text a change across an edge puts in stays
-/// outside.
-pub fn edits_inside(from: usize, to: usize, changes: &ChangeSet) -> ChangeSet {
+/// that range. An insertion at the end joins the range, so typing on at the end of the text a
+/// request covers counts as an edit to its last line; so does one at the start when `joins_start`
+/// (false where another request ends at that point and takes it). Text a change across an edge
+/// puts in stays outside.
+pub fn edits_inside(from: usize, to: usize, changes: &ChangeSet, joins_start: bool) -> ChangeSet {
     let inside: Vec<TextChange> = changes
         .changes()
         .iter()
         .filter(|change| change.from <= to && change.to >= from)
+        .filter(|change| joins_start || !is_insert_at(change, from))
         .map(|change| {
             let contained = change.from >= from && change.to <= to;
             TextChange::new(
@@ -101,7 +107,7 @@ mod tests {
             ],
             50,
         );
-        let inside = edits_inside(10, 30, &changes);
+        let inside = edits_inside(10, 30, &changes, true);
         assert_eq!(inside.changes(), [TextChange::new(2, 4, "yy")]);
         assert_eq!(inside.length(), 20);
     }
@@ -113,7 +119,7 @@ mod tests {
             50,
         );
         assert_eq!(
-            edits_inside(10, 30, &changes).changes(),
+            edits_inside(10, 30, &changes, true).changes(),
             [TextChange::insert(0, "a"), TextChange::insert(20, "b")]
         );
         assert!(inserts_at(&changes, 30));
@@ -121,9 +127,15 @@ mod tests {
     }
 
     #[test]
+    fn leaves_an_insertion_at_the_start_to_a_request_that_ends_there() {
+        let changes = set(&[TextChange::insert(10, "a")], 50);
+        assert!(edits_inside(10, 30, &changes, false).is_empty());
+    }
+
+    #[test]
     fn ignores_a_deletion_that_ends_at_the_range() {
         let changes = set(&[TextChange::new(4, 10, "")], 50);
-        assert!(edits_inside(10, 30, &changes).is_empty());
+        assert!(edits_inside(10, 30, &changes, true).is_empty());
         assert!(!inserts_at(&changes, 10));
     }
 
@@ -131,7 +143,7 @@ mod tests {
     fn deletes_the_inside_part_of_a_change_across_an_edge_without_its_text() {
         let changes = set(&[TextChange::new(5, 15, "new")], 50);
         assert_eq!(
-            edits_inside(10, 30, &changes).changes(),
+            edits_inside(10, 30, &changes, true).changes(),
             [TextChange::new(0, 5, "")]
         );
     }
