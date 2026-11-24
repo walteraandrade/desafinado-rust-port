@@ -360,6 +360,10 @@ mod tests {
         assert_eq!(report.total.priced_calls, 3);
         assert_eq!(report.by_task[0].label, "Review");
         assert_eq!(report.by_task[0].bucket.calls, 2);
+        assert_eq!(report.by_task[0].bucket.priced_calls, 1);
+        assert!((report.by_task[0].bucket.cost_usd - 0.00258).abs() < 1e-12);
+        assert_eq!(report.by_task[1].bucket.priced_calls, 2);
+        assert!((report.by_task[1].bucket.cost_usd - 0.00185).abs() < 1e-12);
         assert_eq!(report.by_task[1].label, "Shorter");
         assert_eq!(report.by_task[1].bucket.calls, 2);
         assert_eq!(report.by_model[0].label, "m2");
