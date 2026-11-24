@@ -273,6 +273,7 @@ pub struct EditorPane {
     /// Suggestions asked for from a Note, by Suggestion id, so accepting one resolves its Note.
     pub(crate) note_rewrites: Vec<(String, usize)>,
     reveal_pending: bool,
+    pub(crate) text_map: crate::text_map_view::TextMapState,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -380,6 +381,7 @@ impl EditorPane {
             notes_scroll: ScrollHandle::new(),
             note_rewrites: Vec::new(),
             reveal_pending: false,
+            text_map: crate::text_map_view::TextMapState::default(),
             _subscriptions: vec![edits, moves, typing],
         }
     }
@@ -390,6 +392,7 @@ impl EditorPane {
         event: &InputEditsEvent,
         cx: &mut Context<Self>,
     ) {
+        self.text_map.edited();
         self.caret.restart(editor, cx);
         let frontmatter = find_frontmatter(&editor.read(cx).value());
         let applying = self.applying.take();
@@ -2994,7 +2997,11 @@ impl Render for EditorPane {
             .on_action(cx.listener(Self::pane_undo))
             .on_action(cx.listener(Self::pane_redo))
             .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _, cx| {
+                this.drag_map(event, cx);
                 this.track_hover(Some(event.position), cx);
+            }))
+            .capture_any_mouse_down(cx.listener(|this, _: &MouseDownEvent, _, _| {
+                this.end_map_drag();
             }))
             .on_hover(cx.listener(|this, _: &bool, window, cx| {
                 this.track_hover(Some(window.mouse_position()), cx);

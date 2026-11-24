@@ -14,7 +14,10 @@ use gpui_kit::{
     base::input::{BufferPoint, EditorScrollbarRenderer},
     *,
 };
-use std::rc::Rc;
+use std::{
+    cell::{Cell, RefCell},
+    rc::Rc,
+};
 
 use crate::{editor_pane::EditorPane, theme::Roles, ui};
 
@@ -26,9 +29,36 @@ const CHIP_INSET: f32 = 8.;
 /// How close a click on the map must land to a Suggestion's bar to open it.
 const MAP_REACH: f32 = 6.;
 
+/// What the pane keeps for the map between frames.
+#[derive(Default)]
+pub(crate) struct TextMapState {
+    /// Bumped on every edit, so the lines are measured again only after the text changed.
+    revision: u64,
+    lines: RefCell<Option<(LinesKey, Rc<[MapLine]>)>>,
+    /// A drag that started on the map, with the map it started on and its top edge.
+    drag: Option<(Rc<MapClick>, Pixels)>,
+    /// Where wheel turns over the map have scrolled to before the editor applied them.
+    wheel_target: Cell<Option<Pixels>>,
+}
+
+impl TextMapState {
+    pub(crate) fn edited(&mut self) {
+        self.revision = self.revision.wrapping_add(1);
+    }
+}
+
+/// What the measured lines depend on besides the text: wrapping follows the width.
+#[derive(Clone, Copy, PartialEq)]
+struct LinesKey {
+    revision: u64,
+    len: usize,
+    wrap_rows: usize,
+    width: Pixels,
+}
+
 /// What the map and the chips read from the editor on one frame.
-pub(crate) struct MapFrame {
-    lines: Vec<MapLine>,
+struct MapFrame {
+    lines: Rc<[MapLine]>,
     marks: Rc<[MapMark]>,
     ids: Rc<[String]>,
     view: View,
@@ -67,16 +97,38 @@ fn tone_of(item: &Suggestion, active: Option<&str>) -> MarkTone {
 }
 
 impl EditorPane {
-    /// The Document's lines in display rows, the rows on screen, and the row height.
-    fn rows_on_screen(&self, cx: &App) -> Option<(Vec<MapLine>, View, Pixels)> {
+    /// The Document's lines in display rows, measured again only when the text or the wrapping
+    /// changed.
+    fn measured_lines(&self, cx: &App) -> Rc<[MapLine]> {
         let state = self.editor.read(cx);
-        let line_height = state.line_height()?;
         let display = state.display_map();
-        let lines = map_lines(&state.value(), |line| {
+        let key = LinesKey {
+            revision: self.text_map.revision,
+            len: display.text().len(),
+            wrap_rows: display.wrap_row_count(),
+            width: self.pane_bounds().size.width,
+        };
+        let mut cache = self.text_map.lines.borrow_mut();
+        if let Some((cached, lines)) = cache.as_ref()
+            && *cached == key
+        {
+            return Rc::clone(lines);
+        }
+        let lines: Rc<[MapLine]> = map_lines(&state.value(), |line| {
             display
                 .buffer_line_to_display_row_range(line)
                 .map_or(0, |rows| rows.len())
-        });
+        })
+        .into();
+        *cache = Some((key, Rc::clone(&lines)));
+        lines
+    }
+
+    /// The Document's lines in display rows, the rows on screen, and the row height.
+    fn rows_on_screen(&self, cx: &App) -> Option<(Rc<[MapLine]>, View, Pixels)> {
+        let line_height = self.editor.read(cx).line_height()?;
+        let lines = self.measured_lines(cx);
+        let state = self.editor.read(cx);
         let view = View {
             first_row: f32::from(-state.scroll_offset().y) / f32::from(line_height),
             rows: f32::from(self.pane_bounds().size.height) / f32::from(line_height),
@@ -184,7 +236,6 @@ impl EditorPane {
             view_rows: frame.view.rows,
             line_height: frame.line_height,
         });
-        let drag = Rc::clone(&click);
         let line_height = frame.line_height;
         let element = ui::text_map_frame("text-map", px(MAP_WIDTH), height)
             .absolute()
@@ -196,24 +247,21 @@ impl EditorPane {
                 MouseButton::Left,
                 cx.listener(move |this, event: &MouseDownEvent, window, cx| {
                     let y = f32::from(event.position.y - origin_y);
-                    this.on_map_click(&click, y, window, cx);
+                    this.on_map_click(&click, origin_y, y, window, cx);
                 }),
             )
             .on_scroll(cx.listener(move |this, event: &ScrollEvent, _, cx| {
                 this.scroll_by(event.delta.pixel_delta(line_height).y, cx);
-            }))
-            .on_mouse_move(cx.listener(move |this, event: &MouseMoveEvent, _, cx| {
-                if event.pressed_button == Some(MouseButton::Left) {
-                    let y = f32::from(event.position.y - origin_y);
-                    this.scroll_map_to(&drag, y, cx);
-                }
             }));
         Some(element.into_any_element())
     }
 
+    /// A press on a Suggestion's bar opens it; a press anywhere else scrolls there and starts a
+    /// drag that follows the pointer until the button comes up.
     fn on_map_click(
         &mut self,
-        click: &MapClick,
+        click: &Rc<MapClick>,
+        origin_y: Pixels,
         y: f32,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -224,13 +272,34 @@ impl EditorPane {
             self.go_to_suggestion(id, window, cx);
             return;
         }
+        self.text_map.drag = Some((Rc::clone(click), origin_y));
         self.scroll_map_to(click, y, cx);
     }
 
+    /// Follows a drag that started on the map, wherever over the pane the pointer goes.
+    pub(crate) fn drag_map(&mut self, event: &MouseMoveEvent, cx: &mut Context<Self>) {
+        let Some((click, origin_y)) = self.text_map.drag.clone() else {
+            return;
+        };
+        if event.pressed_button == Some(MouseButton::Left) {
+            self.scroll_map_to(&click, f32::from(event.position.y - origin_y), cx);
+        } else {
+            self.text_map.drag = None;
+        }
+    }
+
+    pub(crate) fn end_map_drag(&mut self) {
+        self.text_map.drag = None;
+    }
+
+    /// Wheel turns that arrive before the editor applied the last one add up, so none is lost.
     fn scroll_by(&mut self, delta: Pixels, cx: &mut Context<Self>) {
+        let wheel = &self.text_map.wheel_target;
         self.editor.update(cx, |state, cx| {
             let offset = state.scroll_offset();
-            state.set_scroll_offset(point(offset.x, (offset.y + delta).min(px(0.))), cx);
+            let target = (wheel.get().unwrap_or(offset.y) + delta).min(px(0.));
+            wheel.set(Some(target));
+            state.set_scroll_offset(point(offset.x, target), cx);
         });
         cx.notify();
     }
@@ -241,19 +310,22 @@ impl EditorPane {
         roles: Roles,
         cx: &mut Context<Self>,
     ) -> Vec<AnyElement> {
-        self.hide_scrollbar_under_map(cx);
-        let Some(frame) = self.map_frame(cx) else {
+        self.text_map.wheel_target.set(None);
+        let frame = self.map_frame(cx);
+        let map = frame
+            .as_ref()
+            .and_then(|frame| self.render_text_map(frame, roles, cx));
+        self.hide_scrollbar_under_map(map.is_some(), cx);
+        let Some(frame) = frame else {
             return Vec::new();
         };
-        let map = self.render_text_map(&frame, roles, cx);
         map.into_iter()
             .chain(self.render_edge_chips(&frame, roles, cx))
             .collect()
     }
 
     /// While the map stands in for it, the editor draws no scrollbar of its own.
-    fn hide_scrollbar_under_map(&self, cx: &mut Context<Self>) {
-        let shown = self.map_left().is_some();
+    fn hide_scrollbar_under_map(&self, shown: bool, cx: &mut Context<Self>) {
         self.editor.update(cx, |state, _| {
             state.set_scrollbar_renderer(shown.then(|| {
                 let empty: EditorScrollbarRenderer = Rc::new(|_, _, _| div().into_any_element());
