@@ -696,6 +696,25 @@ pub fn ai_flag(roles: Roles) -> Div {
     badge("AI", Tone::Ai, roles)
 }
 
+/// The widest the AI caret's flag grows; a longer instruction ends in an ellipsis.
+pub const AI_CARET_FLAG_MAX_WIDTH: Pixels = px(240.);
+
+/// The flag over the AI caret: "AI", the instruction on one line, and the working dots.
+pub fn ai_caret_flag(label: impl Into<SharedString>, roles: Roles, still: bool) -> Div {
+    ai_flag(roles)
+        .max_w(AI_CARET_FLAG_MAX_WIDTH)
+        .gap(px(4.))
+        .whitespace_nowrap()
+        .child(
+            div()
+                .min_w_0()
+                .truncate()
+                .weight_regular()
+                .child(label.into()),
+        )
+        .child(div().flex_none().child(ai_dots(roles, still)))
+}
+
 pub fn kbd(text: impl Into<SharedString>, roles: Roles) -> Div {
     div()
         .flex_none()
@@ -1165,13 +1184,38 @@ pub fn breathe<E: Styled + IntoElement + 'static>(
 }
 
 pub fn ai_dots(roles: Roles, still: bool) -> AnyElement {
+    dots(roles.canvas, still)
+}
+
+/// A small button's place while the model works on it: the label and the
+/// moving dots in the AI color, so the card does not look frozen.
+pub fn working_button(
+    id: impl Into<ElementId>,
+    label: impl Into<SharedString>,
+    roles: Roles,
+    still: bool,
+) -> Stateful<Div> {
+    sized_button(
+        id,
+        label,
+        ButtonKind::Default,
+        ButtonSize::Small,
+        Control::disabled(true),
+        roles,
+    )
+    .bg(roles.fill)
+    .text_color(roles.ai)
+    .child(dots(roles.ai, still))
+}
+
+fn dots(color: Hsla, still: bool) -> AnyElement {
     const PERIOD_MS: f32 = 1200.;
     const STAGGER_MS: f32 = 160.;
     row()
         .gap(px(4.))
         .children((0usize..3).map(move |index| {
             let shift = STAGGER_MS * index as f32 / PERIOD_MS;
-            let dot = div().size(px(3.)).bg(roles.canvas);
+            let dot = div().size(px(3.)).bg(color);
             if still {
                 return dot.into_any_element();
             }

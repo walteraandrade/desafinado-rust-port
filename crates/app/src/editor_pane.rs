@@ -14,7 +14,8 @@ use desafinado_ai::{
     editor::{
         ai_caret::ai_caret_of,
         ask_bubble::{
-            BubbleChange, BubbleRange, BubbleState, BubbleView, bubble_visible, next_bubble,
+            BubbleChange, BubbleRange, BubbleState, BubbleView, bubble_visible, held_selection,
+            next_bubble,
         },
         ask_menu::{self, AskMenu, AskRow},
         card_placement::{CardPlacement, MARGIN_CARD_WIDTH, placement_for},
@@ -244,6 +245,7 @@ pub struct EditorPane {
     bubble: BubbleState,
     menu: AskMenu,
     bubble_shown: bool,
+    typing_in_bubble: bool,
     last_bubble: RefCell<Option<BubbleGhost>>,
     bubble_leaving: Option<(BubbleGhost, Task<()>)>,
     pointer_down: Rc<Cell<bool>>,
@@ -341,6 +343,13 @@ impl EditorPane {
                 }
             },
         );
+        let bubble_focus = bubble_input.read(cx).focus_handle(cx);
+        let bubble_focused = cx.on_focus(&bubble_focus, window, |this, _, cx| {
+            this.hold_selection(true, cx);
+        });
+        let bubble_blurred = cx.on_blur(&bubble_focus, window, |this, _, cx| {
+            this.hold_selection(false, cx);
+        });
         Self {
             editor,
             suggestions: empty_suggestions(),
@@ -352,6 +361,7 @@ impl EditorPane {
             bubble: BubbleState::default(),
             menu: AskMenu::default(),
             bubble_shown: false,
+            typing_in_bubble: false,
             last_bubble: RefCell::new(None),
             bubble_leaving: None,
             pointer_down: Rc::new(Cell::new(false)),
@@ -379,7 +389,15 @@ impl EditorPane {
             notes_scroll: ScrollHandle::new(),
             note_rewrites: Vec::new(),
             reveal_pending: false,
-            _subscriptions: vec![edits, moves, typing],
+            _subscriptions: vec![edits, moves, typing, bubble_focused, bubble_blurred],
+        }
+    }
+
+    fn hold_selection(&mut self, typing: bool, cx: &mut Context<Self>) {
+        if self.typing_in_bubble != typing {
+            self.typing_in_bubble = typing;
+            self.refresh_decorations(cx);
+            cx.notify();
         }
     }
 
@@ -650,6 +668,22 @@ impl EditorPane {
         self.current_target(cx).map(|target| target.from..target.to)
     }
 
+    fn held_selection_fill(&self, roles: Roles, cx: &App) -> Option<RangeDecoration> {
+        let selection = self.selection(cx);
+        let held = held_selection(
+            self.typing_in_bubble,
+            BubbleRange {
+                from: selection.from,
+                to: selection.to,
+            },
+        )?;
+        Some(
+            RangeDecoration::new(held.from..held.to)
+                .with_style(RangeDecorationStyle::Fill)
+                .with_color(roles.selection),
+        )
+    }
+
     pub fn refresh_decorations(&mut self, cx: &mut Context<Self>) {
         let roles = theme::roles(cx);
         let active_id = self.active(cx).map(|item| item.id.clone());
@@ -731,6 +765,7 @@ impl EditorPane {
                     .with_color(roles.selection),
             );
         }
+        fills.extend(self.held_selection_fill(roles, cx));
         self.strike.set(strikes, cx);
         self.fills.set(fills, cx);
         let inlays = self.inline_inlays(roles);
@@ -2330,13 +2365,11 @@ impl EditorPane {
                 })),
             )
             .child(if working {
-                ui::sized_button(
+                ui::working_button(
                     SharedString::from(format!("refine-{id}")),
-                    "Refining…",
-                    ButtonKind::Default,
-                    ButtonSize::Small,
-                    ui::Control::disabled(true),
+                    "Refining",
                     roles,
+                    cx.reduce_motion(),
                 )
             } else {
                 ui::sized_button(
@@ -2566,17 +2599,14 @@ impl EditorPane {
             .range_to_bounds(&(caret.pos..caret.pos))?;
         let origin = self.origin();
         let pane = self.bounds.get();
-        let flag_width = px(40. + 7. * caret.label.chars().count() as f32);
+        let flag_width =
+            px(40. + 7. * caret.label.chars().count() as f32).min(ui::AI_CARET_FLAG_MAX_WIDTH);
         let flipped = bounds.left() + flag_width > pane.origin.x + pane.size.width;
-        let flag = ui::ai_flag(roles)
+        let flag = ui::ai_caret_flag(caret.label.clone(), roles, cx.reduce_motion())
             .absolute()
             .top(px(-16.))
             .when(flipped, |this| this.right(px(0.)))
-            .when(!flipped, |this| this.left(px(0.)))
-            .gap(px(4.))
-            .whitespace_nowrap()
-            .child(div().weight_regular().child(caret.label.clone()))
-            .child(ui::ai_dots(roles, cx.reduce_motion()));
+            .when(!flipped, |this| this.left(px(0.)));
         let bar = ui::breathe(
             "ai-caret-bar",
             div().absolute().top_0().left_0().size_full().bg(roles.ai),
