@@ -480,9 +480,7 @@ impl EditorPane {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if !self.open_spell_menu_by(MenuKey::CtrlPeriod, window, cx) {
-            cx.propagate();
-        }
+        self.spell_menu_binding(MenuKey::CtrlPeriod, window, cx);
     }
 
     pub(crate) fn spell_menu_alt_enter(
@@ -491,7 +489,11 @@ impl EditorPane {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if !self.open_spell_menu_by(MenuKey::AltEnter, window, cx) {
+        self.spell_menu_binding(MenuKey::AltEnter, window, cx);
+    }
+
+    fn spell_menu_binding(&mut self, key: MenuKey, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.open_spell_menu_by(key, window, cx) {
             cx.propagate();
         }
     }
