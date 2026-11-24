@@ -1497,6 +1497,166 @@ fn painted_caret_line(state: &gpui_kit::base::input::EditorState) -> Option<Boun
     Some(Bounds::new(point(painted.left(), top), size(px(1.), line)))
 }
 
+/// A dotted line under text the spell checker marks: square dots every other dot width.
+pub const SPELL_DOT: Pixels = px(2.);
+
+pub fn dotted_line(left: Pixels, right: Pixels, top: Pixels) -> Vec<Bounds<Pixels>> {
+    let mut dots = Vec::new();
+    let mut x = left;
+    while x + SPELL_DOT <= right + px(0.5) {
+        dots.push(Bounds::new(point(x, top), size(SPELL_DOT, SPELL_DOT)));
+        x += SPELL_DOT * 2.;
+    }
+    dots
+}
+
+/// Text the spell checker marks, in the color its dots take this frame.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SpellMark {
+    pub range: std::ops::Range<usize>,
+    pub color: Hsla,
+}
+
+/// Paints the spell checker's dots under the editor's text, after the editor has laid out
+/// this frame. Each word is measured on its own, so a mark that wraps keeps its dots on
+/// every row it reaches.
+pub fn spelling_layer(
+    editor: Entity<gpui_kit::base::input::EditorState>,
+    marks: Vec<SpellMark>,
+) -> AnyElement {
+    canvas(
+        |_, _, _| (),
+        move |_, (), window, cx| {
+            let state = editor.read(cx);
+            let mask = ContentMask {
+                bounds: state.input_bounds(),
+            };
+            window.with_content_mask(Some(mask), |window| {
+                for mark in &marks {
+                    for (left, right, line) in mark_rows(state, &mark.range) {
+                        let top = line.top() + line.size.height * 0.5 + px(SPELL_DOT_DROP);
+                        for dot in dotted_line(left, right, top) {
+                            window.paint_quad(fill(dot, mark.color));
+                        }
+                    }
+                }
+            });
+        },
+    )
+    .absolute()
+    .top_0()
+    .left_0()
+    .size_full()
+    .into_any_element()
+}
+
+/// How far below the middle of a line the dots sit: under the letters, above the next line.
+const SPELL_DOT_DROP: f32 = 10.;
+
+/// The left and right edge of a mark on each row it covers, with that row's line.
+fn mark_rows(
+    state: &gpui_kit::base::input::EditorState,
+    range: &std::ops::Range<usize>,
+) -> Vec<(Pixels, Pixels, Bounds<Pixels>)> {
+    let Ok(text) = state
+        .text()
+        .try_slice(range.clone())
+        .map(|slice| slice.to_string())
+    else {
+        return Vec::new();
+    };
+    let mut rows: Vec<(Pixels, Pixels, Bounds<Pixels>)> = Vec::new();
+    for word in word_spans(&text) {
+        let word = range.start + word.start..range.start + word.end;
+        let (Some(from), Some(to)) = (
+            state.range_to_bounds(&(word.start..word.start)),
+            state.range_to_bounds(&(word.end..word.end)),
+        ) else {
+            continue;
+        };
+        if (from.top() - to.top()).abs() >= px(1.) {
+            continue;
+        }
+        match rows.last_mut() {
+            Some(row) if (row.2.top() - from.top()).abs() < px(1.) => row.1 = to.left(),
+            _ => rows.push((from.left(), to.left(), from)),
+        }
+    }
+    rows
+}
+
+/// The byte ranges of the runs of text between spaces.
+fn word_spans(text: &str) -> Vec<std::ops::Range<usize>> {
+    let mut spans = Vec::new();
+    let mut start = None;
+    for (index, c) in text.char_indices() {
+        match (c.is_whitespace(), start) {
+            (true, Some(from)) => {
+                spans.push(from..index);
+                start = None;
+            }
+            (false, None) => start = Some(index),
+            _ => {}
+        }
+    }
+    if let Some(from) = start {
+        spans.push(from..text.len());
+    }
+    spans
+}
+
+pub const SPELL_MENU_WIDTH: Pixels = px(280.);
+
+/// The menu of a spell checker mark, under the word.
+pub fn spell_menu(id: impl Into<ElementId>, roles: Roles) -> Stateful<Div> {
+    popover_frame(id, roles)
+        .w(SPELL_MENU_WIDTH)
+        .p(px(8.))
+        .gap(px(4.))
+}
+
+/// What the spell checker found: the kind in its color, then the explanation.
+pub fn spell_message(
+    kind: impl Into<SharedString>,
+    spelling: bool,
+    message: impl Into<SharedString>,
+    roles: Roles,
+) -> Div {
+    div()
+        .px(px(8.))
+        .pt(px(4.))
+        .pb(px(4.))
+        .type_small()
+        .text_color(roles.muted)
+        .child(
+            div()
+                .weight_strong()
+                .text_color(if spelling { roles.danger } else { roles.accent })
+                .child(kind.into()),
+        )
+        .child(message.into())
+}
+
+/// A choice in the spell checker's menu: a replacement, or a quieter action.
+pub fn spell_row(
+    id: impl Into<ElementId>,
+    active: bool,
+    quiet: bool,
+    roles: Roles,
+) -> Stateful<Div> {
+    option_row(id, active, false, roles)
+        .min_h(px(28.))
+        .px(px(8.))
+        .py(px(4.))
+        .gap(px(8.))
+        .justify_between()
+        .when(quiet, |this| this.type_small().text_color(roles.muted))
+}
+
+pub fn spell_divider(roles: Roles) -> Div {
+    div().h(px(1.)).w_full().bg(roles.fill)
+}
+
 /// The block caret: the accent behind the next character, and the character
 /// in the canvas color, as Vim draws it.
 pub fn caret_block_ink(roles: Roles) -> (Hsla, HighlightStyle) {
@@ -1539,7 +1699,7 @@ fn next_character(
 
 #[cfg(test)]
 mod tests {
-    use super::{CaretInk, CaretSpot, caret_quads};
+    use super::{CaretInk, CaretSpot, SPELL_DOT, caret_quads, dotted_line, word_spans};
     use super::{
         Enter, cascade_delay, column_share, delayed, dot_opacity, ease_in_out_sine, ease_out_expo,
         ease_out_quart, enter_offset, lead_of,
@@ -1703,5 +1863,24 @@ mod tests {
         assert!((dot_opacity(0.4) - 1.).abs() < 1e-5);
         assert!((dot_opacity(1.) - 0.35).abs() < 1e-5);
         assert!(dot_opacity(0.7) > 0.35 && dot_opacity(0.7) < 1.);
+    }
+
+    #[test]
+    fn dots_fill_the_span_one_gap_apart() {
+        let dots = dotted_line(px(10.), px(20.), px(5.));
+        let lefts: Vec<f32> = dots.iter().map(|dot| f32::from(dot.left())).collect();
+        assert_eq!(lefts, vec![10., 14., 18.]);
+        assert!(
+            dots.iter()
+                .all(|dot| dot.top() == px(5.) && dot.size.width == SPELL_DOT)
+        );
+        assert!(dotted_line(px(10.), px(11.), px(0.)).is_empty());
+    }
+
+    #[test]
+    fn word_spans_skip_the_spaces() {
+        assert_eq!(word_spans("could  of"), vec![0..5, 7..9]);
+        assert_eq!(word_spans(" não "), vec![1..5]);
+        assert!(word_spans("   ").is_empty());
     }
 }

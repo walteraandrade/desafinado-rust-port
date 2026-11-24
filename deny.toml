@@ -13,6 +13,17 @@ ignore = [
     # chrono is unmaintained, with no fix. GPUI and gpui-component depend on it too,
     # so dropping it waits on them; our own uses could move to jiff first.
     { id = "RUSTSEC-2026-0543", reason = "unmaintained, no fix; GPUI depends on it" },
+    # zip 8 has extraction flaws fixed only in zip 9. harper-core 3.2 (the spell checker) pins zip ^8
+    # for its Weirpack format, which the app never uses: nothing here opens or extracts an archive.
+    # Approved by the maintainer on 2026-11-24; drop these once harper-core moves to zip 9.
+    { id = "RUSTSEC-2026-0367", reason = "zip extraction flaw; harper-core pins zip 8, the app extracts no archives" },
+    { id = "RUSTSEC-2026-0368", reason = "zip extraction flaw; harper-core pins zip 8, the app extracts no archives" },
+    { id = "RUSTSEC-2026-0369", reason = "zip extraction flaw; harper-core pins zip 8, the app extracts no archives" },
+    { id = "RUSTSEC-2026-0429", reason = "zip extraction flaw; harper-core pins zip 8, the app extracts no archives" },
+    { id = "RUSTSEC-2026-0545", reason = "zip extraction flaw; harper-core pins zip 8, the app extracts no archives" },
+    { id = "RUSTSEC-2026-0546", reason = "zip extraction flaw; harper-core pins zip 8, the app extracts no archives" },
+    { id = "RUSTSEC-2026-0547", reason = "zip extraction flaw; harper-core pins zip 8, the app extracts no archives" },
+    { id = "RUSTSEC-2026-0548", reason = "zip extraction flaw; harper-core pins zip 8, the app extracts no archives" },
 ]
 
 [licenses]

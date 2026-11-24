@@ -20,6 +20,7 @@ mod new_skill_dialog;
 mod preferences_view;
 mod reading_view;
 mod single_instance;
+mod spelling;
 mod spend;
 mod spend_view;
 mod start_error;
@@ -140,6 +141,7 @@ fn main() {
                 .add_fonts(FONTS.iter().map(|font| Cow::Borrowed(*font)).collect())
                 .log_err();
             caret::init(&services.user_data, cx);
+            spelling::init(&services.user_data, cx);
             theme::init(&services.user_data, cx);
             workspace::init(cx);
             preferences_view::init(cx);

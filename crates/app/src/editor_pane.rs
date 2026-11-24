@@ -263,8 +263,8 @@ pub struct EditorPane {
     pub quick_actions: Vec<QuickAction>,
     pub is_skill: bool,
     pub(crate) ai: Arc<dyn AiBackend>,
-    bounds: Rc<Cell<Bounds<Pixels>>>,
-    heights: Rc<RefCell<HashMap<String, Pixels>>>,
+    pub(crate) bounds: Rc<Cell<Bounds<Pixels>>>,
+    pub(crate) heights: Rc<RefCell<HashMap<String, Pixels>>>,
     card_rects: CardRects,
     /// The Suggestions whose Card the last frame drew.
     pub(crate) drawn_cards: RefCell<Vec<String>>,
@@ -279,6 +279,7 @@ pub struct EditorPane {
     reveal_pending: bool,
     pub(crate) text_map: crate::text_map_view::TextMapState,
     pub(crate) jobs: crate::jobs_tray::JobsState,
+    pub(crate) spelling: crate::spelling::SpellState,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -355,6 +356,10 @@ impl EditorPane {
         let bubble_blurred = cx.on_blur(&bubble_focus, window, |this, _, cx| {
             this.hold_selection(false, cx);
         });
+        let spelling = crate::spelling::SpellState::new(cx);
+        let spell_blurred = cx.on_blur(&spelling.focus, window, |this, _, cx| {
+            this.spell_menu_blurred(cx);
+        });
         Self {
             editor,
             suggestions: empty_suggestions(),
@@ -397,7 +402,15 @@ impl EditorPane {
             reveal_pending: false,
             text_map: crate::text_map_view::TextMapState::default(),
             jobs: crate::jobs_tray::JobsState::default(),
-            _subscriptions: vec![edits, moves, typing, bubble_focused, bubble_blurred],
+            spelling,
+            _subscriptions: vec![
+                edits,
+                moves,
+                typing,
+                bubble_focused,
+                bubble_blurred,
+                spell_blurred,
+            ],
         }
     }
 
@@ -432,6 +445,7 @@ impl EditorPane {
                 review.changes = review.changes.compose(&changes);
             }
             self.map_notes(&changes);
+            self.map_spelling(edit.start_byte, edit.old_end_byte, edit.new_end_byte);
             next = match &applying {
                 Some(Applying::One(id)) => accept_suggestions(
                     &next,
@@ -448,6 +462,7 @@ impl EditorPane {
         self.rejected.clear();
         self.restored.clear();
         self.set_suggestions(next, cx);
+        self.check_spelling(true, cx);
         cx.emit(PaneEvent::Changed);
     }
 
@@ -531,6 +546,8 @@ impl EditorPane {
             state.set_value(text.to_string(), window, cx);
         });
         self.suggestions = empty_suggestions();
+        self.clear_spelling();
+        self.check_spelling(false, cx);
         self.refresh_decorations(cx);
         cx.notify();
     }
@@ -570,6 +587,7 @@ impl EditorPane {
             state.replace_all(text.to_string(), window, cx);
         });
         self.suggestions = empty_suggestions();
+        self.check_spelling(false, cx);
         self.refresh_decorations(cx);
         cx.notify();
     }
@@ -1715,7 +1733,12 @@ impl EditorPane {
         true
     }
 
-    fn place_caret(&mut self, position: usize, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn place_caret(
+        &mut self,
+        position: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.editor.update(cx, |state, cx| {
             state.set_selected_range(position..position, cx);
             state.focus(window, cx);
@@ -2582,7 +2605,7 @@ impl EditorPane {
 
     /// Where the line holding `offset` sits against the view, or `None` before
     /// the editor's first layout.
-    fn line_at(&self, offset: usize, cx: &App) -> Option<LineAt> {
+    pub(crate) fn line_at(&self, offset: usize, cx: &App) -> Option<LineAt> {
         let state = self.editor.read(cx);
         let rows = state.visible_row_range()?;
         let first_shown = component::RopeExt::line_start_offset(state.text(), rows.start);
@@ -2638,7 +2661,11 @@ impl EditorPane {
         let next = position
             .filter(|position| self.bounds.get().contains(position))
             .and_then(|position| self.hovered_at(position, cx));
-        if next != self.hovered {
+        let spelling = self.hover_spelling(
+            position.filter(|position| self.bounds.get().contains(position)),
+            cx,
+        );
+        if next != self.hovered || spelling {
             self.hovered = next;
             cx.notify();
         }
@@ -2996,12 +3023,13 @@ impl EditorPane {
     }
 }
 
-impl Render for EditorPane {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let roles = theme::roles(cx);
-        if std::mem::take(&mut self.reveal_pending) {
-            self.reveal_first_review_suggestion(window, cx);
-        }
+impl EditorPane {
+    /// Where the bubble shows this frame; starts its exit when it has just closed.
+    fn settle_bubble(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<BubbleAnchor> {
         let bubble = self.bubble_view(window, cx);
         let shown = bubble.is_some();
         if self.bubble_shown && !shown {
@@ -3012,6 +3040,17 @@ impl Render for EditorPane {
             self.bubble_leaving = None;
         }
         self.bubble_shown = shown;
+        bubble
+    }
+}
+
+impl Render for EditorPane {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let roles = theme::roles(cx);
+        if std::mem::take(&mut self.reveal_pending) {
+            self.reveal_first_review_suggestion(window, cx);
+        }
+        let bubble = self.settle_bubble(window, cx);
         let zones = self.render_zones(roles, cx);
         let cards = self.render_cards(window, roles, cx);
         let caret = self.render_caret(roles, cx);
@@ -3028,6 +3067,7 @@ impl Render for EditorPane {
         let panel = self.render_notes_panel(roles, cx);
         let map = self.render_map_and_chips(roles, cx);
         let tray = self.render_jobs_tray(roles, cx);
+        let (spell_layer, spell_menu) = self.render_spelling(roles, cx);
         let text = div()
             .id("editor-pane")
             .key_context("EditorPane")
@@ -3042,6 +3082,8 @@ impl Render for EditorPane {
             .on_action(cx.listener(Self::focus_card_back))
             .on_action(cx.listener(Self::pane_undo))
             .on_action(cx.listener(Self::pane_redo))
+            .on_action(cx.listener(Self::open_spell_menu))
+            .on_mouse_up(MouseButton::Left, cx.listener(Self::spell_mouse_up))
             .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _, cx| {
                 this.drag_map(event, cx);
                 this.track_hover(Some(event.position), cx);
@@ -3072,6 +3114,7 @@ impl Render for EditorPane {
             .when(!zones.is_empty(), |this| {
                 this.child(div().absolute().inset_0().overflow_hidden().children(zones))
             })
+            .child(spell_layer)
             .child(ui::caret_layer(
                 self.editor.clone(),
                 caret::settings(cx),
@@ -3087,7 +3130,8 @@ impl Render for EditorPane {
             .children(note_card)
             .children(tray)
             .children(cards)
-            .children(bubble);
+            .children(bubble)
+            .children(spell_menu);
         div()
             .size_full()
             .flex()
@@ -3097,11 +3141,11 @@ impl Render for EditorPane {
     }
 }
 
-fn to_f64(value: Pixels) -> f64 {
+pub(crate) fn to_f64(value: Pixels) -> f64 {
     f64::from(f32::from(value))
 }
 
-fn area_of(pane: Bounds<Pixels>) -> Viewport {
+pub(crate) fn area_of(pane: Bounds<Pixels>) -> Viewport {
     Viewport {
         width: to_f64(pane.size.width),
         height: to_f64(pane.size.height),
@@ -3189,7 +3233,7 @@ fn card_status(item: &Suggestion) -> CardStatus {
     }
 }
 
-fn hits_text_range(
+pub(crate) fn hits_text_range(
     position: Point<Pixels>,
     from: Bounds<Pixels>,
     to: Bounds<Pixels>,

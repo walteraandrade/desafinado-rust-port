@@ -13,6 +13,10 @@ similar.workspace = true
 saphyr-parser = "0.3.4"
 regex = "1"
 icu_normalizer = "2"
+thiserror.workspace = true
+harper-core = "=3.2.0"
+spellbook = "0.4.2"
+flate2 = "1"
 
 [lints]
 workspace = true
