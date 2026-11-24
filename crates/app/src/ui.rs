@@ -464,6 +464,72 @@ pub fn note_mark(
         .child(number.to_string())
 }
 
+/// A chip at the top or the foot of the text that counts the Suggestions past that edge of the
+/// screen and goes to the nearest one: the AI tint, the AI color under the pointer.
+pub fn edge_chip(id: impl Into<ElementId>, roles: Roles) -> Stateful<Div> {
+    div()
+        .id(id)
+        .flex()
+        .items_center()
+        .gap(px(8.))
+        .px(px(12.))
+        .py(px(4.))
+        .rounded_full()
+        .type_small()
+        .weight_medium()
+        .bg(roles.ai_fill)
+        .text_color(roles.ai)
+        .cursor_pointer()
+        .hover(move |this| this.bg(roles.ai).text_color(roles.canvas))
+}
+
+/// The key that does what a chip does, quieter than the chip's own words.
+pub fn chip_key(text: impl Into<SharedString>) -> Div {
+    div().weight_regular().child(text.into())
+}
+
+/// The text map beside the column: the whole Document in miniature, one bar per row of text.
+/// Plain rows take the scrollbar's color, headings the muted one, Suggestions the AI color, a
+/// failed one danger and the one under the caret the heading color; the rows on screen sit on
+/// the fill. Clicking anywhere goes there.
+pub fn text_map_frame(id: impl Into<ElementId>, width: Pixels, height: Pixels) -> Stateful<Div> {
+    div().id(id).relative().w(width).h(height).cursor_pointer()
+}
+
+pub fn text_map_band(top: Pixels, height: Pixels, roles: Roles) -> Div {
+    div()
+        .absolute()
+        .left(px(-4.))
+        .right(px(-4.))
+        .top(top)
+        .h(height)
+        .bg(roles.fill)
+}
+
+pub fn text_map_bar(
+    tone: desafinado_core::text_map::MarkTone,
+    top: Pixels,
+    height: Pixels,
+    width: Pixels,
+    roles: Roles,
+) -> Div {
+    use desafinado_core::text_map::MarkTone;
+    let (color, height) = match tone {
+        MarkTone::Text => (roles.scrollbar, height),
+        MarkTone::Heading => (roles.muted, height),
+        MarkTone::Suggestion => (roles.ai, height.max(px(2.))),
+        MarkTone::Failed => (roles.danger, height.max(px(2.))),
+        MarkTone::Active => (roles.heading, height.max(px(2.))),
+    };
+    div()
+        .absolute()
+        .left_0()
+        .top(top)
+        .w(width)
+        .h(height)
+        .bg(color)
+}
+
 /// The column beside the text that holds a Comment review: General notes and the list of Notes.
 pub fn side_panel(id: impl Into<ElementId>, width: Pixels, roles: Roles) -> Stateful<Div> {
     div()

@@ -17,7 +17,7 @@ use desafinado_ai::{
             BubbleChange, BubbleRange, BubbleState, BubbleView, bubble_visible, next_bubble,
         },
         ask_menu::{self, AskMenu, AskRow},
-        card_placement::{CardPlacement, MARGIN_CARD_WIDTH, placement_for},
+        card_placement::{CardPlacement, MARGIN_CARD_WIDTH, margin_card_left, placement_for},
         focus_cycle::cycle_index,
         geometry::{Rect, Viewport},
         inline_diff::{block_replacement, inline_inserts, rows_before, zone_rows},
@@ -46,12 +46,12 @@ use desafinado_core::{
         accept_suggestions, active_suggestion, begin_refine, begin_suggestion, cancel_refine,
         change_label, change_ranges, describe_error, empty_suggestions, fail_refine,
         fail_suggestion, find_suggestion, first_review_suggestion, instruction_history,
-        instruction_label, map_suggestions, newly_failed, notice_message, occupied_block_ids,
-        open_review_count, place_review_edit, refine_task_label, reject_review_suggestions,
-        reject_suggestion, resolve_refine, resolve_suggestion, restore_suggestion, retry_refine,
-        retry_suggestion, review_notice_text, review_summary, review_task_label, review_too_large,
-        review_too_large_text, show_version, shows_changes, step_change, step_suggestion,
-        suggestion_at, task_label,
+        instruction_label, map_suggestions, newly_failed, next_from, notice_message,
+        occupied_block_ids, open_review_count, place_review_edit, refine_task_label,
+        reject_review_suggestions, reject_suggestion, resolve_refine, resolve_suggestion,
+        restore_suggestion, retry_refine, retry_suggestion, review_notice_text, review_summary,
+        review_task_label, review_too_large, review_too_large_text, show_version, shows_changes,
+        step_change, step_suggestion, suggestion_at, task_label,
     },
 };
 use futures::{StreamExt as _, channel::mpsc};
@@ -104,7 +104,6 @@ actions!(
 
 const COLUMN_WIDTH: f32 = 768.;
 const COLUMN_PADDING: f32 = 24.;
-const MARGIN_GAP: f32 = 24.;
 const BUBBLE_WIDTH: f32 = 360.;
 const BUBBLE_KEY: &str = "\u{0}bubble";
 /// Space above and below an element drawn in the rows reserved under a Suggestion.
@@ -139,6 +138,8 @@ fn key_bindings() -> Vec<KeyBinding> {
         KeyBinding::new("ctrl-l", NextVersion, Some(EDITOR_NOT_REFINING)),
         KeyBinding::new("alt-]", NextSuggestion, Some(EDITOR_NOT_REFINING)),
         KeyBinding::new("alt-[", PreviousSuggestion, Some(EDITOR_NOT_REFINING)),
+        KeyBinding::new("alt-down", NextSuggestion, Some(EDITOR_NOT_REFINING)),
+        KeyBinding::new("alt-up", PreviousSuggestion, Some(EDITOR_NOT_REFINING)),
         KeyBinding::new("tab", FocusCard, Some("EditorPane > Input")),
         KeyBinding::new("shift-tab", FocusCardBack, Some("EditorPane > Input")),
         KeyBinding::new("up", BubbleUp, Some("AskBubble > Input")),
@@ -272,6 +273,7 @@ pub struct EditorPane {
     /// Suggestions asked for from a Note, by Suggestion id, so accepting one resolves its Note.
     pub(crate) note_rewrites: Vec<(String, usize)>,
     reveal_pending: bool,
+    pub(crate) text_map: crate::text_map_view::TextMapState,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -379,6 +381,7 @@ impl EditorPane {
             notes_scroll: ScrollHandle::new(),
             note_rewrites: Vec::new(),
             reveal_pending: false,
+            text_map: crate::text_map_view::TextMapState::default(),
             _subscriptions: vec![edits, moves, typing],
         }
     }
@@ -389,6 +392,7 @@ impl EditorPane {
         event: &InputEditsEvent,
         cx: &mut Context<Self>,
     ) {
+        self.text_map.edited();
         self.caret.restart(editor, cx);
         let frontmatter = find_frontmatter(&editor.read(cx).value());
         let applying = self.applying.take();
@@ -1544,7 +1548,10 @@ impl EditorPane {
         let found = suggestion_at(&self.suggestions, self.cursor(cx)).cloned();
         match found {
             None => cx.propagate(),
-            Some(Suggestion::Ready(ready)) => self.accept(&ready.id, window, cx),
+            Some(Suggestion::Ready(ready)) => {
+                self.accept(&ready.id, window, cx);
+                self.advance(self.cursor(cx), window, cx);
+            }
             Some(_) => {}
         }
     }
@@ -1569,6 +1576,10 @@ impl EditorPane {
                 self.tasks.remove(&ready.id);
                 let next = cancel_refine(&self.suggestions, &ready.id);
                 self.set_suggestions(next, cx);
+            }
+            Some(Suggestion::Ready(ready)) => {
+                self.reject(&ready.id, cx);
+                self.advance(ready.from, window, cx);
             }
             Some(item) => self.reject(&item.id, cx),
             None => cx.propagate(),
@@ -1634,16 +1645,43 @@ impl EditorPane {
     }
 
     fn step(&mut self, direction: Direction, window: &mut Window, cx: &mut Context<Self>) {
-        let cursor = self.cursor(cx);
-        match step_suggestion(&self.suggestions, cursor, direction) {
-            Some(position) => {
-                self.editor.update(cx, |state, cx| {
-                    state.set_selected_range(position..position, cx);
-                    state.focus(window, cx);
-                });
-                cx.notify();
-            }
-            None => cx.propagate(),
+        if !self.move_to_step(direction, window, cx) {
+            cx.propagate();
+        }
+    }
+
+    fn move_to_step(
+        &mut self,
+        direction: Direction,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let forward = direction == Direction::Forward;
+        let Some(position) = self
+            .step_from_screen(forward, cx)
+            .or_else(|| step_suggestion(&self.suggestions, self.cursor(cx), direction))
+        else {
+            return false;
+        };
+        self.place_caret(position, window, cx);
+        true
+    }
+
+    fn place_caret(&mut self, position: usize, window: &mut Window, cx: &mut Context<Self>) {
+        self.editor.update(cx, |state, cx| {
+            state.set_selected_range(position..position, cx);
+            state.focus(window, cx);
+        });
+        self.reveal_jump(position, cx);
+        cx.notify();
+    }
+
+    /// After a Suggestion is accepted or rejected, the caret moves on to the next one that starts
+    /// at `from` or after it, so a Review can be read through from the keyboard. At the last one
+    /// the caret stays.
+    fn advance(&mut self, from: usize, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(position) = next_from(&self.suggestions, from) {
+            self.place_caret(position, window, cx);
         }
     }
 
@@ -1811,10 +1849,15 @@ impl EditorPane {
             CardControl::Accept => {
                 self.accept(&id, window, cx);
                 self.focus(window, cx);
+                self.advance(self.cursor(cx), window, cx);
             }
             CardControl::Reject => {
+                let from = find_suggestion(&self.suggestions, &id).map(|item| item.from);
                 self.reject(&id, cx);
                 self.focus(window, cx);
+                if let Some(from) = from {
+                    self.advance(from, window, cx);
+                }
             }
             CardControl::Refine => self.toggle_refine(&id, window, cx),
             CardControl::RefineField => {}
@@ -1872,8 +1915,7 @@ impl EditorPane {
 
     pub(crate) fn card_placement(&self) -> CardPlacement {
         let pane = self.bounds.get();
-        let right = f64::from(f32::from(self.content_right() - pane.origin.x));
-        placement_for(right, f64::from(f32::from(pane.size.width)))
+        placement_for(f64::from(f32::from(self.content_left() - pane.origin.x)))
     }
 
     fn render_card(
@@ -1915,7 +1957,7 @@ impl EditorPane {
 
     fn card_enter(&self, item: &Suggestion, card: Bounds<Pixels>, cx: &App) -> ui::Enter {
         if self.card_placement() == CardPlacement::Margin {
-            return ui::Enter::Slide(-8.);
+            return ui::Enter::Slide(8.);
         }
         let anchor_at = match item {
             Suggestion::Ready(ready) => {
@@ -1963,7 +2005,7 @@ impl EditorPane {
         let placement = self.card_placement();
         let (left, flip, gap, bottom) = match placement {
             CardPlacement::Margin => (
-                self.content_right() + px(MARGIN_GAP) - origin.x,
+                px(margin_card_left(to_f64(self.content_left() - origin.x)) as f32),
                 false,
                 0.,
                 line.top() - origin.y,
@@ -2939,6 +2981,7 @@ impl Render for EditorPane {
         let marks = self.render_note_marks(roles, cx);
         let note_card = self.render_note_card(roles, cx);
         let panel = self.render_notes_panel(roles, cx);
+        let map = self.render_map_and_chips(roles, cx);
         let text = div()
             .id("editor-pane")
             .key_context("EditorPane")
@@ -2954,7 +2997,11 @@ impl Render for EditorPane {
             .on_action(cx.listener(Self::pane_undo))
             .on_action(cx.listener(Self::pane_redo))
             .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _, cx| {
+                this.drag_map(event, cx);
                 this.track_hover(Some(event.position), cx);
+            }))
+            .capture_any_mouse_down(cx.listener(|this, _: &MouseDownEvent, _, _| {
+                this.end_map_drag();
             }))
             .on_hover(cx.listener(|this, _: &bool, window, cx| {
                 this.track_hover(Some(window.mouse_position()), cx);
@@ -2989,6 +3036,7 @@ impl Render for EditorPane {
                 roles,
             ))
             .children(caret)
+            .children(map)
             .children(marks)
             .children(note_card)
             .children(cards)
