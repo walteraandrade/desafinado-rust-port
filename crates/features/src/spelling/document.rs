@@ -100,8 +100,8 @@ pub fn issue_at(issues: &[Issue], offset: usize) -> Option<usize> {
         .map(|(index, _)| index)
 }
 
-/// The next issue after `offset`, or the previous one before it, wrapping at the ends.
-/// `issues` are in Document order.
+/// The next issue starting after `offset`, or the previous one starting before it, wrapping
+/// at the ends. `issues` are in Document order. Stepping from an issue's own start moves on.
 pub fn step_issue(issues: &[Issue], offset: usize, backward: bool) -> Option<usize> {
     if issues.is_empty() {
         return None;
@@ -109,7 +109,7 @@ pub fn step_issue(issues: &[Issue], offset: usize, backward: bool) -> Option<usi
     if backward {
         issues
             .iter()
-            .rposition(|issue| issue.range.end < offset)
+            .rposition(|issue| issue.range.start < offset)
             .or(Some(issues.len() - 1))
     } else {
         issues
@@ -224,6 +224,25 @@ mod tests {
     }
 
     #[test]
+    fn a_deletion_before_issues_moves_them_back() {
+        let issues = vec![
+            issue(10..14, IssueKind::Spelling),
+            issue(20..25, IssueKind::Grammar),
+        ];
+        let mapped: Vec<_> = map_issues(&issues, 2, 5, 2)
+            .into_iter()
+            .map(|i| i.range)
+            .collect();
+        assert_eq!(mapped, vec![7..11, 17..22]);
+    }
+
+    #[test]
+    fn typing_right_before_a_word_drops_its_issue() {
+        let issues = vec![issue(4..7, IssueKind::Spelling)];
+        assert_eq!(map_issues(&issues, 4, 4, 5), vec![]);
+    }
+
+    #[test]
     fn typing_right_after_a_word_drops_its_issue() {
         let issues = vec![issue(4..7, IssueKind::Spelling)];
         assert_eq!(map_issues(&issues, 7, 7, 8), vec![]);
@@ -265,7 +284,7 @@ mod tests {
     }
 
     #[test]
-    fn ignoring_grammar_keeps_the_same_rule_on_other_words() {
+    fn ignore_keys_grammar_by_its_words_and_spelling_by_the_word_in_any_case() {
         let grammar = issue(0..3, IssueKind::Grammar);
         assert_ne!(ignore_key(&grammar, "has"), ignore_key(&grammar, "have"));
         assert_eq!(
@@ -295,8 +314,10 @@ mod tests {
         assert_eq!(step_issue(&issues, 0, false), Some(0));
         assert_eq!(step_issue(&issues, 3, false), Some(1));
         assert_eq!(step_issue(&issues, 11, false), Some(0));
-        assert_eq!(step_issue(&issues, 11, true), Some(0));
-        assert_eq!(step_issue(&issues, 1, true), Some(1));
+        assert_eq!(step_issue(&issues, 2, false), Some(1));
+        assert_eq!(step_issue(&issues, 10, true), Some(0));
+        assert_eq!(step_issue(&issues, 11, true), Some(1));
+        assert_eq!(step_issue(&issues, 2, true), Some(1));
         assert_eq!(step_issue(&[], 1, true), None);
     }
 

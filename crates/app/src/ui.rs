@@ -1616,12 +1616,8 @@ pub fn spell_menu(id: impl Into<ElementId>, roles: Roles) -> Stateful<Div> {
 }
 
 /// What the spell checker found: the kind in its color, then the explanation.
-pub fn spell_message(
-    kind: impl Into<SharedString>,
-    spelling: bool,
-    message: impl Into<SharedString>,
-    roles: Roles,
-) -> Div {
+/// The header of the spell checker's menu: the kind of mistake, then what is wrong.
+pub fn spell_message(spelling: bool, message: impl Into<SharedString>, roles: Roles) -> Div {
     div()
         .px(px(8.))
         .pt(px(4.))
@@ -1632,7 +1628,7 @@ pub fn spell_message(
             div()
                 .weight_strong()
                 .text_color(if spelling { roles.danger } else { roles.accent })
-                .child(kind.into()),
+                .child(if spelling { "Spelling" } else { "Grammar" }),
         )
         .child(message.into())
 }

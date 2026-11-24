@@ -22,6 +22,19 @@ gpui-kit = { version = "=0.9.1", features = ["tree-sitter-markdown"] }
 
 # Smaller, faster installed binary: thin LTO across crates, one codegen unit and
 # no symbols. A panic message still names its file and line.
+# The spell checker's dictionaries are slow to load unoptimized, which makes tests crawl.
+[profile.dev.package.spellbook]
+opt-level = 3
+
+[profile.dev.package.harper-core]
+opt-level = 3
+
+[profile.dev.package.fst]
+opt-level = 3
+
+[profile.dev.package.miniz_oxide]
+opt-level = 3
+
 [profile.release]
 lto = "thin"
 codegen-units = 1

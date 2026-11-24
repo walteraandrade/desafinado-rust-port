@@ -113,6 +113,8 @@ If your machine reaches the internet through a proxy, such as oneCLI, start the 
 | `Ctrl+H` / `Ctrl+L` | Previous / next version of a refined suggestion |
 | `Alt+↑` / `Alt+↓` (or `Alt+[` / `Alt+]`) | Previous / next suggestion |
 | `Ctrl+Z` / `Ctrl+Shift+Z` | Undo / Redo |
+| `F8` / `Shift+F8` | Next / previous spelling mistake, with its menu open |
+| `Ctrl+.` | Open the spelling menu of the word under the cursor |
 | `Ctrl+B` / `Ctrl+P` | Library / Library search |
 | `Ctrl+,` | Preferences |
 | `Alt+F` / `Alt+E` / `F10` | Open the File or Edit menu |
@@ -127,6 +129,7 @@ Everything is in `~/.config/desafinado-native` (or `$XDG_CONFIG_HOME/desafinado-
 | `ai-calls.jsonl` | One record per AI call: task, model, provider, tokens, cost, latency |
 | `model.txt`, `theme.txt` | Model and theme picked in Preferences |
 | `quick-actions.json` | Your Quick actions |
+| `dictionary.txt` | Words you added to the dictionary, one per line |
 | `openrouter-key.json` | The key, only when there is no system keyring |
 
 Unsaved text, Library folders and Eval runs are kept there too.
@@ -151,7 +154,7 @@ To check a change against the real model, `cargo run -p desafinado-runtime --bin
 |---|---|
 | [`core`](crates/core) | Blocks from the Markdown tree, the adaptive diff, suggestion state and position mapping |
 | [`ai`](crates/ai) | Prompts, response schemas and stream parsing, AI call records, and the editor's pure UI rules (caret, bubble, menus) |
-| [`features`](crates/features) | History, Skills, Evals and themes |
+| [`features`](crates/features) | History, Skills, Evals, themes, and the spell checker (Harper for English, Spellbook for Portuguese) |
 | [`platform`](crates/platform) | Files and atomic save, the keyring, the OpenRouter client, SQLite history, the Library watcher, user data |
 | [`runtime`](crates/runtime) | Wires the services and the AI backend together; the `ai-check` binary |
 | [`app`](crates/app) | The GPUI window and every view; the `desafinado` binary |

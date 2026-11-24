@@ -66,7 +66,10 @@ impl Speller {
         })
     }
 
-    /// The language most words of `text` belong to, or `None` when it has no words.
+    /// The language of `text`, or `None` when it has no words. Only words one dictionary
+    /// knows and the other does not count, plus the short Portuguese words English text never
+    /// uses: English knows "o", "do" and "que" as names, and Portuguese prose borrows "app" and
+    /// "deploy".
     pub fn language_of(&self, text: &str) -> Option<Language> {
         let found = words(text);
         if found.is_empty() {
@@ -75,16 +78,17 @@ impl Speller {
         let (mut english, mut portuguese) = (0usize, 0usize);
         for range in found {
             let word = &text[range];
-            english += usize::from(self.english.knows(word));
-            portuguese += usize::from(self.portuguese.knows(word));
+            if PORTUGUESE_ONLY.contains(&word.to_lowercase().as_str()) {
+                portuguese += 1;
+                continue;
+            }
+            match (self.english.knows(word), self.portuguese.knows(word)) {
+                (true, false) => english += 1,
+                (false, true) => portuguese += 1,
+                _ => {}
+            }
         }
-        let portuguese_wins =
-            portuguese > english || (portuguese == english && looks_portuguese(text));
-        Some(if portuguese_wins {
-            Language::Portuguese
-        } else {
-            Language::English
-        })
+        Some(pick_language(english, portuguese, looks_portuguese(text)))
     }
 
     /// The issues in one Block of Markdown, ordered by where they start.
@@ -92,10 +96,28 @@ impl Speller {
         let mut issues = match self.language_of(text) {
             None => Vec::new(),
             Some(Language::English) => self.english.check(text),
-            Some(Language::Portuguese) => self.portuguese.check(text),
+            Some(Language::Portuguese) => {
+                let english = &self.english;
+                self.portuguese.check(text, |word| english.knows(word))
+            }
         };
         issues.sort_by_key(|issue| (issue.range.start, issue.range.end));
         issues
+    }
+}
+
+/// Short Portuguese words that the English dictionary also lists, but that English prose does
+/// not use as words. "a", "as", "do", "no" and "se" are left out: English uses them.
+const PORTUGUESE_ONLY: &[&str] = &[
+    "o", "os", "da", "das", "dos", "que", "em", "um", "uma", "não", "para", "com", "por", "mas",
+    "é", "ao", "na", "nas", "nos", "ele", "ela", "eu", "você",
+];
+
+fn pick_language(english_only: usize, portuguese_only: usize, accents: bool) -> Language {
+    if portuguese_only > english_only || (portuguese_only == english_only && accents) {
+        Language::Portuguese
+    } else {
+        Language::English
     }
 }
 
@@ -104,10 +126,15 @@ fn looks_portuguese(text: &str) -> bool {
         .any(|c| matches!(c, 'ã' | 'õ' | 'ç' | 'Ã' | 'Õ' | 'Ç'))
 }
 
-fn push_unique(list: &mut Vec<String>, item: String) {
-    if list.len() < MAX_REPLACEMENTS && !list.contains(&item) {
-        list.push(item);
+/// The replacements to offer: each once, in order, at most [`MAX_REPLACEMENTS`].
+fn offered(candidates: impl IntoIterator<Item = String>) -> Vec<String> {
+    let mut list = Vec::new();
+    for item in candidates {
+        if list.len() < MAX_REPLACEMENTS && !list.contains(&item) {
+            list.push(item);
+        }
     }
+    list
 }
 
 #[cfg(test)]
@@ -119,7 +146,10 @@ mod tests {
         LazyLock::new(|| Mutex::new(Speller::new().expect("dictionaries load")));
 
     fn check(text: &str) -> Vec<Issue> {
-        SPELLER.lock().expect("speller lock").check(text)
+        SPELLER
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .check(text)
     }
 
     fn issue_at<'a>(issues: &'a [Issue], text: &str, word: &str) -> &'a Issue {
@@ -182,6 +212,41 @@ mod tests {
     }
 
     #[test]
+    fn english_ranges_are_bytes_after_accented_text() {
+        let text = "The café owner, naïve as ever, had a belive in luck.";
+        let issues = check(text);
+        let belive = issue_at(&issues, text, "belive");
+        assert_eq!(&text[belive.range.clone()], "belive");
+    }
+
+    #[test]
+    fn the_best_replacement_leads_when_several_rules_hit_a_word() {
+        let text = "They has belive the plan.";
+        let issues = check(text);
+        let belive = issue_at(&issues, text, "belive");
+        assert_eq!(
+            belive.replacements.first().map(String::as_str),
+            Some("believe")
+        );
+    }
+
+    #[test]
+    fn style_advice_is_not_a_mistake() {
+        let long = "The committee, which had met every week for the better part of two years in the same cold room above the old bakery on the corner, finally agreed after a great deal of discussion and several false starts that the bridge should be repaired before the winter came.";
+        assert_eq!(check(long), vec![]);
+    }
+
+    #[test]
+    fn issues_come_in_document_order() {
+        let issues = check("Teh dog and teh cat were comming home.");
+        let starts: Vec<usize> = issues.iter().map(|issue| issue.range.start).collect();
+        let mut sorted = starts.clone();
+        sorted.sort_unstable();
+        assert_eq!(starts, sorted);
+        assert!(starts.len() >= 3, "{issues:?}");
+    }
+
+    #[test]
     fn correct_english_has_no_issues() {
         assert_eq!(check("The friends who stay are few."), vec![]);
     }
@@ -213,6 +278,39 @@ mod tests {
     }
 
     #[test]
+    fn portuguese_with_english_loanwords_stays_portuguese() {
+        let text = "Fiz o deploy do app ontem e o build passou.";
+        assert_eq!(
+            SPELLER
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .language_of(text),
+            Some(Language::Portuguese)
+        );
+        assert_eq!(check(text), vec![]);
+        assert_eq!(check("O app quebrou no login de novo."), vec![]);
+    }
+
+    #[test]
+    fn a_curly_apostrophe_is_an_apostrophe() {
+        assert_eq!(check("Um copo d’água e outro d'água."), vec![]);
+    }
+
+    #[test]
+    fn a_tie_goes_to_portuguese_only_with_its_accents() {
+        assert_eq!(pick_language(2, 1, false), Language::English);
+        assert_eq!(pick_language(1, 2, false), Language::Portuguese);
+        assert_eq!(pick_language(1, 1, true), Language::Portuguese);
+        assert_eq!(pick_language(0, 0, false), Language::English);
+    }
+
+    #[test]
+    fn offered_keeps_order_drops_repeats_and_stops_at_five() {
+        let list = offered(["a", "b", "a", "c", "d", "e", "f"].map(String::from));
+        assert_eq!(list, ["a", "b", "c", "d", "e"].map(String::from));
+    }
+
+    #[test]
     fn correct_portuguese_has_no_issues() {
         assert_eq!(
             check("Os meninos foram para a escola e encontraram o professor."),
@@ -236,7 +334,9 @@ mod tests {
 
     #[test]
     fn tells_english_from_portuguese() {
-        let speller = SPELLER.lock().expect("speller lock");
+        let speller = SPELLER
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         assert_eq!(
             speller.language_of("The years will show he was right."),
             Some(Language::English)

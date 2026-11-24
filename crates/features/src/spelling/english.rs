@@ -4,7 +4,7 @@ use harper_core::linting::{Lint, LintGroup, LintKind, Linter, Suggestion};
 use harper_core::spell::{Dictionary, FstDictionary};
 use harper_core::{Dialect, Document};
 
-use super::{Issue, IssueKind, push_unique};
+use super::{Issue, IssueKind, offered};
 
 /// Rules that enforce one house style rather than catch a mistake.
 const HOUSE_STYLE: &[&str] = &["UseTitleCase"];
@@ -76,19 +76,21 @@ impl English {
             if kind == IssueKind::Grammar {
                 issue.kind = IssueKind::Grammar;
             }
-            let mut replacements: Vec<String> = lint
-                .suggestions
-                .iter()
-                .map(|suggestion| replacement(original, suggestion))
-                .collect();
-            if kind == IssueKind::Spelling {
-                replacements.sort_by_key(|candidate| {
+            issue.replacements.extend(
+                lint.suggestions
+                    .iter()
+                    .map(|suggestion| replacement(original, suggestion)),
+            );
+        }
+        for issue in &mut issues {
+            let original = &text[issue.range.clone()];
+            let mut candidates = std::mem::take(&mut issue.replacements);
+            if issue.kind == IssueKind::Spelling {
+                candidates.sort_by_key(|candidate| {
                     (self.rank(candidate), !drops_one_letter(original, candidate))
                 });
             }
-            for candidate in replacements {
-                push_unique(&mut issue.replacements, candidate);
-            }
+            issue.replacements = offered(candidates);
         }
         issues
     }
@@ -142,7 +144,20 @@ fn char_to_byte(text: &str) -> Vec<usize> {
 
 #[cfg(test)]
 mod tests {
-    use super::drops_one_letter;
+    use super::{Suggestion, drops_one_letter, replacement};
+
+    #[test]
+    fn suggestions_become_the_text_that_replaces_the_original() {
+        assert_eq!(
+            replacement("of", &Suggestion::ReplaceWith("have".chars().collect())),
+            "have"
+        );
+        assert_eq!(
+            replacement("the", &Suggestion::InsertAfter(" end".chars().collect())),
+            "the end"
+        );
+        assert_eq!(replacement("the", &Suggestion::Remove), "");
+    }
 
     #[test]
     fn a_doubled_or_extra_letter_is_one_letter_dropped() {

@@ -473,6 +473,7 @@ impl EditorPane {
         }
         self.last_selection = selection.clone();
         self.caret.restart(editor, cx);
+        self.follow_caret_with_spell_menu(&selection);
         self.bubble = next_bubble(
             self.bubble,
             BubbleChange {
@@ -1628,6 +1629,9 @@ impl EditorPane {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.close_spell_menu(window, cx) {
+            return;
+        }
         if self.bubble_shown {
             self.dismiss_bubble(window, cx);
             return;
@@ -2627,13 +2631,16 @@ impl EditorPane {
         })
     }
 
-    fn hovered_at(&self, position: Point<Pixels>, cx: &App) -> Option<String> {
-        if self
-            .card_rects
+    /// Whether the pointer is over a Card that takes clicks, which hides the text under it.
+    pub(crate) fn over_card(&self, position: Point<Pixels>) -> bool {
+        self.card_rects
             .borrow()
             .iter()
             .any(|(rect, kind)| *kind != CardKind::Hover && rect.contains(&position))
-        {
+    }
+
+    fn hovered_at(&self, position: Point<Pixels>, cx: &App) -> Option<String> {
+        if self.over_card(position) {
             return None;
         }
         let state = self.editor.read(cx);
@@ -3067,7 +3074,7 @@ impl Render for EditorPane {
         let panel = self.render_notes_panel(roles, cx);
         let map = self.render_map_and_chips(roles, cx);
         let tray = self.render_jobs_tray(roles, cx);
-        let (spell_layer, spell_menu) = self.render_spelling(roles, cx);
+        let (spell_layer, spell_menu) = self.render_spelling(window, roles, cx);
         let text = div()
             .id("editor-pane")
             .key_context("EditorPane")

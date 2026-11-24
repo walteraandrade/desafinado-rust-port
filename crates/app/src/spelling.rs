@@ -5,7 +5,10 @@ use std::{
     collections::HashSet,
     ops::Range,
     path::{Path, PathBuf},
-    sync::{Arc, LazyLock, Mutex},
+    sync::{
+        Arc, LazyLock, Mutex,
+        atomic::{AtomicBool, AtomicU64, Ordering},
+    },
     time::Duration,
 };
 
@@ -24,9 +27,9 @@ use desafinado_platform::files::write_atomic_unconditionally;
 use gpui_kit::{prelude::FluentBuilder as _, *};
 
 use crate::{
-    editor_pane::{EditorPane, area_of, hits_text_range, to_f64},
+    editor_pane::{EditorPane, PaneEvent, area_of, hits_text_range, to_f64},
     theme::Roles,
-    ui,
+    ui::{self, ToastTone},
 };
 
 actions!(
@@ -48,6 +51,11 @@ const MENU_KEY: &str = "\u{0}spell";
 
 static SPELLER: LazyLock<Option<Mutex<Speller>>> =
     LazyLock::new(|| Speller::new().log_err().map(Mutex::new));
+static SPELLER_FAILURE_SHOWN: AtomicBool = AtomicBool::new(false);
+static EMPTY_WORDBOOK: LazyLock<Wordbook> = LazyLock::new(Wordbook::default);
+/// The latest save of the dictionary of added words, and the lock that keeps saves in order.
+static WORDBOOK_SAVE: AtomicU64 = AtomicU64::new(0);
+static WORDBOOK_WRITE: Mutex<()> = Mutex::new(());
 
 /// The writer's own words, shared by every window, and the file they are saved in.
 pub struct WordbookChoice {
@@ -79,10 +87,9 @@ pub fn init(user_data: &Path, cx: &mut App) {
     ]);
 }
 
-fn wordbook(cx: &App) -> Wordbook {
+fn wordbook(cx: &App) -> &Wordbook {
     cx.try_global::<WordbookChoice>()
-        .map(|choice| choice.wordbook.clone())
-        .unwrap_or_default()
+        .map_or(&*EMPTY_WORDBOOK, |choice| &choice.wordbook)
 }
 
 /// The spell checker's state in one editor.
@@ -100,6 +107,8 @@ pub struct SpellState {
 struct SpellMenu {
     issue: Issue,
     active: usize,
+    /// Opened from the keyboard: the menu takes the keys. A click leaves them in the text.
+    focused: bool,
 }
 
 /// A choice in the menu, in the order it shows.
@@ -193,13 +202,23 @@ impl EditorPane {
             let found = cx
                 .background_spawn(async move { check_document(&text, &checked) })
                 .await;
-            if let Some(found) = found {
-                this.update(cx, |this, cx| {
+            this.update(cx, |this, cx| match found {
+                Some(found) => {
                     this.spelling.issues = found;
                     cx.notify();
-                })
-                .log_err();
-            }
+                }
+                None if SPELLER.is_none()
+                    && !SPELLER_FAILURE_SHOWN.swap(true, Ordering::Relaxed) =>
+                {
+                    cx.emit(PaneEvent::Toast {
+                        text: "The spell checker could not load its dictionaries.".into(),
+                        tone: ToastTone::Danger,
+                        actions: Vec::new(),
+                    });
+                }
+                None => {}
+            })
+            .log_err();
         }));
     }
 
@@ -227,7 +246,7 @@ impl EditorPane {
         document::shown(
             &self.spelling.issues,
             |range| words_in(text, range),
-            &wordbook(cx),
+            wordbook(cx),
             &self.spelling.ignored,
             &covered,
         )
@@ -258,6 +277,9 @@ impl EditorPane {
     }
 
     fn issue_under(&self, position: Point<Pixels>, cx: &App) -> Option<Issue> {
+        if self.over_card(position) {
+            return None;
+        }
         let state = self.editor.read(cx);
         let column = self.content_left()..self.content_right();
         self.shown_issues(cx)
@@ -285,13 +307,35 @@ impl EditorPane {
     }
 
     /// The dots under the text and the open menu, if any.
+    /// A menu whose word scrolled out of view closes, and the keys go back to the text.
     pub(crate) fn render_spelling(
-        &self,
+        &mut self,
+        window: &mut Window,
         roles: Roles,
         cx: &mut Context<Self>,
     ) -> (AnyElement, Option<AnyElement>) {
         let layer = ui::spelling_layer(self.editor.clone(), self.spell_marks(roles, cx));
-        (layer, self.render_spell_menu(roles, cx))
+        let menu = self.render_spell_menu(roles, cx);
+        if menu.is_none() {
+            self.spelling.menu = None;
+            if self.spelling.focus.is_focused(window) {
+                self.focus(window, cx);
+            }
+        }
+        (layer, menu)
+    }
+
+    /// A menu opened by a click closes once the caret leaves its word or selects text.
+    pub(crate) fn follow_caret_with_spell_menu(&mut self, selection: &Range<usize>) {
+        let stays = self.spelling.menu.as_ref().is_none_or(|menu| {
+            menu.focused
+                || (selection.is_empty()
+                    && menu.issue.range.start <= selection.start
+                    && selection.start <= menu.issue.range.end)
+        });
+        if !stays {
+            self.spelling.menu = None;
+        }
     }
 
     /// A click on a marked word, with nothing selected, opens its menu.
@@ -309,13 +353,25 @@ impl EditorPane {
         if let Some(issue) = self.issue_under(position, cx).filter(|issue| {
             issue.range.start <= selection.start && selection.start <= issue.range.end
         }) {
-            self.open_spell_menu_on(issue, window, cx);
+            self.open_spell_menu_on(issue, false, window, cx);
         }
     }
 
-    fn open_spell_menu_on(&mut self, issue: Issue, window: &mut Window, cx: &mut Context<Self>) {
-        self.spelling.menu = Some(SpellMenu { issue, active: 0 });
-        window.focus(&self.spelling.focus, cx);
+    fn open_spell_menu_on(
+        &mut self,
+        issue: Issue,
+        focused: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.spelling.menu = Some(SpellMenu {
+            issue,
+            active: 0,
+            focused,
+        });
+        if focused {
+            window.focus(&self.spelling.focus, cx);
+        }
         cx.notify();
     }
 
@@ -327,12 +383,17 @@ impl EditorPane {
     ) {
         let issues = self.shown_issues(cx);
         if let Some(index) = document::issue_at(&issues, self.editor.read(cx).cursor()) {
-            self.open_spell_menu_on(issues[index].clone(), window, cx);
+            self.open_spell_menu_on(issues[index].clone(), true, window, cx);
         }
     }
 
     /// Moves the caret to the next or previous mark and opens its menu.
-    pub fn step_issue(&mut self, backward: bool, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn step_issue(
+        &mut self,
+        backward: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let issues = self.shown_issues(cx);
         let from = self.spelling.menu.as_ref().map_or_else(
             || self.editor.read(cx).cursor(),
@@ -343,16 +404,19 @@ impl EditorPane {
         };
         let issue = issues[index].clone();
         self.place_caret(issue.range.start, window, cx);
-        self.open_spell_menu_on(issue, window, cx);
+        self.open_spell_menu_on(issue, true, window, cx);
     }
 
-    pub(crate) fn close_spell_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.spelling.menu.take().is_some() {
+    /// Returns whether a menu was open.
+    pub(crate) fn close_spell_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        let open = self.spelling.menu.take().is_some();
+        if open {
             if self.spelling.focus.is_focused(window) {
                 self.focus(window, cx);
             }
             cx.notify();
         }
+        open
     }
 
     pub(crate) fn spell_menu_blurred(&mut self, cx: &mut Context<Self>) {
@@ -414,11 +478,11 @@ impl EditorPane {
         let heights = std::rc::Rc::clone(&self.heights);
         let entity = cx.entity().downgrade();
         let spelling = menu.issue.kind == IssueKind::Spelling;
-        let kind = if spelling { "Spelling" } else { "Grammar" };
+        let active = menu.focused.then_some(menu.active);
         let rows: Vec<AnyElement> = choices(&menu.issue)
             .into_iter()
             .enumerate()
-            .map(|(index, choice)| self.render_spell_row(index, &choice, menu.active, roles, cx))
+            .map(|(index, choice)| self.render_spell_row(index, &choice, active, roles, cx))
             .collect();
         let first_quiet = menu.issue.replacements.len();
         let (replacements, actions) = {
@@ -448,7 +512,6 @@ impl EditorPane {
                     }
                 }))
                 .child(ui::spell_message(
-                    kind,
                     spelling,
                     menu.issue.message.clone(),
                     roles,
@@ -464,19 +527,20 @@ impl EditorPane {
         &self,
         index: usize,
         choice: &MenuChoice,
-        active: usize,
+        active: Option<usize>,
         roles: Roles,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let quiet = !matches!(choice, MenuChoice::Replace(_));
-        ui::spell_row(("spell-row", index), index == active, quiet, roles)
+        let is_active = active == Some(index);
+        ui::spell_row(("spell-row", index), is_active, quiet, roles)
             .on_click(cx.listener(move |this, _, window, cx| this.choose(index, window, cx)))
             .child(
                 div()
                     .when(index == 0 && !quiet, ui::Type::weight_strong)
                     .child(choice_label(choice)),
             )
-            .when(index == active, |this| this.child(ui::kbd("Enter", roles)))
+            .when(is_active, |this| this.child(ui::kbd("Enter", roles)))
             .into_any_element()
     }
 
@@ -529,11 +593,36 @@ fn add_to_wordbook(word: &str, cx: &mut Context<EditorPane>) {
         wordbook,
         file: file.clone(),
     });
-    cx.background_spawn(async move {
-        write_atomic_unconditionally(&file, &text).log_err();
+    let save = WORDBOOK_SAVE.fetch_add(1, Ordering::SeqCst) + 1;
+    cx.spawn(async move |this, cx| {
+        let saved = cx
+            .background_spawn(async move { save_wordbook(save, &file, &text) })
+            .await;
+        if let Err(error) = saved {
+            log::error!("The dictionary of added words could not be saved: {error}");
+            this.update(cx, |_, cx| {
+                cx.emit(PaneEvent::Toast {
+                    text: format!("The word could not be saved to the dictionary: {error}"),
+                    tone: ToastTone::Danger,
+                    actions: Vec::new(),
+                });
+            })
+            .log_err();
+        }
     })
     .detach();
     cx.refresh_windows();
+}
+
+/// Writes the dictionary unless a later save has its newer text: saves end in the order made.
+fn save_wordbook(save: u64, file: &Path, text: &str) -> std::io::Result<()> {
+    let _turn = WORDBOOK_WRITE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if WORDBOOK_SAVE.load(Ordering::SeqCst) != save {
+        return Ok(());
+    }
+    write_atomic_unconditionally(file, text)
 }
 
 #[cfg(test)]
@@ -583,6 +672,7 @@ mod tests {
     fn code_html_and_rules_are_not_checked() {
         assert!(!checkable(BlockKind::Code));
         assert!(!checkable(BlockKind::Html));
+        assert!(!checkable(BlockKind::Rule));
         assert!(checkable(BlockKind::Paragraph));
         assert!(checkable(BlockKind::Heading));
     }
