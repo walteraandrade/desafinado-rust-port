@@ -45,6 +45,12 @@ pub fn step_suggestion(
     target.map(|item| anchor_of(state, item))
 }
 
+/// Where the caret goes to stand in a Suggestion, so that its Card opens.
+pub fn suggestion_anchor(state: &SuggestionsState, id: &str) -> Option<usize> {
+    let target = state.items.iter().find(|item| item.id == id)?;
+    Some(anchor_of(state, target))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -69,6 +75,17 @@ mod tests {
             .fold(empty_suggestions(), |state, draft| {
                 begin_suggestion(&state, draft)
             })
+    }
+
+    #[test]
+    fn anchors_a_suggestion_where_the_caret_finds_it() {
+        let state = state();
+        assert_eq!(suggestion_anchor(&state, "b"), Some(20));
+        assert_eq!(
+            suggestion_at(&state, 20).map(|item| item.id.as_str()),
+            Some("b")
+        );
+        assert_eq!(suggestion_anchor(&state, "missing"), None);
     }
 
     #[test]

@@ -104,10 +104,10 @@ If your machine reaches the internet through a proxy, such as oneCLI, start the 
 |---|---|
 | `Ctrl+N` `Ctrl+O` `Ctrl+S` `Ctrl+Shift+S` | New, Open, Save, Save as |
 | `Ctrl+K` | Ask the AI about the selection or the paragraph under the cursor |
-| `Ctrl+Enter` / `Esc` | Accept / Reject the suggestion at the cursor |
+| `Ctrl+Enter` / `Esc` | Accept / Reject the suggestion at the cursor, then go to the next one |
 | `Tab` | Move into the suggestion's card |
 | `Ctrl+H` / `Ctrl+L` | Previous / next version of a refined suggestion |
-| `Alt+[` / `Alt+]` | Previous / next suggestion |
+| `Alt+↑` / `Alt+↓` (or `Alt+[` / `Alt+]`) | Previous / next suggestion |
 | `Ctrl+Z` / `Ctrl+Shift+Z` | Undo / Redo |
 | `Ctrl+B` / `Ctrl+P` | Library / Library search |
 | `Ctrl+,` | Preferences |

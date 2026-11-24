@@ -139,6 +139,8 @@ fn key_bindings() -> Vec<KeyBinding> {
         KeyBinding::new("ctrl-l", NextVersion, Some(EDITOR_NOT_REFINING)),
         KeyBinding::new("alt-]", NextSuggestion, Some(EDITOR_NOT_REFINING)),
         KeyBinding::new("alt-[", PreviousSuggestion, Some(EDITOR_NOT_REFINING)),
+        KeyBinding::new("alt-down", NextSuggestion, Some(EDITOR_NOT_REFINING)),
+        KeyBinding::new("alt-up", PreviousSuggestion, Some(EDITOR_NOT_REFINING)),
         KeyBinding::new("tab", FocusCard, Some("EditorPane > Input")),
         KeyBinding::new("shift-tab", FocusCardBack, Some("EditorPane > Input")),
         KeyBinding::new("up", BubbleUp, Some("AskBubble > Input")),
@@ -1544,7 +1546,10 @@ impl EditorPane {
         let found = suggestion_at(&self.suggestions, self.cursor(cx)).cloned();
         match found {
             None => cx.propagate(),
-            Some(Suggestion::Ready(ready)) => self.accept(&ready.id, window, cx),
+            Some(Suggestion::Ready(ready)) => {
+                self.accept(&ready.id, window, cx);
+                self.advance(window, cx);
+            }
             Some(_) => {}
         }
     }
@@ -1570,7 +1575,10 @@ impl EditorPane {
                 let next = cancel_refine(&self.suggestions, &ready.id);
                 self.set_suggestions(next, cx);
             }
-            Some(item) => self.reject(&item.id, cx),
+            Some(item) => {
+                self.reject(&item.id, cx);
+                self.advance(window, cx);
+            }
             None => cx.propagate(),
         }
     }
@@ -1634,17 +1642,34 @@ impl EditorPane {
     }
 
     fn step(&mut self, direction: Direction, window: &mut Window, cx: &mut Context<Self>) {
-        let cursor = self.cursor(cx);
-        match step_suggestion(&self.suggestions, cursor, direction) {
-            Some(position) => {
-                self.editor.update(cx, |state, cx| {
-                    state.set_selected_range(position..position, cx);
-                    state.focus(window, cx);
-                });
-                cx.notify();
-            }
-            None => cx.propagate(),
+        if !self.move_to_step(direction, window, cx) {
+            cx.propagate();
         }
+    }
+
+    fn move_to_step(
+        &mut self,
+        direction: Direction,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let cursor = self.cursor(cx);
+        let Some(position) = step_suggestion(&self.suggestions, cursor, direction) else {
+            return false;
+        };
+        self.editor.update(cx, |state, cx| {
+            state.set_selected_range(position..position, cx);
+            state.focus(window, cx);
+        });
+        self.reveal_jump(position, cx);
+        cx.notify();
+        true
+    }
+
+    /// After a Suggestion is accepted or rejected, the caret moves on to the next one, so a
+    /// Review can be read through from the keyboard.
+    fn advance(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.move_to_step(Direction::Forward, window, cx);
     }
 
     fn next_suggestion(&mut self, _: &NextSuggestion, window: &mut Window, cx: &mut Context<Self>) {
@@ -1811,10 +1836,12 @@ impl EditorPane {
             CardControl::Accept => {
                 self.accept(&id, window, cx);
                 self.focus(window, cx);
+                self.advance(window, cx);
             }
             CardControl::Reject => {
                 self.reject(&id, cx);
                 self.focus(window, cx);
+                self.advance(window, cx);
             }
             CardControl::Refine => self.toggle_refine(&id, window, cx),
             CardControl::RefineField => {}
@@ -2939,6 +2966,14 @@ impl Render for EditorPane {
         let marks = self.render_note_marks(roles, cx);
         let note_card = self.render_note_card(roles, cx);
         let panel = self.render_notes_panel(roles, cx);
+        let frame = self.map_frame(cx);
+        let map = frame
+            .as_ref()
+            .and_then(|frame| self.render_text_map(frame, roles, cx));
+        let chips = frame
+            .as_ref()
+            .map(|frame| self.render_edge_chips(frame, roles, cx))
+            .unwrap_or_default();
         let text = div()
             .id("editor-pane")
             .key_context("EditorPane")
@@ -2989,6 +3024,8 @@ impl Render for EditorPane {
                 roles,
             ))
             .children(caret)
+            .children(map)
+            .children(chips)
             .children(marks)
             .children(note_card)
             .children(cards)
