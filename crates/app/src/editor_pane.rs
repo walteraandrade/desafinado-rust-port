@@ -46,12 +46,12 @@ use desafinado_core::{
         accept_suggestions, active_suggestion, begin_refine, begin_suggestion, cancel_refine,
         change_label, change_ranges, describe_error, empty_suggestions, fail_refine,
         fail_suggestion, find_suggestion, first_review_suggestion, instruction_history,
-        instruction_label, map_suggestions, newly_failed, notice_message, occupied_block_ids,
-        open_review_count, place_review_edit, refine_task_label, reject_review_suggestions,
-        reject_suggestion, resolve_refine, resolve_suggestion, restore_suggestion, retry_refine,
-        retry_suggestion, review_notice_text, review_summary, review_task_label, review_too_large,
-        review_too_large_text, show_version, shows_changes, step_change, step_suggestion,
-        suggestion_at, task_label,
+        instruction_label, map_suggestions, newly_failed, next_from, notice_message,
+        occupied_block_ids, open_review_count, place_review_edit, refine_task_label,
+        reject_review_suggestions, reject_suggestion, resolve_refine, resolve_suggestion,
+        restore_suggestion, retry_refine, retry_suggestion, review_notice_text, review_summary,
+        review_task_label, review_too_large, review_too_large_text, show_version, shows_changes,
+        step_change, step_suggestion, suggestion_at, task_label,
     },
 };
 use futures::{StreamExt as _, channel::mpsc};
@@ -1548,7 +1548,7 @@ impl EditorPane {
             None => cx.propagate(),
             Some(Suggestion::Ready(ready)) => {
                 self.accept(&ready.id, window, cx);
-                self.advance(window, cx);
+                self.advance(self.cursor(cx), window, cx);
             }
             Some(_) => {}
         }
@@ -1575,10 +1575,11 @@ impl EditorPane {
                 let next = cancel_refine(&self.suggestions, &ready.id);
                 self.set_suggestions(next, cx);
             }
-            Some(item) => {
-                self.reject(&item.id, cx);
-                self.advance(window, cx);
+            Some(Suggestion::Ready(ready)) => {
+                self.reject(&ready.id, cx);
+                self.advance(ready.from, window, cx);
             }
+            Some(item) => self.reject(&item.id, cx),
             None => cx.propagate(),
         }
     }
@@ -1653,23 +1654,33 @@ impl EditorPane {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
-        let cursor = self.cursor(cx);
-        let Some(position) = step_suggestion(&self.suggestions, cursor, direction) else {
+        let forward = direction == Direction::Forward;
+        let Some(position) = self
+            .step_from_screen(forward, cx)
+            .or_else(|| step_suggestion(&self.suggestions, self.cursor(cx), direction))
+        else {
             return false;
         };
+        self.place_caret(position, window, cx);
+        true
+    }
+
+    fn place_caret(&mut self, position: usize, window: &mut Window, cx: &mut Context<Self>) {
         self.editor.update(cx, |state, cx| {
             state.set_selected_range(position..position, cx);
             state.focus(window, cx);
         });
         self.reveal_jump(position, cx);
         cx.notify();
-        true
     }
 
-    /// After a Suggestion is accepted or rejected, the caret moves on to the next one, so a
-    /// Review can be read through from the keyboard.
-    fn advance(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.move_to_step(Direction::Forward, window, cx);
+    /// After a Suggestion is accepted or rejected, the caret moves on to the next one that starts
+    /// at `from` or after it, so a Review can be read through from the keyboard. At the last one
+    /// the caret stays.
+    fn advance(&mut self, from: usize, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(position) = next_from(&self.suggestions, from) {
+            self.place_caret(position, window, cx);
+        }
     }
 
     fn next_suggestion(&mut self, _: &NextSuggestion, window: &mut Window, cx: &mut Context<Self>) {
@@ -1836,12 +1847,15 @@ impl EditorPane {
             CardControl::Accept => {
                 self.accept(&id, window, cx);
                 self.focus(window, cx);
-                self.advance(window, cx);
+                self.advance(self.cursor(cx), window, cx);
             }
             CardControl::Reject => {
+                let from = find_suggestion(&self.suggestions, &id).map(|item| item.from);
                 self.reject(&id, cx);
                 self.focus(window, cx);
-                self.advance(window, cx);
+                if let Some(from) = from {
+                    self.advance(from, window, cx);
+                }
             }
             CardControl::Refine => self.toggle_refine(&id, window, cx),
             CardControl::RefineField => {}

@@ -4,11 +4,12 @@
 use desafinado_core::{
     suggestions::{RefineState, Suggestion, active_suggestion, suggestion_anchor},
     text_map::{
-        MapLine, MapMark, MarkTone, TextMap, View, map_lines, mark_near, off_screen,
-        reveal_first_row, row_of_offset, scroll_row_for, text_map,
+        MapLine, MapMark, MarkTone, TextMap, View, locate, map_lines, mark_near, off_screen,
+        reveal_first_row, scroll_row_for, step_in_view, text_map,
     },
 };
-use gpui_kit::*;
+use gpui_kit::{base::input::BufferPoint, *};
+use std::rc::Rc;
 
 use crate::{editor_pane::EditorPane, theme::Roles, ui};
 
@@ -24,18 +25,15 @@ const MAP_REACH: f32 = 6.;
 /// What the map and the chips read from the editor on one frame.
 pub(crate) struct MapFrame {
     lines: Vec<MapLine>,
-    marks: Vec<MapMark>,
-    ids: Vec<String>,
+    marks: Rc<[MapMark]>,
+    ids: Rc<[String]>,
     view: View,
     line_height: Pixels,
 }
 
 impl MapFrame {
     fn rows(&self) -> Vec<usize> {
-        self.marks
-            .iter()
-            .map(|mark| row_of_offset(&self.lines, mark.offset))
-            .collect()
+        self.marks.iter().map(|mark| mark.row).collect()
     }
 
     /// The Suggestion nearest the top edge of the screen from above, or the bottom edge from below.
@@ -43,7 +41,7 @@ impl MapFrame {
         let rows = self.rows();
         let top = self.view.first_row;
         let bottom = top + self.view.rows;
-        let mut past = rows.iter().zip(&self.ids);
+        let mut past = rows.iter().zip(self.ids.iter());
         let found = if below {
             past.find(|(row, _)| (**row as f32) >= bottom)
         } else {
@@ -82,12 +80,22 @@ impl EditorPane {
         Some((lines, view, line_height))
     }
 
+    /// The display row an offset is drawn on, after wrapping and folds.
+    fn display_row(&self, lines: &[MapLine], offset: usize, cx: &App) -> usize {
+        let (line, col) = locate(lines, offset);
+        self.editor
+            .read(cx)
+            .display_map()
+            .buffer_pos_to_display_pos(BufferPoint::new(line, col))
+            .row
+    }
+
     /// Scrolls so that a caret just moved to `offset` by a jump sits well inside the screen.
     pub(crate) fn reveal_jump(&mut self, offset: usize, cx: &mut Context<Self>) {
         let Some((lines, view, line_height)) = self.rows_on_screen(cx) else {
             return;
         };
-        if let Some(first) = reveal_first_row(view, row_of_offset(&lines, offset)) {
+        if let Some(first) = reveal_first_row(view, self.display_row(&lines, offset, cx)) {
             self.editor.update(cx, |state, cx| {
                 state.set_scroll_offset(point(px(0.), -(line_height * first)), cx);
             });
@@ -104,10 +112,10 @@ impl EditorPane {
             .map(|ready| ready.id.clone());
         let mut items: Vec<&Suggestion> = self.suggestions.items.iter().collect();
         items.sort_by_key(|item| (item.from, item.to));
-        let marks = items
+        let marks: Rc<[MapMark]> = items
             .iter()
             .map(|item| MapMark {
-                offset: item.from,
+                row: self.display_row(&lines, item.from, cx),
                 tone: tone_of(item, active.as_deref()),
             })
             .collect();
@@ -119,6 +127,19 @@ impl EditorPane {
             view,
             line_height,
         })
+    }
+
+    /// Where `Alt+↑` and `Alt+↓` go when the caret is off screen: the Suggestion the screen
+    /// steps to, so the keys agree with the chips. `None` when the caret is on screen.
+    pub(crate) fn step_from_screen(&self, forward: bool, cx: &App) -> Option<usize> {
+        let frame = self.map_frame(cx)?;
+        let caret = self.display_row(&frame.lines, self.editor.read(cx).cursor(), cx) as f32;
+        let view = frame.view;
+        if caret + 1. > view.first_row && caret < view.first_row + view.rows {
+            return None;
+        }
+        let index = step_in_view(&frame.rows(), view, forward)?;
+        suggestion_anchor(&self.suggestions, frame.ids.get(index)?)
     }
 
     /// The map's left edge in the pane, when the margin left of the column has room for it.
@@ -138,46 +159,38 @@ impl EditorPane {
         let pane = self.pane_bounds();
         let room = f32::from(pane.size.height) - 2. * MAP_INSET;
         let map = text_map(&frame.lines, &frame.marks, frame.view, room);
-        let bars = map.bars.iter().map(|bar| {
-            ui::text_map_bar(
-                bar.tone,
-                px(bar.top),
-                px(bar.height),
-                px(MAP_WIDTH * bar.width),
-                roles,
-            )
-        });
+        let bars: Vec<Div> = map
+            .bars
+            .iter()
+            .map(|bar| {
+                ui::text_map_bar(
+                    bar.tone,
+                    px(bar.top),
+                    px(bar.height),
+                    px(MAP_WIDTH * bar.width),
+                    roles,
+                )
+            })
+            .collect();
+        let band = ui::text_map_band(px(map.band_top), px(map.band_height), roles);
+        let height = px(map.height);
         let origin_y = pane.origin.y + px(MAP_INSET);
-        let view_rows = frame.view.rows;
-        let line_height = frame.line_height;
-        let lines = frame.lines.clone();
-        let marks = frame.marks.clone();
-        let ids = frame.ids.clone();
-        let element = ui::text_map_frame("text-map", px(MAP_WIDTH), px(map.height))
+        let click = MapClick {
+            marks: Rc::clone(&frame.marks),
+            ids: Rc::clone(&frame.ids),
+            map,
+            view_rows: frame.view.rows,
+            line_height: frame.line_height,
+        };
+        let element = ui::text_map_frame("text-map", px(MAP_WIDTH), height)
             .absolute()
             .left(left)
             .top(px(MAP_INSET))
-            .child(ui::text_map_band(
-                px(map.band_top),
-                px(map.band_height),
-                roles,
-            ))
+            .child(band)
             .children(bars)
             .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
                 let y = f32::from(event.position().y - origin_y);
-                this.on_map_click(
-                    &MapClick {
-                        lines: &lines,
-                        marks: &marks,
-                        ids: &ids,
-                        map: &map,
-                        view_rows,
-                        line_height,
-                    },
-                    y,
-                    window,
-                    cx,
-                );
+                this.on_map_click(&click, y, window, cx);
             }));
         Some(element.into_any_element())
     }
@@ -189,13 +202,13 @@ impl EditorPane {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if let Some(index) = mark_near(click.lines, click.marks, click.map, y, MAP_REACH)
+        if let Some(index) = mark_near(&click.marks, &click.map, y, MAP_REACH)
             && let Some(id) = click.ids.get(index)
         {
             self.go_to_suggestion(id, window, cx);
             return;
         }
-        let row = scroll_row_for(click.map, y, click.view_rows);
+        let row = scroll_row_for(&click.map, y, click.view_rows);
         self.editor.update(cx, |state, cx| {
             state.set_scroll_offset(point(px(0.), -(click.line_height * row)), cx);
         });
@@ -259,11 +272,10 @@ impl EditorPane {
     }
 }
 
-struct MapClick<'a> {
-    lines: &'a [MapLine],
-    marks: &'a [MapMark],
-    ids: &'a [String],
-    map: &'a TextMap,
+struct MapClick {
+    marks: Rc<[MapMark]>,
+    ids: Rc<[String]>,
+    map: TextMap,
     view_rows: f32,
     line_height: Pixels,
 }

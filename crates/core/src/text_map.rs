@@ -18,10 +18,10 @@ pub struct MapLine {
     pub kind: LineKind,
 }
 
-/// A Suggestion as the map sees it: where it starts, and how it reads.
+/// A Suggestion as the map sees it: the display row it starts on, and how it reads.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct MapMark {
-    pub offset: usize,
+    pub row: usize,
     pub tone: MarkTone,
 }
 
@@ -97,19 +97,27 @@ pub fn total_rows(lines: &[MapLine]) -> usize {
     lines.last().map_or(0, |line| line.first_row + line.rows)
 }
 
-/// The display row an offset falls on, read as its share of its line when the line wraps.
-pub fn row_of_offset(lines: &[MapLine], offset: usize) -> usize {
+/// The line an offset falls on and its byte column there.
+pub fn locate(lines: &[MapLine], offset: usize) -> (usize, usize) {
     let index = lines
         .partition_point(|line| line.start <= offset)
         .saturating_sub(1);
-    let Some(line) = lines.get(index) else {
-        return 0;
-    };
-    if line.rows <= 1 || line.len == 0 {
-        return line.first_row;
+    lines.get(index).map_or((0, 0), |line| {
+        (index, offset.saturating_sub(line.start).min(line.len))
+    })
+}
+
+/// The mark a step from the screen lands on, when the caret is off screen: going down, the first
+/// one from the top edge on; going up, the last one before the bottom edge. `rows` are in
+/// document order.
+pub fn step_in_view(rows: &[usize], view: View, forward: bool) -> Option<usize> {
+    let top = view.first_row;
+    let bottom = view.first_row + view.rows;
+    if forward {
+        rows.iter().position(|&row| (row as f32) + 1. > top)
+    } else {
+        rows.iter().rposition(|&row| (row as f32) < bottom)
     }
-    let into = offset.saturating_sub(line.start).min(line.len);
-    line.first_row + (into * line.rows / line.len).min(line.rows - 1)
 }
 
 /// How many marks sit above and below the rows on screen.
@@ -149,7 +157,7 @@ pub fn text_map(lines: &[MapLine], marks: &[MapMark], view: View, height: f32) -
     let columns = columns_of(lines);
     let mut marked: Vec<Option<MarkTone>> = vec![None; total];
     for mark in marks {
-        let row = row_of_offset(lines, mark.offset).min(total - 1);
+        let row = mark.row.min(total - 1);
         marked[row] = marked[row].max(Some(mark.tone));
     }
     let mut bars: Vec<MapBar> = Vec::new();
@@ -210,20 +218,11 @@ pub fn reveal_first_row(view: View, row: usize) -> Option<f32> {
 }
 
 /// The mark whose bar is within `reach` pixels of `y`, nearest first.
-pub fn mark_near(
-    lines: &[MapLine],
-    marks: &[MapMark],
-    map: &TextMap,
-    y: f32,
-    reach: f32,
-) -> Option<usize> {
+pub fn mark_near(marks: &[MapMark], map: &TextMap, y: f32, reach: f32) -> Option<usize> {
     marks
         .iter()
         .enumerate()
-        .map(|(index, mark)| {
-            let top = row_of_offset(lines, mark.offset) as f32 * map.pitch;
-            (index, (top - y).abs())
-        })
+        .map(|(index, mark)| (index, (mark.row as f32 * map.pitch - y).abs()))
         .filter(|&(_, distance)| distance <= reach)
         .min_by(|a, b| a.1.total_cmp(&b.1))
         .map(|(index, _)| index)
@@ -237,9 +236,9 @@ mod tests {
         1
     }
 
-    fn mark(offset: usize) -> MapMark {
+    fn mark(row: usize) -> MapMark {
         MapMark {
-            offset,
+            row,
             tone: MarkTone::Suggestion,
         }
     }
@@ -258,14 +257,26 @@ mod tests {
     }
 
     #[test]
-    fn places_an_offset_on_its_share_of_a_wrapped_line() {
-        let text = format!("intro\n{}", "x".repeat(300));
-        let lines = map_lines(&text, |index| if index == 1 { 3 } else { 1 });
-        assert_eq!(row_of_offset(&lines, 2), 0);
-        assert_eq!(row_of_offset(&lines, 6), 1);
-        assert_eq!(row_of_offset(&lines, 6 + 150), 2);
-        assert_eq!(row_of_offset(&lines, 6 + 299), 3);
-        assert_eq!(row_of_offset(&lines, 10_000), 3);
+    fn locates_an_offset_on_its_line_and_column() {
+        let lines = map_lines("intro\nsecond line\n", one_row);
+        assert_eq!(locate(&lines, 2), (0, 2));
+        assert_eq!(locate(&lines, 6), (1, 0));
+        assert_eq!(locate(&lines, 9), (1, 3));
+        assert_eq!(locate(&lines, 18), (2, 0));
+        assert_eq!(locate(&lines, 10_000), (2, 0));
+    }
+
+    #[test]
+    fn steps_from_the_screen_when_the_caret_is_off_it() {
+        let view = View {
+            first_row: 10.5,
+            rows: 20.,
+        };
+        let rows = [2, 10, 15, 30, 31, 80];
+        assert_eq!(step_in_view(&rows, view, true), Some(1));
+        assert_eq!(step_in_view(&rows, view, false), Some(3));
+        assert_eq!(step_in_view(&[2, 3], view, true), None);
+        assert_eq!(step_in_view(&[50], view, false), None);
     }
 
     #[test]
@@ -302,12 +313,12 @@ mod tests {
             rows: 40.,
         };
         let marks = [
-            mark(5 * 500),
+            mark(500),
             MapMark {
-                offset: 5 * 501,
+                row: 501,
                 tone: MarkTone::Active,
             },
-            mark(5 * 900),
+            mark(900),
         ];
         let map = text_map(&lines, &marks, view, 100.);
         let tones: Vec<_> = map
@@ -376,11 +387,11 @@ mod tests {
             first_row: 0.,
             rows: 20.,
         };
-        let marks = [mark(5 * 10), mark(5 * 12), mark(5 * 60)];
+        let marks = [mark(10), mark(12), mark(60)];
         let map = text_map(&lines, &marks, view, 1000.);
         assert_eq!(scroll_row_for(&map, 200., 20.), 40.);
         assert_eq!(scroll_row_for(&map, 8., 20.), 0.);
-        assert_eq!(mark_near(&lines, &marks, &map, 47., 6.), Some(1));
-        assert_eq!(mark_near(&lines, &marks, &map, 150., 6.), None);
+        assert_eq!(mark_near(&marks, &map, 47., 6.), Some(1));
+        assert_eq!(mark_near(&marks, &map, 150., 6.), None);
     }
 }

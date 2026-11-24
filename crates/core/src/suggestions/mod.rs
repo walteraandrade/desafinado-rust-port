@@ -18,7 +18,7 @@ pub use instruction::{
     refine_task_label, task_label,
 };
 pub use moments::newly_revealed_ids;
-pub use navigation::{step_suggestion, suggestion_anchor};
+pub use navigation::{next_from, step_suggestion, suggestion_anchor};
 pub use notice::notice_message;
 pub use replacement::match_edge_whitespace;
 pub use review::{
