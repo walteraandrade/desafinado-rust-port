@@ -398,19 +398,6 @@ pub fn reject_review_suggestions(state: &SuggestionsState) -> SuggestionsState {
     }
 }
 
-#[cfg(test)]
-pub fn discard_suggestion(
-    state: &SuggestionsState,
-    id: &str,
-    kind: NoticeKind,
-) -> SuggestionsState {
-    if find_suggestion(state, id).is_none() {
-        state.clone()
-    } else {
-        with_notice(without(state, id), kind)
-    }
-}
-
 fn touches_interior(item: &Suggestion, changes: &ChangeDesc) -> bool {
     changes
         .changed_ranges()
@@ -537,34 +524,6 @@ pub fn accept_suggestions(
     map_suggestions(&reject_suggestions(state, ids), changes, frontmatter)
 }
 
-#[cfg(test)]
-pub fn accept_suggestion(
-    state: &SuggestionsState,
-    id: &str,
-    changes: &ChangeDesc,
-) -> SuggestionsState {
-    accept_suggestions(state, &[id.to_string()], changes, None)
-}
-
-#[cfg(test)]
-fn is_in_flight(item: &Suggestion) -> bool {
-    match item {
-        Suggestion::Pending(_) => true,
-        Suggestion::Ready(ready) => matches!(ready.refine, RefineState::Working { .. }),
-        Suggestion::Failed(_) => false,
-    }
-}
-
-#[cfg(test)]
-pub fn in_flight_suggestion_ids(state: &SuggestionsState) -> Vec<SuggestionId> {
-    state
-        .items
-        .iter()
-        .filter(|item| is_in_flight(item))
-        .map(|item| item.id.clone())
-        .collect()
-}
-
 pub fn newly_failed<'a>(
     before: &SuggestionsState,
     after: &'a SuggestionsState,
@@ -646,6 +605,43 @@ mod tests {
     use crate::change_set::{ChangeSet, TextChange};
     use crate::diff::DiffMode;
     use crate::suggestions::types::TargetSource;
+
+    fn discard_suggestion(
+        state: &SuggestionsState,
+        id: &str,
+        kind: NoticeKind,
+    ) -> SuggestionsState {
+        if find_suggestion(state, id).is_none() {
+            state.clone()
+        } else {
+            with_notice(without(state, id), kind)
+        }
+    }
+
+    fn accept_suggestion(
+        state: &SuggestionsState,
+        id: &str,
+        changes: &ChangeDesc,
+    ) -> SuggestionsState {
+        accept_suggestions(state, &[id.to_string()], changes, None)
+    }
+
+    fn is_in_flight(item: &Suggestion) -> bool {
+        match item {
+            Suggestion::Pending(_) => true,
+            Suggestion::Ready(ready) => matches!(ready.refine, RefineState::Working { .. }),
+            Suggestion::Failed(_) => false,
+        }
+    }
+
+    fn in_flight_suggestion_ids(state: &SuggestionsState) -> Vec<SuggestionId> {
+        state
+            .items
+            .iter()
+            .filter(|item| is_in_flight(item))
+            .map(|item| item.id.clone())
+            .collect()
+    }
 
     fn shorter() -> Instruction {
         Instruction::QuickAction {
