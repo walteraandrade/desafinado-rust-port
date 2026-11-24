@@ -14,7 +14,7 @@ pub use changes::{
     ChangeRange, change_label, change_ranges, first_change_at, shows_changes, step_change,
 };
 pub use error_message::describe_error;
-pub use in_flight::{Rebased, edits_inside, rebase_replacement};
+pub use in_flight::{Rebased, edits_inside, inserts_at, rebase_replacement};
 pub use instruction::{
     QuickAction, free_text_instruction, instruction_label, quick_action_instruction,
     refine_task_label, task_label,

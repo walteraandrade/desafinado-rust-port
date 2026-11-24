@@ -5,13 +5,24 @@
 
 use crate::change_set::{Assoc, ChangeSet, TextChange, changes_between};
 
+/// Whether `changes` inserts text right at `at` without deleting anything: typing at the edge of
+/// a request's range, which joins the range.
+pub fn inserts_at(changes: &ChangeSet, at: usize) -> bool {
+    changes
+        .changes()
+        .iter()
+        .any(|change| change.from == at && change.to == at && !change.insert.is_empty())
+}
+
 /// The part of `changes` (over the whole Document) that falls inside `from..to`, as changes over
-/// that range. An insertion at either edge stays outside, as `map_suggestions` moves the range.
+/// that range. An insertion at either edge joins the range, so typing on at the end of the text a
+/// request covers counts as an edit to its last line; text a change across an edge puts in stays
+/// outside.
 pub fn edits_inside(from: usize, to: usize, changes: &ChangeSet) -> ChangeSet {
     let inside: Vec<TextChange> = changes
         .changes()
         .iter()
-        .filter(|change| change.from < to && change.to > from)
+        .filter(|change| change.from <= to && change.to >= from)
         .map(|change| {
             let contained = change.from >= from && change.to <= to;
             TextChange::new(
@@ -96,12 +107,24 @@ mod tests {
     }
 
     #[test]
-    fn leaves_an_insertion_at_either_edge_outside() {
+    fn takes_an_insertion_at_either_edge_into_the_range() {
         let changes = set(
             &[TextChange::insert(10, "a"), TextChange::insert(30, "b")],
             50,
         );
+        assert_eq!(
+            edits_inside(10, 30, &changes).changes(),
+            [TextChange::insert(0, "a"), TextChange::insert(20, "b")]
+        );
+        assert!(inserts_at(&changes, 30));
+        assert!(!inserts_at(&changes, 20));
+    }
+
+    #[test]
+    fn ignores_a_deletion_that_ends_at_the_range() {
+        let changes = set(&[TextChange::new(4, 10, "")], 50);
         assert!(edits_inside(10, 30, &changes).is_empty());
+        assert!(!inserts_at(&changes, 10));
     }
 
     #[test]

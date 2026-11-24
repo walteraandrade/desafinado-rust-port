@@ -266,6 +266,8 @@ pub struct EditorPane {
     bounds: Rc<Cell<Bounds<Pixels>>>,
     heights: Rc<RefCell<HashMap<String, Pixels>>>,
     card_rects: CardRects,
+    /// The Suggestions whose Card the last frame drew.
+    pub(crate) drawn_cards: RefCell<Vec<String>>,
     hovered: Option<String>,
     pub review: Option<ReviewRun>,
     pub(crate) pending: Option<crate::comment_review::PendingReview>,
@@ -384,6 +386,7 @@ impl EditorPane {
             bounds: Rc::new(Cell::new(Bounds::default())),
             heights: Rc::new(RefCell::new(HashMap::new())),
             card_rects: Rc::new(RefCell::new(Vec::new())),
+            drawn_cards: RefCell::new(Vec::new()),
             hovered: None,
             review: None,
             pending: None,
@@ -644,7 +647,7 @@ impl EditorPane {
             .cloned()
     }
 
-    pub(crate) fn active(&self, cx: &App) -> Option<ReadySuggestion> {
+    fn active(&self, cx: &App) -> Option<ReadySuggestion> {
         active_suggestion(&self.suggestions, Some(self.cursor(cx))).cloned()
     }
 
@@ -1105,7 +1108,8 @@ impl EditorPane {
             })
             .log_warn();
         });
-        self.jobs.started(&id);
+        let text = self.text(cx);
+        self.jobs.started(&id, &self.suggestions, &text);
         self.tasks.insert(id, task);
         self.keep_tray_ticking(cx);
         self.refresh_decorations(cx);
@@ -1979,6 +1983,7 @@ impl EditorPane {
         }
         let (bounds, height) = self.place_card(item, floor, cx)?;
         self.card_rects.borrow_mut().push((bounds, kind));
+        self.drawn_cards.borrow_mut().push(item.id.clone());
         let origin = self.origin();
         let frame = self
             .card_frame(&item.id, bounds.size.width, roles, cx)
@@ -2938,6 +2943,7 @@ impl EditorPane {
         .map(|(id, kind)| (id.to_string(), kind))
         .collect();
         self.card_rects.borrow_mut().clear();
+        self.drawn_cards.borrow_mut().clear();
         let mut cards: Vec<AnyElement> = Vec::new();
         let mut floor = px(0.);
         let is_hover = |item: &&Suggestion| shown.get(&item.id) == Some(&CardKind::Hover);

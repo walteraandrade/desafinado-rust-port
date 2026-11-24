@@ -494,6 +494,7 @@ pub fn jobs_tray(id: impl Into<ElementId>, width: Pixels, roles: Roles) -> State
         .bg(roles.overlay)
         .text_color(roles.ink)
         .type_body()
+        .occlude()
 }
 
 /// One request in the tray. A row that goes somewhere answers the pointer.
@@ -521,7 +522,8 @@ pub fn job_mark(id: impl Into<ElementId>, working: bool, roles: Roles) -> AnyEle
     }
 }
 
-/// What a request asked for, in the AI color, over where it is and how long it has run.
+/// What a request asked for over where it is and how long it has run; the mark beside it
+/// carries the AI color, so the words stay readable on the row's hover fill.
 pub fn job_text(
     label: impl Into<SharedString>,
     detail: impl Into<SharedString>,
@@ -539,7 +541,7 @@ pub fn job_text(
         .min_w_0()
         .flex()
         .flex_col()
-        .child(line(label.into()).text_color(roles.ai))
+        .child(line(label.into()).text_color(roles.ink))
         .child(line(detail.into()).type_small().text_color(roles.muted))
 }
 

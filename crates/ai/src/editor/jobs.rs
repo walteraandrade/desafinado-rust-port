@@ -48,6 +48,10 @@ pub fn scope_label(doc: &str, from: usize, to: usize, source: TargetSource) -> &
     if before.trim().is_empty() && after.trim().is_empty() {
         return "Whole text";
     }
+    source_label(source)
+}
+
+fn source_label(source: TargetSource) -> &'static str {
     match source {
         TargetSource::Selection => "Selection",
         TargetSource::Block => "Paragraph",
@@ -58,14 +62,20 @@ fn plural(count: usize, one: &str, many: &str) -> String {
     format!("{count} {}", if count == 1 { one } else { many })
 }
 
-/// The rows for the requests in flight, oldest first. `elapsed` gives each request's time so
-/// far; a request it does not know shows no time.
+/// What the tray knows of a request from when it left: its time so far and the scope it covered
+/// then.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Started {
+    pub elapsed: Duration,
+    pub scope: &'static str,
+}
+
+/// The rows for the requests in flight, oldest first. `started` tells each request's time and
+/// scope; a request it does not know shows its source and no time.
 pub fn working_jobs(
     state: &SuggestionsState,
-    doc: &str,
-    elapsed: impl Fn(&str) -> Option<Duration>,
+    started: impl Fn(&str) -> Option<Started>,
 ) -> Vec<Job> {
-    let time = |id: &str| elapsed(id).map(elapsed_label);
     let mut items: Vec<&Suggestion> = state.items.iter().collect();
     items.sort_by_key(|item| item.sequence);
     items
@@ -75,7 +85,7 @@ pub fn working_jobs(
                 Suggestion::Pending(pending) => (
                     JobKind::Ask,
                     instruction_label(&pending.instruction).to_string(),
-                    scope_label(doc, item.from, item.to, item.source),
+                    started(&item.id).map_or(source_label(item.source), |known| known.scope),
                 ),
                 Suggestion::Ready(ready) => match &ready.refine {
                     RefineState::Working { instruction } => (
@@ -87,7 +97,8 @@ pub fn working_jobs(
                 },
                 Suggestion::Failed(_) => return None,
             };
-            let detail = [Some(scope.to_string()), time(&item.id)]
+            let time = started(&item.id).map(|known| elapsed_label(known.elapsed));
+            let detail = [Some(scope.to_string()), time]
                 .into_iter()
                 .flatten()
                 .collect::<Vec<_>>()
@@ -196,8 +207,11 @@ mod tests {
     fn lists_each_request_in_flight_oldest_first_with_its_scope_and_time() {
         let state = begin_suggestion(&empty_suggestions(), ask("b", 16, 30, TargetSource::Block));
         let state = begin_suggestion(&state, ask("a", 0, 14, TargetSource::Selection));
-        let jobs = working_jobs(&state, DOC, |id| {
-            (id == "b").then_some(Duration::from_secs(12))
+        let jobs = working_jobs(&state, |id| {
+            (id == "b").then_some(Started {
+                elapsed: Duration::from_secs(12),
+                scope: "Paragraph",
+            })
         });
         let rows: Vec<(&str, &str)> = jobs
             .iter()
@@ -212,9 +226,9 @@ mod tests {
     fn lists_a_refine_in_flight_and_leaves_out_open_suggestions() {
         let state = begin_suggestion(&empty_suggestions(), ask("a", 0, 14, TargetSource::Block));
         let state = resolve_suggestion(&state, "a", &answer("One two."));
-        assert!(working_jobs(&state, DOC, |_| None).is_empty());
+        assert!(working_jobs(&state, |_| None).is_empty());
         let state = begin_refine(&state, "a", free("warmer"));
-        let jobs = working_jobs(&state, DOC, |_| None);
+        let jobs = working_jobs(&state, |_| None);
         assert_eq!(jobs.len(), 1);
         assert_eq!(
             (jobs[0].kind, jobs[0].label.as_str()),

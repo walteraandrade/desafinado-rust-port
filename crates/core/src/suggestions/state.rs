@@ -1,4 +1,4 @@
-use super::in_flight::{edits_inside, rebase_replacement};
+use super::in_flight::{edits_inside, inserts_at, rebase_replacement};
 use super::replacement::match_edge_whitespace;
 use super::types::{
     ClientError, FailedSuggestion, Instruction, NoticeKind, PendingSuggestion, ReadySuggestion,
@@ -466,13 +466,24 @@ pub fn map_suggestions(
     }
 }
 
-/// A request keeps running while the writer edits its text; only deleting all of it ends it.
+/// A request keeps running while the writer edits its text, typing at its edges included; only
+/// deleting all of it ends it.
 fn follow_edits(pending: &PendingSuggestion, changes: &ChangeDesc) -> Option<Suggestion> {
     let edits = pending
         .edits
         .compose(&edits_inside(pending.from, pending.to, changes));
-    let from = changes.map_pos(pending.from, Assoc::After);
-    let to = changes.map_pos(pending.to, Assoc::Before).max(from);
+    let edge = |at: usize, joins: Assoc, stays: Assoc| {
+        changes.map_pos(
+            at,
+            if inserts_at(changes, at) {
+                joins
+            } else {
+                stays
+            },
+        )
+    };
+    let from = edge(pending.from, Assoc::Before, Assoc::After);
+    let to = edge(pending.to, Assoc::After, Assoc::Before).max(from);
     (to > from || pending.from == pending.to).then(|| {
         Suggestion::Pending(PendingSuggestion {
             base: SuggestionBase {
@@ -1279,6 +1290,62 @@ mod tests {
             let next = resolve_suggestion(&edited, "a", &result("First!\n\nSecond one.\n"));
             assert_eq!(next.items, vec![]);
             assert_eq!(notice_kind(&next), Some(NoticeKind::TextChanged));
+        }
+
+        fn pending_of<'a>(state: &'a SuggestionsState, id: &str) -> &'a PendingSuggestion {
+            match must_find(state, id) {
+                Suggestion::Pending(pending) => pending,
+                _ => panic!("{id} is not pending"),
+            }
+        }
+
+        #[test]
+        fn follows_several_edits_in_turn_and_across_its_edges() {
+            let mut doc = format!(
+                "{}First one.\n\nSecond one.\n{}",
+                "a".repeat(20),
+                "z".repeat(56)
+            );
+            let mut state = two_paragraphs("a");
+            for (from, to, insert) in [
+                (26, 29, "two"),
+                (32, 32, " ✨ more"),
+                (15, 23, "WX"),
+                (40, 50, "é"),
+            ] {
+                let changes = ChangeSet::of(&[TextChange::new(from, to, insert)], doc.len());
+                doc = changes.apply(&doc);
+                state = map_suggestions(&state, &changes, None);
+                let pending = pending_of(&state, "a");
+                assert_eq!(doc[pending.from..pending.to], pending.current());
+                assert_eq!(pending.edits.length(), pending.original.len());
+            }
+            assert_eq!(
+                pending_of(&state, "a").original,
+                "First one.\n\nSecond one.\n"
+            );
+        }
+
+        #[test]
+        fn counts_typing_on_at_the_end_of_its_text_as_an_edit_to_its_last_line() {
+            let state = begun(vec![SuggestionDraft {
+                original: "The cat sat".into(),
+                ..draft("a", 10, 21)
+            }]);
+            let typed = map_suggestions(&state, &change(21, 21, "isfied."), None);
+            assert_eq!(spans(&typed), [(10, 28)]);
+            assert_eq!(pending_of(&typed, "a").current(), "The cat satisfied.");
+            let next = resolve_suggestion(&typed, "a", &result("The feline rested"));
+            assert_eq!(next.items, vec![]);
+            assert_eq!(notice_kind(&next), Some(NoticeKind::TextChanged));
+        }
+
+        #[test]
+        fn says_no_change_when_the_answer_matches_the_text_the_model_saw() {
+            let edited = map_suggestions(&two_paragraphs("a"), &change(26, 29, "two"), None);
+            let next = resolve_suggestion(&edited, "a", &result("First one.\n\nSecond one.\n"));
+            assert_eq!(next.items, vec![]);
+            assert_eq!(notice_kind(&next), Some(NoticeKind::NoChange));
         }
 
         #[test]

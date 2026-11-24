@@ -8,7 +8,8 @@ use std::{
 };
 
 use desafinado_ai::editor::jobs::{
-    Job, JobKind, JobPhase, READY_ROW_TIME, ready_job, review_job, working_jobs,
+    Job, JobKind, JobPhase, READY_ROW_TIME, Started, ready_job, review_job, scope_label,
+    working_jobs,
 };
 use desafinado_core::{
     log_err::LogErr,
@@ -32,7 +33,7 @@ const TICK: Duration = Duration::from_secs(1);
 /// tray while any of them shows.
 #[derive(Default)]
 pub struct JobsState {
-    started: HashMap<String, Instant>,
+    started: HashMap<String, (Instant, &'static str)>,
     answered: Vec<Answered>,
     pub(crate) review_started: Option<Instant>,
     tick: Option<Task<()>>,
@@ -45,8 +46,13 @@ struct Answered {
 }
 
 impl JobsState {
-    pub fn started(&mut self, id: &str) {
-        self.started.insert(id.to_string(), Instant::now());
+    /// Notes when request `id` left and what it covered, from the state that holds it.
+    pub fn started(&mut self, id: &str, state: &SuggestionsState, doc: &str) {
+        let scope = match state.items.iter().find(|item| item.id == id) {
+            Some(item) if item.is_pending() => scope_label(doc, item.from, item.to, item.source),
+            _ => "Refining",
+        };
+        self.started.insert(id.to_string(), (Instant::now(), scope));
     }
 
     /// Forgets the times of requests that are no longer in flight.
@@ -82,8 +88,8 @@ impl JobsState {
 
 impl EditorPane {
     /// The tray's rows: Reviews first, then requests in flight, then those that just answered,
-    /// except the one whose card is open.
-    fn jobs(&mut self, cx: &App) -> Vec<Job> {
+    /// except one whose Card is on screen.
+    fn jobs(&mut self) -> Vec<Job> {
         let now = Instant::now();
         let suggestions = &self.suggestions;
         self.jobs.answered.retain(|row| {
@@ -97,17 +103,19 @@ impl EditorPane {
                 .map_or(Duration::ZERO, |at| now - at);
             review_job(added, since)
         });
-        let text = self.text(cx);
         let started = &self.jobs.started;
-        let working = working_jobs(suggestions, &text, |id| {
-            started.get(id).map(|at| now.duration_since(*at))
+        let working = working_jobs(suggestions, |id| {
+            started.get(id).map(|(at, scope)| Started {
+                elapsed: now.duration_since(*at),
+                scope,
+            })
         });
-        let shown = self.active(cx).map(|active| active.id.clone());
+        let drawn = self.drawn_cards.borrow();
         let ready = self
             .jobs
             .answered
             .iter()
-            .filter(|row| Some(&row.id) != shown.as_ref())
+            .filter(|row| !drawn.contains(&row.id))
             .filter_map(|row| ready_job(suggestions, &row.id, row.left_out));
         review.into_iter().chain(working).chain(ready).collect()
     }
@@ -122,7 +130,7 @@ impl EditorPane {
             loop {
                 cx.background_executor().timer(TICK).await;
                 let going = this.update(cx, |this, cx| {
-                    let going = !this.jobs(cx).is_empty();
+                    let going = !this.jobs().is_empty();
                     if !going {
                         this.jobs.tick = None;
                     }
@@ -161,7 +169,7 @@ impl EditorPane {
         roles: Roles,
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
-        let jobs = self.jobs(cx);
+        let jobs = self.jobs();
         if jobs.is_empty() {
             return None;
         }
@@ -169,10 +177,7 @@ impl EditorPane {
         let right = self.map_left().map_or(px(TRAY_INSET), |left| {
             self.pane_bounds().size.width - left + px(TRAY_INSET / 2.)
         });
-        let rows = jobs
-            .into_iter()
-            .enumerate()
-            .map(|(index, job)| self.render_job(index, job, roles, cx));
+        let rows = jobs.into_iter().map(|job| self.render_job(job, roles, cx));
         Some(
             ui::jobs_tray("jobs-tray", px(TRAY_WIDTH), roles)
                 .absolute()
@@ -183,13 +188,7 @@ impl EditorPane {
         )
     }
 
-    fn render_job(
-        &self,
-        index: usize,
-        job: Job,
-        roles: Roles,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
+    fn render_job(&self, job: Job, roles: Roles, cx: &mut Context<Self>) -> AnyElement {
         let working = job.phase == JobPhase::Working;
         let action = match (job.kind, job.phase) {
             (JobKind::Review, _) => "Stop",
@@ -198,24 +197,37 @@ impl EditorPane {
         };
         let opened = job.clone();
         let acted = job.clone();
-        let button = ui::small_button(("job-action", index), action, ButtonKind::Default, roles)
-            .on_click(cx.listener(move |this, _, window, cx| {
-                cx.stop_propagation();
-                if acted.phase == JobPhase::Working {
-                    this.cancel_job(&acted, cx);
-                } else {
-                    this.open_job(&acted, window, cx);
-                }
-                cx.notify();
-            }));
-        ui::job_row(("job", index), job.kind != JobKind::Review, roles)
-            .on_click(cx.listener(move |this, _, window, cx| {
-                this.open_job(&opened, window, cx);
-                cx.notify();
-            }))
-            .child(ui::job_mark(("job-mark", index), working, roles))
-            .child(ui::job_text(job.label, job.detail, roles))
-            .child(button)
-            .into_any_element()
+        let button = ui::small_button(
+            SharedString::from(format!("job-action-{}", job.id)),
+            action,
+            ButtonKind::Default,
+            roles,
+        )
+        .on_click(cx.listener(move |this, _, window, cx| {
+            cx.stop_propagation();
+            if acted.phase == JobPhase::Working {
+                this.cancel_job(&acted, cx);
+            } else {
+                this.open_job(&acted, window, cx);
+            }
+            cx.notify();
+        }));
+        ui::job_row(
+            SharedString::from(format!("job-{}", job.id)),
+            job.kind != JobKind::Review,
+            roles,
+        )
+        .on_click(cx.listener(move |this, _, window, cx| {
+            this.open_job(&opened, window, cx);
+            cx.notify();
+        }))
+        .child(ui::job_mark(
+            SharedString::from(format!("job-mark-{}", job.id)),
+            working,
+            roles,
+        ))
+        .child(ui::job_text(job.label, job.detail, roles))
+        .child(button)
+        .into_any_element()
     }
 }
