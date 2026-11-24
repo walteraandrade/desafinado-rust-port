@@ -5,8 +5,6 @@ use serde_json::Value;
 
 pub use desafinado_core::suggestions::ClientError;
 
-pub type CallResult<T> = Result<T, ClientError>;
-
 #[derive(Debug, Clone, PartialEq)]
 pub enum RawError {
     ApiCall {

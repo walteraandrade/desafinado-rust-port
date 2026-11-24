@@ -4,9 +4,9 @@ use serde_json::json;
 
 use super::frontmatter_fields::{FrontmatterProblem, FrontmatterProblemRule};
 use super::frontmatter_panel::{
-    FrontmatterContext, FrontmatterReport, PanelProblem, PanelRule, announce_problems,
-    announce_rule, describe_frontmatter_problem, describe_skill_problem, inspect_frontmatter,
-    is_same_report, other_problems, problems_of_field, report_problems,
+    FrontmatterContext, FrontmatterReport, PanelProblem, PanelRule, announce_rule,
+    describe_frontmatter_problem, describe_skill_problem, inspect_frontmatter, other_problems,
+    problems_of_field, report_problems,
 };
 use super::skill_frontmatter::{
     CheckedField, DESCRIPTION_MAX_LENGTH, NAME_MAX_LENGTH, SkillProblem, SkillRule,
@@ -537,83 +537,6 @@ fn compatibility_leaves_name_and_description_problems_to_their_inputs() {
     assert_eq!(other_problems(&FrontmatterReport::None), vec![]);
 }
 
-fn skill(name: &str, description: &str) -> FrontmatterReport {
-    inspect_frontmatter(
-        &document_of(&format!("name: {name}\ndescription: {description}")),
-        &SKILL_FILE,
-    )
-}
-
-#[test]
-fn announce_says_there_are_no_problems_when_there_are_none() {
-    assert_eq!(
-        announce_problems(&skill("demo", "Does a thing.")),
-        "No frontmatter problems"
-    );
-}
-
-#[test]
-fn announce_says_nothing_for_a_document_with_no_frontmatter_panel() {
-    assert_eq!(announce_problems(&FrontmatterReport::None), "");
-}
-
-#[test]
-fn announce_names_the_kinds_of_problem_in_order() {
-    assert_eq!(
-        announce_problems(&skill("Demo--", "")),
-        "Frontmatter problems: name is not lowercase; name starts or ends with a hyphen; name has consecutive hyphens; description is missing"
-    );
-}
-
-#[test]
-fn announce_does_not_change_while_the_problems_are_the_same_kinds_with_other_numbers() {
-    assert_eq!(
-        announce_problems(&skill(&"a".repeat(70), "Does a thing.")),
-        announce_problems(&skill(&"a".repeat(71), "Does a thing."))
-    );
-    assert_eq!(
-        announce_problems(&skill("demo", &"d".repeat(1030))),
-        announce_problems(&skill("demo", &"d".repeat(1031)))
-    );
-}
-
-#[test]
-fn announce_does_not_change_with_the_line_and_the_text_of_a_yaml_error() {
-    let at = |text: &str| announce_problems(&inspect_frontmatter(text, &NOTES_FILE));
-    assert_eq!(
-        at("---\nname: [a\n---\n"),
-        at("---\nname: demo\nx: [a\n---\n")
-    );
-    assert_eq!(
-        at("---\nname: [a\n---\n"),
-        "Frontmatter problems: the frontmatter has a YAML error"
-    );
-}
-
-#[test]
-fn announce_does_not_change_when_the_folder_in_a_mismatch_is_another_one() {
-    let mismatch = |folder: &str| {
-        announce_problems(&inspect_frontmatter(
-            &document_of("name: demo\ndescription: Does it."),
-            &skill_in_folder(folder),
-        ))
-    };
-    assert_eq!(mismatch("one"), mismatch("two"));
-}
-
-#[test]
-fn announce_changes_when_a_kind_of_problem_appears_or_goes() {
-    let kinds: HashSet<String> = [
-        announce_problems(&skill("demo", "Does a thing.")),
-        announce_problems(&skill("Demo", "Does a thing.")),
-        announce_problems(&skill("Demo", "")),
-        announce_problems(&skill("demo", "")),
-    ]
-    .into_iter()
-    .collect();
-    assert_eq!(kinds.len(), 4);
-}
-
 #[test]
 fn announce_has_a_short_phrase_with_no_digits_for_every_rule() {
     let rules: Vec<PanelRule> = RULES
@@ -636,25 +559,4 @@ fn announce_has_a_short_phrase_with_no_digits_for_every_rule() {
     }
     let distinct: HashSet<&str> = rules.iter().map(|rule| announce_rule(*rule)).collect();
     assert_eq!(distinct.len(), rules.len());
-}
-
-#[test]
-fn is_same_report_is_true_for_equal_reports_built_twice() {
-    assert!(is_same_report(
-        &inspect_frontmatter(&valid(), &SKILL_FILE),
-        &inspect_frontmatter(&valid(), &SKILL_FILE)
-    ));
-}
-
-#[test]
-fn is_same_report_is_false_when_a_value_or_a_problem_differs() {
-    let other = document_of("name: demo\ndescription: Another.");
-    assert!(!is_same_report(
-        &inspect_frontmatter(&valid(), &SKILL_FILE),
-        &inspect_frontmatter(&other, &SKILL_FILE)
-    ));
-    assert!(!is_same_report(
-        &inspect_frontmatter(&valid(), &SKILL_FILE),
-        &inspect_frontmatter(&valid(), &NOTES_FILE)
-    ));
 }

@@ -1,12 +1,5 @@
 use std::collections::BTreeMap;
 
-pub const MOVE_MS: u64 = 260;
-pub const ENTER_MS: u64 = 260;
-pub const LEAVE_MS: u64 = 180;
-pub const EASE_OUT_EXPO: [f64; 4] = [0.16, 1.0, 0.3, 1.0];
-pub const EASE_OUT_QUART: [f64; 4] = [0.25, 1.0, 0.5, 1.0];
-pub const ENTER_OFFSET_PX: f64 = -6.0;
-
 #[derive(Debug, Clone, PartialEq)]
 pub enum ListStep {
     Enter,

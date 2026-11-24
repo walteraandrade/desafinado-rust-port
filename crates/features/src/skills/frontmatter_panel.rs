@@ -217,24 +217,6 @@ pub fn problems_of_field(report: &FrontmatterReport, field: CheckedField) -> Vec
         .collect()
 }
 
-pub fn announce_problems(report: &FrontmatterReport) -> String {
-    match report {
-        FrontmatterReport::None => String::new(),
-        FrontmatterReport::Unreadable { problems, .. }
-        | FrontmatterReport::Skill { problems, .. } => {
-            if problems.is_empty() {
-                "No frontmatter problems".to_string()
-            } else {
-                let phrases: Vec<&str> = problems
-                    .iter()
-                    .map(|problem| announce_rule(problem.rule))
-                    .collect();
-                format!("Frontmatter problems: {}", phrases.join("; "))
-            }
-        }
-    }
-}
-
 pub fn other_problems(report: &FrontmatterReport) -> Vec<PanelProblem> {
     problems_in(report)
         .iter()
@@ -244,8 +226,4 @@ pub fn other_problems(report: &FrontmatterReport) -> Vec<PanelProblem> {
         })
         .cloned()
         .collect()
-}
-
-pub fn is_same_report(a: &FrontmatterReport, b: &FrontmatterReport) -> bool {
-    a == b
 }

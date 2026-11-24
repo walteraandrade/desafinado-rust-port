@@ -66,7 +66,6 @@ pub const DEFAULT_STALL_MS: StallLimits = StallLimits {
     first_chunk: 30_000,
     chunk: 15_000,
 };
-pub const MIN_RETRY_MS: u64 = 1000;
 pub const DEFAULT_MAX_OUTPUT_TOKENS: RequestKindLimits = RequestKindLimits {
     target: 4096,
     review: 8192,

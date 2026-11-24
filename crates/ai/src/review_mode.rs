@@ -9,7 +9,6 @@ use crate::records::CallObservation;
 use crate::text::js_trim;
 
 pub const DECISION_MODEL: &str = "typesafe/jev-1.14";
-pub const DECISION_PROVIDER: &str = "TypeSafe";
 const QUESTION: &str = "mode";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

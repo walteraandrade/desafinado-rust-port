@@ -156,25 +156,14 @@ pub fn spend_report(
 ) -> SpendReport {
     let summary = summarize_costs(records);
     let total = summary.total.cost_usd;
-    let tasks = records.iter().fold(
-        std::collections::BTreeMap::<String, CostBucket>::new(),
-        |mut tasks, record| {
-            let grouped = AiCallRecord {
-                task: task_group(&record.task),
-                ..record.clone()
-            };
-            let bucket = summarize_costs(std::slice::from_ref(&grouped)).total;
-            let entry = tasks.entry(grouped.task).or_default();
-            entry.calls += bucket.calls;
-            entry.priced_calls += bucket.priced_calls;
-            entry.cost_usd += bucket.cost_usd;
-            entry.input_tokens += bucket.input_tokens;
-            entry.output_tokens += bucket.output_tokens;
-            entry.reasoning_tokens += bucket.reasoning_tokens;
-            entry.cached_tokens += bucket.cached_tokens;
-            tasks
-        },
-    );
+    let grouped: Vec<AiCallRecord> = records
+        .iter()
+        .map(|record| AiCallRecord {
+            task: task_group(&record.task),
+            ..record.clone()
+        })
+        .collect();
+    let tasks = summarize_costs(&grouped).by_task;
     SpendReport {
         failed: records
             .iter()

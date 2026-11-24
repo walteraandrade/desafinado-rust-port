@@ -77,6 +77,8 @@ naive_bytecount = "allow"
 float_cmp = "allow"
 # GPUI code reads best with `use gpui_kit::*`-style preludes.
 wildcard_imports = "allow"
+# Clippy 1.100+: tests check emptiness with `assert!(x.is_empty())`; its `assert_eq!` rewrite spells the element type.
+assert_is_empty = "allow"
 allow_attributes = "warn"
 allow_attributes_without_reason = "warn"
 clone_on_ref_ptr = "warn"

@@ -8,8 +8,6 @@ use super::types::{VersionId, VersionList};
 
 pub const TEXT_CACHE_SIZE: usize = 200;
 
-pub type SubscriptionId = u64;
-
 pub struct DocumentHistoryOptions {
     pub store: Arc<dyn HistoryStore>,
     pub key: HistoryKey,
@@ -40,8 +38,6 @@ pub struct DocumentHistory {
     recorder: HistoryRecorder,
     versions: VersionList,
     listing_wanted: bool,
-    listeners: Vec<(SubscriptionId, Box<dyn FnMut() + Send>)>,
-    next_subscription: SubscriptionId,
     texts: HashMap<VersionId, String>,
     text_order: VecDeque<VersionId>,
     cache_size: usize,
@@ -74,8 +70,6 @@ impl DocumentHistory {
             recorder: HistoryRecorder::new(idle_ms),
             listing_wanted: initial.is_none(),
             versions: initial.unwrap_or_default(),
-            listeners: Vec::new(),
-            next_subscription: 0,
             texts: HashMap::new(),
             text_order: VecDeque::new(),
             cache_size,
@@ -90,16 +84,6 @@ impl DocumentHistory {
 
     pub fn snapshot(&self) -> &VersionList {
         &self.versions
-    }
-
-    pub fn subscribe(&mut self, listener: Box<dyn FnMut() + Send>) -> SubscriptionId {
-        self.next_subscription += 1;
-        self.listeners.push((self.next_subscription, listener));
-        self.next_subscription
-    }
-
-    pub fn unsubscribe(&mut self, id: SubscriptionId) {
-        self.listeners.retain(|(known, _)| *known != id);
     }
 
     pub fn next_due(&self) -> Option<i64> {
@@ -177,9 +161,6 @@ impl DocumentHistory {
         match self.store.list(&self.key) {
             Ok(listed) if !same_versions(&self.versions, &listed) => {
                 self.versions = listed;
-                for (_, listener) in &mut self.listeners {
-                    listener();
-                }
                 true
             }
             Ok(_) => false,
@@ -338,39 +319,14 @@ mod tests {
     }
 
     #[test]
-    fn notifies_subscribers_once_per_change_until_they_unsubscribe() {
-        let mut made = create();
-        let calls = Arc::new(AtomicUsize::new(0));
-        let counter = Arc::clone(&calls);
-        let subscription = made.history.subscribe(Box::new(move || {
-            counter.fetch_add(1, Ordering::SeqCst);
-        }));
-        opened(&mut made.history, "a", "a.md");
-        opened(&mut made.history, "b", "b.md");
-        made.history.settled();
-        assert_eq!(calls.load(Ordering::SeqCst), 1);
-        made.history.unsubscribe(subscription);
-        opened(&mut made.history, "c", "c.md");
-        made.history.settled();
-        assert_eq!(calls.load(Ordering::SeqCst), 1);
-        assert_eq!(made.history.snapshot().len(), 3);
-    }
-
-    #[test]
     fn keeps_the_snapshot_and_stays_quiet_when_the_store_skipped_a_write() {
         let mut made = create();
         opened(&mut made.history, "same", "a.md");
         made.history.settled();
         let before = made.history.snapshot().clone();
-        let calls = Arc::new(AtomicUsize::new(0));
-        let counter = Arc::clone(&calls);
-        made.history.subscribe(Box::new(move || {
-            counter.fetch_add(1, Ordering::SeqCst);
-        }));
         opened(&mut made.history, "same", "a.md");
-        made.history.settled();
+        assert!(!made.history.settled());
         assert_eq!(made.history.snapshot(), &before);
-        assert_eq!(calls.load(Ordering::SeqCst), 0);
     }
 
     #[test]

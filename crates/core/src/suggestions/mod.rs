@@ -29,10 +29,11 @@ pub use review::{
     open_review_count, place_review_edit, review_instruction, review_notice_text, review_summary,
     review_task_label, review_too_large, review_too_large_text,
 };
+#[cfg(test)]
+pub use state::{accept_suggestion, discard_suggestion, in_flight_suggestion_ids};
 pub use state::{
-    accept_suggestion, accept_suggestions, active_suggestion, begin_refine, begin_suggestion,
-    cancel_refine, clear_suggestions, discard_suggestion, empty_suggestions, fail_refine,
-    fail_suggestion, find_suggestion, in_flight_suggestion_ids, instruction_history,
+    accept_suggestions, active_suggestion, begin_refine, begin_suggestion, cancel_refine,
+    empty_suggestions, fail_refine, fail_suggestion, find_suggestion, instruction_history,
     map_suggestions, newly_failed, reject_review_suggestions, reject_suggestion,
     reject_suggestions, resolve_refine, resolve_suggestion, restore_suggestion, retry_refine,
     retry_suggestion, show_version, suggestion_at,

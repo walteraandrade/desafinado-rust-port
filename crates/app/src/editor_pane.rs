@@ -1039,16 +1039,11 @@ impl EditorPane {
         };
         self.last_bubble.replace(None);
         self.clear_bubble(window, cx);
-        self.ask_with(instruction, window, cx);
+        self.ask_with(instruction, cx);
         self.focus(window, cx);
     }
 
-    pub(crate) fn ask_with(
-        &mut self,
-        instruction: Instruction,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
+    pub(crate) fn ask_with(&mut self, instruction: Instruction, cx: &mut Context<Self>) {
         let text = self.text(cx);
         let blocks = extract_blocks(&text);
         let Some(target) = resolve_target(&blocks, &text, self.selection(cx)) else {
@@ -1089,7 +1084,6 @@ impl EditorPane {
             },
         );
         self.set_suggestions(next, cx);
-        let _ = window;
         let call = self.target_call(&blocks, &target, &instruction);
         self.run(id, call, false, cx);
     }
@@ -1773,7 +1767,7 @@ impl EditorPane {
         self.step(Direction::Backward, window, cx);
     }
 
-    fn step_change(&mut self, direction: Direction, window: &mut Window, cx: &mut Context<Self>) {
+    fn step_change(&mut self, direction: Direction, cx: &mut Context<Self>) {
         let Some(active) = self.active(cx) else {
             return;
         };
@@ -1782,7 +1776,6 @@ impl EditorPane {
             self.editor.update(cx, |state, cx| {
                 state.set_selected_range(target..target, cx);
             });
-            let _ = window;
             cx.notify();
         }
     }
@@ -1919,8 +1912,8 @@ impl EditorPane {
                 self.set_suggestions(next, cx);
                 self.keep_card_focus(control, window, cx);
             }
-            CardControl::PreviousChange => self.step_change(Direction::Backward, window, cx),
-            CardControl::NextChange => self.step_change(Direction::Forward, window, cx),
+            CardControl::PreviousChange => self.step_change(Direction::Backward, cx),
+            CardControl::NextChange => self.step_change(Direction::Forward, cx),
             CardControl::Accept => {
                 self.accept(&id, window, cx);
                 self.focus(window, cx);
@@ -2377,9 +2370,7 @@ impl EditorPane {
                 roles,
             )
             .tooltip(move |window, cx| component::tooltip::Tooltip::new(tip).build(window, cx))
-            .on_click(
-                cx.listener(move |this, _, window, cx| this.step_change(direction, window, cx)),
-            )
+            .on_click(cx.listener(move |this, _, _, cx| this.step_change(direction, cx)))
         };
         Some(
             ui::row()
@@ -3306,7 +3297,7 @@ mod tests {
 
     #[test]
     fn space_types_in_the_refine_field() {
-        assert!(bound("space", REFINE_FIELD).is_empty());
+        assert_eq!(bound("space", REFINE_FIELD), Vec::<&str>::new());
     }
 
     #[test]
