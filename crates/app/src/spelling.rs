@@ -22,6 +22,7 @@ use desafinado_core::{
 use desafinado_features::spelling::{
     Issue, IssueKind, Speller,
     document::{self, Checked, WORDBOOK_FILE_NAME, Wordbook},
+    settings::{MenuKey, Press, SPELLING_FILE_NAME, SpellSettings},
 };
 use desafinado_platform::files::write_atomic_unconditionally;
 use gpui_kit::{prelude::FluentBuilder as _, *};
@@ -35,7 +36,8 @@ use crate::{
 actions!(
     spelling,
     [
-        OpenSpellMenu,
+        SpellMenuCtrlPeriod,
+        SpellMenuAltEnter,
         NextIssue,
         PreviousIssue,
         SpellUp,
@@ -65,7 +67,25 @@ pub struct WordbookChoice {
 
 impl Global for WordbookChoice {}
 
+/// Whether the spell checker runs, and the key that opens its menu; saved in user data.
+pub struct SpellChoice {
+    pub settings: SpellSettings,
+    pub file: PathBuf,
+}
+
+impl Global for SpellChoice {}
+
 pub fn init(user_data: &Path, cx: &mut App) {
+    let file = user_data.join(SPELLING_FILE_NAME);
+    let settings = match std::fs::read_to_string(&file) {
+        Ok(text) => SpellSettings::parse(&text).log_warn().unwrap_or_default(),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => SpellSettings::default(),
+        Err(error) => {
+            log::warn!("The spelling settings could not be read: {error}");
+            SpellSettings::default()
+        }
+    };
+    cx.set_global(SpellChoice { settings, file });
     let file = user_data.join(WORDBOOK_FILE_NAME);
     let wordbook = match std::fs::read_to_string(&file) {
         Ok(text) => Wordbook::parse(&text),
@@ -77,7 +97,8 @@ pub fn init(user_data: &Path, cx: &mut App) {
     };
     cx.set_global(WordbookChoice { wordbook, file });
     cx.bind_keys([
-        KeyBinding::new("ctrl-.", OpenSpellMenu, Some("EditorPane > Input")),
+        KeyBinding::new("ctrl-.", SpellMenuCtrlPeriod, Some("EditorPane > Input")),
+        KeyBinding::new("alt-enter", SpellMenuAltEnter, Some("EditorPane > Input")),
         KeyBinding::new("f8", NextIssue, Some("EditorPane")),
         KeyBinding::new("shift-f8", PreviousIssue, Some("EditorPane")),
         KeyBinding::new("up", SpellUp, Some("SpellMenu")),
@@ -85,6 +106,27 @@ pub fn init(user_data: &Path, cx: &mut App) {
         KeyBinding::new("enter", SpellConfirm, Some("SpellMenu")),
         KeyBinding::new("escape", SpellCancel, Some("SpellMenu")),
     ]);
+}
+
+pub fn settings(cx: &App) -> SpellSettings {
+    cx.try_global::<SpellChoice>()
+        .map(|choice| choice.settings)
+        .unwrap_or_default()
+}
+
+/// Stores the choice and redraws; returns the write to run off the UI thread.
+pub fn choose(
+    settings: SpellSettings,
+    cx: &mut App,
+) -> impl FnOnce() -> std::io::Result<()> + Send + 'static {
+    let file = cx.global::<SpellChoice>().file.clone();
+    cx.set_global(SpellChoice {
+        settings,
+        file: file.clone(),
+    });
+    cx.refresh_windows();
+    let text = settings.to_json();
+    move || write_atomic_unconditionally(&file, &text)
 }
 
 fn wordbook(cx: &App) -> &Wordbook {
@@ -100,6 +142,10 @@ pub struct SpellState {
     hovered: Option<Range<usize>>,
     menu: Option<SpellMenu>,
     pub(crate) focus: FocusHandle,
+    /// Whether the checker was on at the last render, to notice Preferences turning it.
+    enabled: bool,
+    /// The mark whose menu was just closed while the caret stayed on it: F8 moves on from it.
+    dismissed: Option<Range<usize>>,
     _task: Option<Task<()>>,
 }
 
@@ -128,6 +174,8 @@ impl SpellState {
             hovered: None,
             menu: None,
             focus: cx.focus_handle(),
+            enabled: settings(cx).enabled,
+            dismissed: None,
             _task: None,
         }
     }
@@ -191,6 +239,10 @@ fn check_document(text: &str, checked: &Mutex<Checked>) -> Option<Vec<Issue>> {
 impl EditorPane {
     /// Checks the Document again, at once or after a pause in typing.
     pub(crate) fn check_spelling(&mut self, pause: bool, cx: &mut Context<Self>) {
+        if !settings(cx).enabled {
+            self.spelling._task = None;
+            return;
+        }
         let checked = Arc::clone(&self.spelling.checked);
         self.spelling._task = Some(cx.spawn(async move |this, cx| {
             if pause {
@@ -226,6 +278,7 @@ impl EditorPane {
     pub(crate) fn map_spelling(&mut self, start: usize, old_end: usize, new_end: usize) {
         self.spelling.issues = document::map_issues(&self.spelling.issues, start, old_end, new_end);
         self.spelling.menu = None;
+        self.spelling.dismissed = None;
     }
 
     pub(crate) fn clear_spelling(&mut self) {
@@ -314,6 +367,7 @@ impl EditorPane {
         roles: Roles,
         cx: &mut Context<Self>,
     ) -> (AnyElement, Option<AnyElement>) {
+        self.follow_spelling_switch(cx);
         let layer = ui::spelling_layer(self.editor.clone(), self.spell_marks(roles, cx));
         let menu = self.render_spell_menu(roles, cx);
         if menu.is_none() {
@@ -323,6 +377,21 @@ impl EditorPane {
             }
         }
         (layer, menu)
+    }
+
+    /// Clears the marks when Preferences turn the checker off, and checks again when on.
+    fn follow_spelling_switch(&mut self, cx: &mut Context<Self>) {
+        let enabled = settings(cx).enabled;
+        if enabled == self.spelling.enabled {
+            return;
+        }
+        self.spelling.enabled = enabled;
+        if enabled {
+            self.check_spelling(false, cx);
+        } else {
+            self.clear_spelling();
+            self.spelling._task = None;
+        }
     }
 
     /// A menu opened by a click closes once the caret leaves its word or selects text.
@@ -335,6 +404,12 @@ impl EditorPane {
         });
         if !stays {
             self.spelling.menu = None;
+        }
+        let on_dismissed = self.spelling.dismissed.as_ref().is_some_and(|range| {
+            selection.is_empty() && range.start <= selection.start && selection.start <= range.end
+        });
+        if !on_dismissed {
+            self.spelling.dismissed = None;
         }
     }
 
@@ -375,30 +450,98 @@ impl EditorPane {
         cx.notify();
     }
 
-    pub(crate) fn open_spell_menu(
+    /// "?" opens the menu of the mark under the caret when Preferences chose it. When it
+    /// reaches no mark, it types itself.
+    pub(crate) fn spell_key_down(
         &mut self,
-        _: &OpenSpellMenu,
+        event: &KeyDownEvent,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let issues = self.shown_issues(cx);
-        if let Some(index) = document::issue_at(&issues, self.editor.read(cx).cursor()) {
-            self.open_spell_menu_on(issues[index].clone(), true, window, cx);
+        let keystroke = &event.keystroke;
+        let press = Press {
+            key: &keystroke.key,
+            key_char: keystroke.key_char.as_deref(),
+            control: keystroke.modifiers.control,
+            alt: keystroke.modifiers.alt,
+        };
+        if MenuKey::Question.matches(press)
+            && self.open_spell_menu_by(MenuKey::Question, window, cx)
+        {
+            cx.stop_propagation();
         }
     }
 
-    /// Moves the caret to the next or previous mark and opens its menu.
+    /// `Ctrl+.` and `Alt+Enter` are key bindings, so they win over the text field's own; when
+    /// they are not the chosen key or reach no mark, the text field gets them.
+    pub(crate) fn spell_menu_ctrl_period(
+        &mut self,
+        _: &SpellMenuCtrlPeriod,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.open_spell_menu_by(MenuKey::CtrlPeriod, window, cx) {
+            cx.propagate();
+        }
+    }
+
+    pub(crate) fn spell_menu_alt_enter(
+        &mut self,
+        _: &SpellMenuAltEnter,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.open_spell_menu_by(MenuKey::AltEnter, window, cx) {
+            cx.propagate();
+        }
+    }
+
+    /// Opens the menu of the mark under the caret if `key` is the chosen one and reaches it.
+    fn open_spell_menu_by(
+        &mut self,
+        key: MenuKey,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let chosen = settings(cx);
+        if !chosen.enabled || chosen.menu_key != key || self.spelling.menu.is_some() {
+            return false;
+        }
+        let selection = self.editor.read(cx).selected_range();
+        let issues = self.shown_issues(cx);
+        let Some(index) = document::issue_to_open(&issues, &selection, key.strictly_inside())
+        else {
+            return false;
+        };
+        self.open_spell_menu_on(issues[index].clone(), true, window, cx);
+        true
+    }
+
+    /// Opens the menu of the mark under the caret, or moves to the next or previous mark and
+    /// opens its menu.
     pub(crate) fn step_issue(
         &mut self,
         backward: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if !settings(cx).enabled {
+            return;
+        }
         let issues = self.shown_issues(cx);
-        let from = self.spelling.menu.as_ref().map_or_else(
-            || self.editor.read(cx).cursor(),
-            |menu| menu.issue.range.start,
-        );
+        if self.spelling.menu.is_none()
+            && let Some(index) =
+                document::issue_to_open(&issues, &self.editor.read(cx).selected_range(), false)
+                    .filter(|&index| self.spelling.dismissed.as_ref() != Some(&issues[index].range))
+        {
+            self.open_spell_menu_on(issues[index].clone(), true, window, cx);
+            return;
+        }
+        let from = match (&self.spelling.menu, &self.spelling.dismissed) {
+            (Some(menu), _) => menu.issue.range.start,
+            (None, Some(dismissed)) => dismissed.start,
+            (None, None) => self.editor.read(cx).cursor(),
+        };
         let Some(index) = document::step_issue(&issues, from, backward) else {
             return;
         };
@@ -409,7 +552,9 @@ impl EditorPane {
 
     /// Returns whether a menu was open.
     pub(crate) fn close_spell_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
-        let open = self.spelling.menu.take().is_some();
+        let closed = self.spelling.menu.take();
+        let open = closed.is_some();
+        self.spelling.dismissed = closed.map(|menu| menu.issue.range);
         if open {
             if self.spelling.focus.is_focused(window) {
                 self.focus(window, cx);

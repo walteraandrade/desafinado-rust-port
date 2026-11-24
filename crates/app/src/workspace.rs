@@ -82,6 +82,7 @@ use desafinado_ai::quick_action_settings::{
     parse_quick_action_settings, serialize_quick_action_settings,
 };
 use desafinado_features::caret::CaretSettings;
+use desafinado_features::spelling::settings::SpellSettings;
 use desafinado_platform::quick_actions::{load_quick_actions, save_quick_actions};
 
 /// The writes of Preferences that are still on their way to disk, each after the one before.
@@ -89,6 +90,7 @@ use desafinado_platform::quick_actions::{load_quick_actions, save_quick_actions}
 struct SettingsSaves {
     quick_actions: Option<Task<()>>,
     caret: Option<Task<()>>,
+    spelling: Option<Task<()>>,
 }
 
 const HISTORY_IDLE_MS: i64 = 30_000;
@@ -2277,6 +2279,7 @@ impl Workspace {
                     this.change_quick_actions(settings.clone(), cx);
                 }
                 PreferencesEvent::Caret(settings) => this.change_caret(*settings, cx),
+                PreferencesEvent::Spelling(settings) => this.change_spelling(*settings, cx),
             },
         );
         self._dialog_subscriptions.push(events);
@@ -2344,6 +2347,24 @@ impl Workspace {
                 log::error!("Caret settings could not be saved: {error}");
                 this.update(cx, |this, cx| {
                     this.notify("Caret settings could not be saved.", cx);
+                })
+                .log_warn();
+            }
+        }));
+    }
+
+    fn change_spelling(&mut self, settings: SpellSettings, cx: &mut Context<Self>) {
+        let write = crate::spelling::choose(settings, cx);
+        let previous = self.settings_saves.spelling.take();
+        let write = cx.background_spawn(async move { write() });
+        self.settings_saves.spelling = Some(cx.spawn(async move |this, cx| {
+            if let Some(previous) = previous {
+                previous.await;
+            }
+            if let Err(error) = write.await {
+                log::error!("Spelling settings could not be saved: {error}");
+                this.update(cx, |this, cx| {
+                    this.notify("Spelling settings could not be saved.", cx);
                 })
                 .log_warn();
             }

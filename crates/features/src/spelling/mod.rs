@@ -5,6 +5,7 @@
 pub mod document;
 mod english;
 mod portuguese;
+pub mod settings;
 mod words;
 
 use std::ops::Range;

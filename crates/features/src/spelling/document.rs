@@ -100,6 +100,31 @@ pub fn issue_at(issues: &[Issue], offset: usize) -> Option<usize> {
         .map(|(index, _)| index)
 }
 
+/// The issue whose menu opens with the caret at `selection`: none while text is selected, and
+/// with `strictly_inside` only one the caret is inside of, not at an edge. The shortest wins.
+pub fn issue_to_open(
+    issues: &[Issue],
+    selection: &Range<usize>,
+    strictly_inside: bool,
+) -> Option<usize> {
+    if !selection.is_empty() {
+        return None;
+    }
+    let caret = selection.start;
+    issues
+        .iter()
+        .enumerate()
+        .filter(|(_, issue)| {
+            if strictly_inside {
+                issue.range.start < caret && caret < issue.range.end
+            } else {
+                issue.range.start <= caret && caret <= issue.range.end
+            }
+        })
+        .min_by_key(|(_, issue)| issue.range.len())
+        .map(|(index, _)| index)
+}
+
 /// The next issue starting after `offset`, or the previous one starting before it, wrapping
 /// at the ends. `issues` are in Document order. Stepping from an issue's own start moves on.
 pub fn step_issue(issues: &[Issue], offset: usize, backward: bool) -> Option<usize> {
@@ -303,6 +328,20 @@ mod tests {
         assert_eq!(issue_at(&issues, 1), Some(0));
         assert_eq!(issue_at(&issues, 7), Some(1));
         assert_eq!(issue_at(&issues, 11), None);
+    }
+
+    #[test]
+    fn opens_the_shortest_issue_the_caret_reaches_and_none_over_a_selection() {
+        let issues = vec![
+            issue(0..10, IssueKind::Grammar),
+            issue(4..7, IssueKind::Spelling),
+        ];
+        assert_eq!(issue_to_open(&issues, &(5..5), true), Some(1));
+        assert_eq!(issue_to_open(&issues, &(7..7), false), Some(1));
+        assert_eq!(issue_to_open(&issues, &(7..7), true), Some(0));
+        assert_eq!(issue_to_open(&issues, &(10..10), true), None);
+        assert_eq!(issue_to_open(&issues, &(10..10), false), Some(0));
+        assert_eq!(issue_to_open(&issues, &(5..6), false), None);
     }
 
     #[test]

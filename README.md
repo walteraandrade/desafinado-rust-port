@@ -17,7 +17,7 @@ The AI proposes; your voice wins. Every change it suggests sits in your text as 
 - Accept is a normal edit, so `Ctrl+Z` undoes it.
 - **Edit → Review…** reads the whole document as an editor who comments. Without a focus, or with one that asks for an opinion ("what about the tone?"), it leaves Notes and does not touch the text: General notes in a panel beside the text, and a numbered mark in the margin for each Note, the 15 most important first. Click a mark to read its Note; **Suggest rewrite** turns that one Note into a Suggestion. When the focus asks for changes ("fix the spelling"), it streams up to six suggestions instead, with Accept all and Reject all. Jev, a small decision model on OpenRouter, reads the focus and picks the mode; the chip in the header shows its choice, and clicking it runs the Review again in the other mode.
 
-**Catch typos as you write.** Misspelled words and grammar mistakes get a quiet dotted underline a moment after you stop typing: English spelling and grammar through [Harper](https://github.com/automattic/harper), Portuguese spelling through [Spellbook](https://github.com/helix-editor/spellbook) and the LibreOffice pt-BR dictionary, all offline. Click a marked word, press `Ctrl+.`, or step through them with F8 and Shift+F8 to pick a fix, add the word to your dictionary, or ignore it.
+**Catch typos as you write.** Misspelled words and grammar mistakes get a quiet dotted underline a moment after you stop typing: English spelling and grammar through [Harper](https://github.com/automattic/harper), Portuguese spelling through [Spellbook](https://github.com/helix-editor/spellbook) and the LibreOffice pt-BR dictionary, all offline. Click a marked word, press `?` inside it, or step through them with F8 and Shift+F8 to pick a fix, add the word to your dictionary, or ignore it. Preferences turn the checker off or change the `?` key to `Ctrl+.` or `Alt+Enter`.
 
 **Read it rendered.** `Ctrl+Alt+R` (or **Edit → Reading view**) swaps the editor for the rendered Markdown: real heading sizes, lists, quotes, links, and code in a monospace font whose long lines scroll sideways (Shift+wheel) instead of wrapping, without the frontmatter. Press it again to edit.
 
@@ -113,8 +113,8 @@ If your machine reaches the internet through a proxy, such as oneCLI, start the 
 | `Ctrl+H` / `Ctrl+L` | Previous / next version of a refined suggestion |
 | `Alt+↑` / `Alt+↓` (or `Alt+[` / `Alt+]`) | Previous / next suggestion |
 | `Ctrl+Z` / `Ctrl+Shift+Z` | Undo / Redo |
-| `F8` / `Shift+F8` | Next / previous spelling mistake, with its menu open |
-| `Ctrl+.` | Open the spelling menu of the word under the cursor |
+| `F8` / `Shift+F8` | Spelling menu of the marked word under the cursor; from there, next / previous mistake |
+| `?` | Inside a marked word, open its spelling menu (elsewhere it types `?`; changeable in Preferences) |
 | `Ctrl+B` / `Ctrl+P` | Library / Library search |
 | `Ctrl+,` | Preferences |
 | `Alt+F` / `Alt+E` / `F10` | Open the File or Edit menu |
@@ -130,6 +130,7 @@ Everything is in `~/.config/desafinado-native` (or `$XDG_CONFIG_HOME/desafinado-
 | `model.txt`, `theme.txt` | Model and theme picked in Preferences |
 | `quick-actions.json` | Your Quick actions |
 | `dictionary.txt` | Words you added to the dictionary, one per line |
+| `spelling.json` | Spell checker on or off, and the key that opens its menu |
 | `openrouter-key.json` | The key, only when there is no system keyring |
 
 Unsaved text, Library folders and Eval runs are kept there too.
