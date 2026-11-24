@@ -87,7 +87,7 @@ xdg-mime default desafinado-native.desktop text/markdown text/x-markdown
 
 The Electron build's desktop entry and window class (`desafinado`) are left alone. The native window uses the class `desafinado-native`, so the two never group together.
 
-**Stay on main.** `scripts/auto-install.sh enable` installs a systemd user timer that checks `origin/main` every 5 minutes and, when it moved, builds it in a private clone under `~/.local/state/desafinado-native/auto-install` and runs `install.sh` from there. Your checkout and any open window are left alone; a desktop notification tells you to reopen the app, or that the build failed and the old version stays. `scripts/auto-install.sh status` shows where it is, `run` checks once now, and `disable` turns it off. Variables it needs that your shell sets, such as a proxy, go in `~/.config/desafinado-native/auto-install.env`, which it sources before each run.
+**Stay on main.** `scripts/auto-install.sh enable` installs a systemd user timer that checks `origin/main` every 5 minutes and, when it moved, builds it in a private clone under `~/.local/state/desafinado-native/auto-install` and runs `install.sh` from there. Your checkout and any open window are left alone; a desktop notification tells you to reopen the app, or that the build failed and the old version stays (it retries after an hour). A binary you install by hand from a branch is replaced the next time main moves. `scripts/auto-install.sh status` shows where it is, `run` checks once now, and `disable` turns it off. Variables it needs that your shell sets, such as a proxy, go in `~/.config/desafinado-native/auto-install.env`, which it sources before each run.
 
 ## First run
 
