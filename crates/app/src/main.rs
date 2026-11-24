@@ -1,6 +1,7 @@
 use desafinado_core::log_err::LogErr;
 mod caret;
 mod comment_review;
+mod crash_log;
 mod document;
 mod editor_pane;
 mod editor_place;
@@ -118,6 +119,7 @@ fn main() {
         show_start_error(message);
         return;
     }
+    crash_log::install(&user_data_dir());
     let argv: Vec<String> = std::env::args().collect();
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/"));
     let (sender, launches) = futures::channel::mpsc::unbounded::<LaunchMessage>();

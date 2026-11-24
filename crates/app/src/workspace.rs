@@ -93,8 +93,20 @@ struct SettingsSaves {
     spelling: Option<Task<()>>,
 }
 
+#[derive(Default)]
+struct KeptPlaces {
+    /// Places taken in this run, by History key, so a file opened again finds its place
+    /// before the background write of it lands.
+    taken: HashMap<String, SavedPlace>,
+    /// The last place the interval wrote, as History key and JSON, to skip writing it again.
+    written: Option<(String, String)>,
+    writer: Option<Task<()>>,
+}
+
 const HISTORY_IDLE_MS: i64 = 30_000;
 const UNSAVED_DELAY: Duration = Duration::from_millis(400);
+/// How often the open Document's place is written, so a crash does not lose it.
+const PLACE_INTERVAL: Duration = Duration::from_secs(3);
 const TOAST_DURATION: Duration = Duration::from_millis(4500);
 const ACTION_TOAST_DURATION: Duration = Duration::from_secs(12);
 const FLASH_DURATION: Duration = Duration::from_millis(1200);
@@ -411,9 +423,7 @@ pub struct Workspace {
     history_tick: Option<Task<()>>,
     unsaved: HashMap<String, Unsaved>,
     unsaved_task: Option<Task<()>>,
-    /// Places taken in this run, by History key, so a file opened again finds its place
-    /// before the background write of it lands.
-    places: HashMap<String, SavedPlace>,
+    places: KeptPlaces,
     remembered: Option<PathBuf>,
     watcher: Option<ExternalChangesController>,
     watched: Option<Watching>,
@@ -512,7 +522,7 @@ impl Workspace {
             history_tick: None,
             unsaved: HashMap::new(),
             unsaved_task: None,
-            places: HashMap::new(),
+            places: KeptPlaces::default(),
             remembered,
             watcher: None,
             watched: None,
@@ -578,6 +588,7 @@ impl Workspace {
             self.focus_text(window, cx);
         }
         let dropped = returned.unwrap_or(0);
+        self.start_place_keeper(cx);
         self.start_watcher(window, cx);
         self.sync_library(cx);
         self.listen_for_launches(launches, window, cx);
@@ -949,7 +960,7 @@ impl Workspace {
     fn remember_place(&mut self, cx: &App) -> String {
         let key = history_key(self.session_path());
         let place = self.pane.read(cx).place(cx);
-        self.places.insert(key.clone(), place);
+        self.places.taken.insert(key.clone(), place);
         key
     }
 
@@ -959,6 +970,7 @@ impl Workspace {
         let key = self.remember_place(cx);
         let json = self
             .places
+            .taken
             .get(&key)
             .and_then(|place| place_to_json(place).log_err());
         Some((self.db.clone()?, key, json?))
@@ -974,11 +986,45 @@ impl Workspace {
         }
     }
 
+    /// Writes the open Document's place every few seconds while it moves, so a crash
+    /// keeps the caret, the scroll and the open Suggestions as the last write left them.
+    fn start_place_keeper(&mut self, cx: &mut Context<Self>) {
+        self.places.writer = Some(cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor().timer(PLACE_INTERVAL).await;
+                if this.update(cx, Workspace::write_moved_place).is_err() {
+                    break;
+                }
+            }
+        }));
+    }
+
+    fn write_moved_place(&mut self, cx: &mut Context<Self>) {
+        let Some(db) = self.db.clone() else {
+            return;
+        };
+        let key = history_key(self.session_path());
+        let Some(json) = place_to_json(&self.pane.read(cx).place(cx)).log_err() else {
+            return;
+        };
+        let written = (key, json);
+        if self.places.written.as_ref() == Some(&written) {
+            return;
+        }
+        let (key, json) = written.clone();
+        self.places.written = Some(written);
+        cx.background_spawn(async move {
+            db.save_place(&key, &json, now_ms()).log_err();
+        })
+        .detach();
+    }
+
     /// Returns to the place kept for the open Document, if there is one, and says how many
     /// of its Suggestions no longer fit the text.
     fn return_to_place(&mut self, cx: &mut Context<Self>) -> Option<usize> {
         let key = history_key(self.session_path());
-        let saved = self.places.remove(&key).or_else(|| {
+        self.places.written = None;
+        let saved = self.places.taken.remove(&key).or_else(|| {
             let json = self.db.as_deref()?.load_place(&key).log_err().flatten()?;
             place_from_json(&json).log_warn()
         });
