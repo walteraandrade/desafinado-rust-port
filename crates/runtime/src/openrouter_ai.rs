@@ -53,8 +53,7 @@ impl OpenRouterAi {
         model: &str,
         mut call: impl FnMut() -> (Result<T, ClientError>, CallObservation),
     ) -> Result<T, ClientError> {
-        let mut attempt = 1;
-        loop {
+        with_retries(|attempt| {
             let started_at = now_iso();
             let clock = Instant::now();
             let (result, observation) = call();
@@ -70,15 +69,8 @@ impl OpenRouterAi {
                     ..Default::default()
                 },
             );
-            match result {
-                Err(error)
-                    if is_retryable_output_error(&error) && attempt <= DEFAULT_MAX_RETRIES =>
-                {
-                    attempt += 1;
-                }
-                result => return result,
-            }
-        }
+            result
+        })
     }
 
     fn record(
@@ -131,6 +123,20 @@ fn observed(
     }
     observation.error = failure.map(|error| error.kind().to_string());
     observation
+}
+
+fn with_retries<T>(
+    mut attempt_call: impl FnMut(u32) -> Result<T, ClientError>,
+) -> Result<T, ClientError> {
+    let mut attempt = 1;
+    loop {
+        match attempt_call(attempt) {
+            Err(error) if is_retryable_output_error(&error) && attempt <= DEFAULT_MAX_RETRIES => {
+                attempt += 1;
+            }
+            result => return result,
+        }
+    }
 }
 
 const DECISION_TIMEOUT_MS: u64 = 20_000;
@@ -346,5 +352,47 @@ mod tests {
         );
         assert_eq!(served.requested_model, "a/b");
         assert_eq!(served.error, None);
+    }
+
+    fn invalid() -> ClientError {
+        ClientError::InvalidOutput {
+            message: "bad".into(),
+        }
+    }
+
+    #[test]
+    fn retries_invalid_output_up_to_the_limit_then_returns_the_error() {
+        let mut attempts = Vec::new();
+        let result: Result<(), _> = with_retries(|attempt| {
+            attempts.push(attempt);
+            Err(invalid())
+        });
+        assert_eq!(attempts, (1..=DEFAULT_MAX_RETRIES + 1).collect::<Vec<_>>());
+        assert_eq!(result, Err(invalid()));
+    }
+
+    #[test]
+    fn does_not_retry_a_failure_that_is_not_invalid_output() {
+        let mut attempts = 0;
+        let result: Result<(), _> = with_retries(|_| {
+            attempts += 1;
+            Err(ClientError::Timeout {
+                message: "slow".into(),
+            })
+        });
+        assert_eq!(attempts, 1);
+        assert!(matches!(result, Err(ClientError::Timeout { .. })));
+    }
+
+    #[test]
+    fn returns_the_success_of_the_second_attempt() {
+        let result = with_retries(|attempt| {
+            if attempt == 1 {
+                Err(invalid())
+            } else {
+                Ok(attempt)
+            }
+        });
+        assert_eq!(result, Ok(2));
     }
 }
