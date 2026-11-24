@@ -672,7 +672,7 @@ mod tests {
             failure: None,
             stopped: true,
         }]);
-        assert_eq!(events, Vec::<ReviewEvent>::new());
+        assert!(events.is_empty());
     }
 
     fn review_call(document: &str) -> ReviewCall {
