@@ -1,10 +1,8 @@
 mod db;
-mod thin;
 mod types;
 mod word_delta;
 
 pub use db::{HistoryDb, HistoryError, HistoryStore, SCHEMA_VERSION};
-pub use thin::{ThinCandidate, ids_to_thin};
 pub use types::{
     AcceptedChange, MarkSavedInput, RecordInput, Unsaved, VersionCause, VersionId, VersionSummary,
 };

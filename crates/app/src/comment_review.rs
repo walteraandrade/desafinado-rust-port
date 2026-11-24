@@ -318,7 +318,6 @@ impl EditorPane {
             Instruction::FreeText {
                 text: rewrite_instruction(&note),
             },
-            window,
             cx,
         );
         if self.next_id > asked {

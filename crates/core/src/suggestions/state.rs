@@ -381,17 +381,6 @@ pub fn reject_suggestions(state: &SuggestionsState, ids: &[SuggestionId]) -> Sug
     }
 }
 
-pub fn clear_suggestions(state: &SuggestionsState) -> SuggestionsState {
-    if state.items.is_empty() {
-        state.clone()
-    } else {
-        SuggestionsState {
-            items: Vec::new(),
-            ..state.clone()
-        }
-    }
-}
-
 pub fn reject_review_suggestions(state: &SuggestionsState) -> SuggestionsState {
     let items: Vec<Suggestion> = state
         .items
@@ -409,6 +398,7 @@ pub fn reject_review_suggestions(state: &SuggestionsState) -> SuggestionsState {
     }
 }
 
+#[cfg(test)]
 pub fn discard_suggestion(
     state: &SuggestionsState,
     id: &str,
@@ -547,6 +537,7 @@ pub fn accept_suggestions(
     map_suggestions(&reject_suggestions(state, ids), changes, frontmatter)
 }
 
+#[cfg(test)]
 pub fn accept_suggestion(
     state: &SuggestionsState,
     id: &str,
@@ -555,6 +546,7 @@ pub fn accept_suggestion(
     accept_suggestions(state, &[id.to_string()], changes, None)
 }
 
+#[cfg(test)]
 fn is_in_flight(item: &Suggestion) -> bool {
     match item {
         Suggestion::Pending(_) => true,
@@ -563,6 +555,7 @@ fn is_in_flight(item: &Suggestion) -> bool {
     }
 }
 
+#[cfg(test)]
 pub fn in_flight_suggestion_ids(state: &SuggestionsState) -> Vec<SuggestionId> {
     state
         .items
@@ -1075,32 +1068,6 @@ mod tests {
         fn returns_the_same_state_when_nothing_matches() {
             let state = begun(vec![draft("a", 0, 10)]);
             assert_eq!(reject_suggestions(&state, &["x".to_string()]), state);
-        }
-    }
-
-    mod clear_suggestions_tests {
-        use super::*;
-
-        fn with_discard_notice() -> SuggestionsState {
-            map_suggestions(
-                &begun(vec![draft("a", 0, 10), draft("b", 20, 30)]),
-                &change(2, 3, "y"),
-                None,
-            )
-        }
-
-        #[test]
-        fn drops_every_suggestion_and_keeps_the_sequence_and_the_last_notice() {
-            let state = with_discard_notice();
-            let next = clear_suggestions(&state);
-            assert_eq!(next.items, vec![]);
-            assert_eq!(next.next_sequence, state.next_sequence);
-            assert_eq!(next.notice, state.notice);
-        }
-
-        #[test]
-        fn returns_the_same_state_without_suggestions() {
-            assert_eq!(clear_suggestions(&empty_suggestions()), empty_suggestions());
         }
     }
 

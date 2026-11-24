@@ -1,7 +1,7 @@
 # UI rubric
 
 Ten criteria for the UI code and what it draws. Each one is measured from
-the source or from the themes, not by taste. Seven are tests that run in CI:
+the source or from the themes, not by taste. Eight are tests that run in CI:
 `crates/app/tests/ui_rules.rs` (C1, C2, C3, C6, C8, C9, C10) and
 `every_used_pair_meets_aa_in_every_theme` in `crates/app/src/theme.rs` (C5).
 

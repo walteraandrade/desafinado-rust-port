@@ -2,7 +2,6 @@ pub mod api_key;
 pub mod array_stream;
 pub mod chat_stream;
 pub mod default_model;
-pub mod dev_log;
 pub mod editor;
 pub mod edits;
 pub mod errors;

@@ -46,16 +46,6 @@ pub fn mix_hex(from: &str, to: &str, share: f64) -> String {
     format!("#{}{}{}", mix(r1, r2), mix(g1, g2), mix(b1, b2))
 }
 
-pub fn six_digit_hex(hex: &str) -> String {
-    let [r, g, b] = rgb_of(hex);
-    format!(
-        "#{}{}{}",
-        to_hex(r.into()),
-        to_hex(g.into()),
-        to_hex(b.into())
-    )
-}
-
 fn unlinear(value: f64) -> f64 {
     if value <= 0.003_130_8 {
         12.92 * value

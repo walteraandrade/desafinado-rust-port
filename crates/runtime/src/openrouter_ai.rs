@@ -27,7 +27,7 @@ use desafinado_platform::openrouter::{GenerationSchedule, OpenRouterClient, fetc
 use crate::{
     ai_backend::{
         AiBackend, CommentCall, DescriptionCall, ModeCall, ReviewAttempt, ReviewCall, ReviewEvent,
-        TargetCall, drive_review, feed_review, outcome_of, stopped_error,
+        TargetCall, drive_review, feed_review, now_iso, outcome_of, stopped_error,
     },
     services::Services,
 };
@@ -45,6 +45,40 @@ impl OpenRouterAi {
         Ok(OpenRouterClient::from_env(self.services.keys.current())?
             .with_timeout(Duration::from_millis(timeout_ms))
             .with_stall(Some(Duration::from_millis(DEFAULT_STALL_MS.chunk))))
+    }
+
+    fn retrying<T>(
+        &self,
+        task: &str,
+        model: &str,
+        mut call: impl FnMut() -> (Result<T, ClientError>, CallObservation),
+    ) -> Result<T, ClientError> {
+        let mut attempt = 1;
+        loop {
+            let started_at = now_iso();
+            let clock = Instant::now();
+            let (result, observation) = call();
+            let failure = result.as_ref().err();
+            self.record(
+                task,
+                attempt,
+                outcome_of(failure),
+                started_at,
+                observed(observation, model, failure),
+                CallTiming {
+                    client_total_ms: clock.elapsed().as_millis() as u64,
+                    ..Default::default()
+                },
+            );
+            match result {
+                Err(error)
+                    if is_retryable_output_error(&error) && attempt <= DEFAULT_MAX_RETRIES =>
+                {
+                    attempt += 1;
+                }
+                result => return result,
+            }
+        }
     }
 
     fn record(
@@ -85,10 +119,6 @@ impl OpenRouterAi {
             services.complete_record(held, shape(generation));
         });
     }
-}
-
-fn now_iso() -> String {
-    chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
 }
 
 fn observed(
@@ -145,42 +175,17 @@ impl AiBackend for OpenRouterAi {
             max_output_tokens: DEFAULT_MAX_OUTPUT_TOKENS.review,
         });
         let client = self.client(DEFAULT_TIMEOUTS_MS.review.max(180_000))?;
-        let mut attempt = 1;
-        loop {
-            let started_at = now_iso();
-            let clock = Instant::now();
-            let (result, observation) = match client.chat_completion(&body) {
-                Ok(output) => (
-                    parse_comment_output(&output.content)
-                        .map(|parsed| place_notes(parsed, &call.blocks))
-                        .ok_or_else(|| ClientError::InvalidOutput {
-                            message: "The notes did not match the schema".into(),
-                        }),
-                    output.observation,
-                ),
-                Err(error) => (Err(error), CallObservation::default()),
-            };
-            let failure = result.as_ref().err();
-            self.record(
-                &call.task,
-                attempt,
-                outcome_of(failure),
-                started_at,
-                observed(observation, &model, failure),
-                CallTiming {
-                    client_total_ms: clock.elapsed().as_millis() as u64,
-                    ..Default::default()
-                },
-            );
-            match result {
-                Err(error)
-                    if is_retryable_output_error(&error) && attempt <= DEFAULT_MAX_RETRIES =>
-                {
-                    attempt += 1;
-                }
-                result => return result,
-            }
-        }
+        self.retrying(&call.task, &model, || match client.chat_completion(&body) {
+            Ok(output) => (
+                parse_comment_output(&output.content)
+                    .map(|parsed| place_notes(parsed, &call.blocks))
+                    .ok_or_else(|| ClientError::InvalidOutput {
+                        message: "The notes did not match the schema".into(),
+                    }),
+                output.observation,
+            ),
+            Err(error) => (Err(error), CallObservation::default()),
+        })
     }
 
     fn target(&self, call: TargetCall) -> Result<SuggestionResult, ClientError> {
@@ -196,38 +201,13 @@ impl AiBackend for OpenRouterAi {
             ),
         });
         let client = self.client(DEFAULT_TIMEOUTS_MS.target)?;
-        let mut attempt = 1;
-        loop {
-            let started_at = now_iso();
-            let clock = Instant::now();
-            let (result, observation) = match client.chat_completion(&body) {
-                Ok(output) => (
-                    checked_suggestion(&call.original, &output.content),
-                    output.observation,
-                ),
-                Err(error) => (Err(error), CallObservation::default()),
-            };
-            let failure = result.as_ref().err();
-            self.record(
-                &call.task,
-                attempt,
-                outcome_of(failure),
-                started_at,
-                observed(observation, &model, failure),
-                CallTiming {
-                    client_total_ms: clock.elapsed().as_millis() as u64,
-                    ..Default::default()
-                },
-            );
-            match result {
-                Err(error)
-                    if is_retryable_output_error(&error) && attempt <= DEFAULT_MAX_RETRIES =>
-                {
-                    attempt += 1;
-                }
-                result => return result,
-            }
-        }
+        self.retrying(&call.task, &model, || match client.chat_completion(&body) {
+            Ok(output) => (
+                checked_suggestion(&call.original, &output.content),
+                output.observation,
+            ),
+            Err(error) => (Err(error), CallObservation::default()),
+        })
     }
 
     fn description(&self, call: DescriptionCall) -> Result<SuggestionResult, ClientError> {

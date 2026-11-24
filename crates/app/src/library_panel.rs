@@ -67,7 +67,7 @@ pub fn placement(viewport_width: Pixels) -> Placement {
     }
 }
 
-pub fn home() -> String {
+fn home() -> String {
     std::env::var("HOME").unwrap_or_else(|_| "/".into())
 }
 

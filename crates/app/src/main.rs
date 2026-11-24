@@ -81,7 +81,10 @@ fn start_failure() -> Option<String> {
         })
 }
 
-fn show_start_error(message: String) {
+fn run_app<V: Render>(
+    setup: impl FnOnce(&mut App) + 'static,
+    build: impl FnOnce(&mut Window, &mut App) -> Entity<V> + 'static,
+) {
     gpui_kit::application()
         .with_assets(gpui_kit::assets::Assets::new(""))
         .run(move |cx| {
@@ -89,12 +92,9 @@ fn show_start_error(message: String) {
             cx.text_system()
                 .add_fonts(FONTS.iter().map(|font| Cow::Borrowed(*font)).collect())
                 .log_err();
-            theme::apply_default(cx);
+            setup(cx);
             let options = window_options(cx);
-            gpui_kit::open_window(options, cx, |_, cx| {
-                cx.new(|_| start_error::StartError::new(message))
-            })
-            .expect("failed to open the window");
+            gpui_kit::open_window(options, cx, build).expect("failed to open the window");
             cx.on_window_closed(|cx, _| {
                 if cx.windows().is_empty() {
                     cx.quit();
@@ -103,6 +103,12 @@ fn show_start_error(message: String) {
             .detach();
             cx.activate(true);
         });
+}
+
+fn show_start_error(message: String) {
+    run_app(theme::apply_default, |_, cx| {
+        cx.new(|_| start_error::StartError::new(message))
+    });
 }
 
 fn main() {
@@ -133,16 +139,12 @@ fn main() {
         launch_file_of(&argv, &cwd).map(|path| std::fs::canonicalize(&path).unwrap_or(path));
     let services = desafinado_runtime::services::Services::load();
     let _held = instance;
-    gpui_kit::application()
-        .with_assets(gpui_kit::assets::Assets::new(""))
-        .run(move |cx| {
-            gpui_kit::init(cx);
-            cx.text_system()
-                .add_fonts(FONTS.iter().map(|font| Cow::Borrowed(*font)).collect())
-                .log_err();
-            caret::init(&services.user_data, cx);
-            spelling::init(&services.user_data, cx);
-            theme::init(&services.user_data, cx);
+    let user_data = services.user_data.clone();
+    run_app(
+        move |cx| {
+            caret::init(&user_data, cx);
+            spelling::init(&user_data, cx);
+            theme::init(&user_data, cx);
             workspace::init(cx);
             preferences_view::init(cx);
             key_dialog::init(cx);
@@ -151,27 +153,19 @@ fn main() {
             library_panel::init(cx);
             new_skill_dialog::init(cx);
             eval_run_dialog::init(cx);
-            let options = window_options(cx);
-            gpui_kit::open_window(options, cx, |window, cx| {
-                cx.new(|cx| {
-                    workspace::Workspace::new(
-                        workspace::Startup {
-                            launch,
-                            services,
-                            launches,
-                        },
-                        window,
-                        cx,
-                    )
-                })
+        },
+        move |window, cx| {
+            cx.new(|cx| {
+                workspace::Workspace::new(
+                    workspace::Startup {
+                        launch,
+                        services,
+                        launches,
+                    },
+                    window,
+                    cx,
+                )
             })
-            .expect("failed to open the window");
-            cx.on_window_closed(|cx, _| {
-                if cx.windows().is_empty() {
-                    cx.quit();
-                }
-            })
-            .detach();
-            cx.activate(true);
-        });
+        },
+    );
 }

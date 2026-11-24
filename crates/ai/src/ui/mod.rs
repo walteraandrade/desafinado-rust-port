@@ -1,13 +1,1 @@
-pub mod app_menus;
-pub mod file_commands;
-pub mod history_keys;
-pub mod idle;
-pub mod key_status;
-pub mod keys;
-pub mod library_fold;
-pub mod library_layout;
 pub mod list_motion;
-pub mod menu_nav;
-pub mod page_mode;
-pub mod platform;
-pub mod preferences_shortcut;

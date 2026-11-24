@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use super::recorder::AcceptedInput;
-use super::session::{DocumentHistory, SubscriptionId};
+use super::session::DocumentHistory;
 use super::store::HistoryKey;
 use super::types::{VersionId, VersionList};
 
@@ -21,8 +21,6 @@ pub struct SwitchableHistory<Reference> {
     key: HistoryKey,
     current: DocumentHistory,
     retired: Vec<DocumentHistory>,
-    listeners: Vec<(SubscriptionId, Box<dyn FnMut() + Send>)>,
-    next_subscription: SubscriptionId,
 }
 
 impl<Reference> SwitchableHistory<Reference> {
@@ -37,14 +35,6 @@ impl<Reference> SwitchableHistory<Reference> {
             key,
             current,
             retired: Vec::new(),
-            listeners: Vec::new(),
-            next_subscription: 0,
-        }
-    }
-
-    fn notify(&mut self) {
-        for (_, listener) in &mut self.listeners {
-            listener();
         }
     }
 
@@ -59,7 +49,6 @@ impl<Reference> SwitchableHistory<Reference> {
         self.retired.clear();
         self.key = next;
         self.current = fresh;
-        self.notify();
     }
 
     pub fn key(&self) -> &str {
@@ -114,33 +103,18 @@ impl<Reference> SwitchableHistory<Reference> {
         self.current.snapshot()
     }
 
-    pub fn subscribe(&mut self, listener: Box<dyn FnMut() + Send>) -> SubscriptionId {
-        self.next_subscription += 1;
-        self.listeners.push((self.next_subscription, listener));
-        self.next_subscription
-    }
-
-    pub fn unsubscribe(&mut self, id: SubscriptionId) {
-        self.listeners.retain(|(known, _)| *known != id);
-    }
-
     pub fn text(&mut self, id: VersionId) -> Result<Option<String>, super::store::StoreError> {
         self.current.text(id)
     }
 
     pub fn settled(&mut self) -> bool {
-        let changed = self.current.settled();
-        if changed {
-            self.notify();
-        }
-        changed
+        self.current.settled()
     }
 }
 
 #[cfg(test)]
 mod tests {
     use std::sync::Mutex;
-    use std::sync::atomic::{AtomicUsize, Ordering};
 
     use super::*;
     use crate::history::memory_store::MemoryHistoryStore;
@@ -315,46 +289,10 @@ mod tests {
     }
 
     #[test]
-    fn tells_subscribers_when_it_switches_and_when_the_new_list_arrives() {
-        let (mut hub, _) = create_hub(vec![]);
-        let calls = Arc::new(AtomicUsize::new(0));
-        let counter = Arc::clone(&calls);
-        hub.subscribe(Box::new(move || {
-            counter.fetch_add(1, Ordering::SeqCst);
-        }));
-        hub.select(Some(&a()), 1000);
-        assert_eq!(calls.load(Ordering::SeqCst), 1);
-        hub.opened("text", "a.md", 1000);
-        hub.settled();
-        assert_eq!(calls.load(Ordering::SeqCst), 2);
-    }
-
-    #[test]
-    fn stops_telling_subscribers_who_unsubscribed() {
-        let (mut hub, _) = create_hub(vec![]);
-        let calls = Arc::new(AtomicUsize::new(0));
-        let counter = Arc::clone(&calls);
-        let id = hub.subscribe(Box::new(move || {
-            counter.fetch_add(1, Ordering::SeqCst);
-        }));
-        hub.unsubscribe(id);
-        hub.select(Some(&a()), 1000);
-        hub.opened("text", "a.md", 1000);
-        hub.settled();
-        assert_eq!(calls.load(Ordering::SeqCst), 0);
-    }
-
-    #[test]
     fn does_nothing_when_it_selects_the_file_it_is_on() {
         let (mut hub, store) = create_hub(vec![]);
         hub.edited("still pending", 1000);
-        let calls_made = Arc::new(AtomicUsize::new(0));
-        let counter = Arc::clone(&calls_made);
-        hub.subscribe(Box::new(move || {
-            counter.fetch_add(1, Ordering::SeqCst);
-        }));
         hub.select(None, 1000);
-        assert_eq!(calls_made.load(Ordering::SeqCst), 0);
         assert!(calls(&store).is_empty());
         hub.flush(1000);
         hub.settled();

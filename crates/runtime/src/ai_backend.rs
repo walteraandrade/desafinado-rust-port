@@ -85,6 +85,10 @@ pub trait AiBackend: Send + Sync {
     fn comment(&self, call: CommentCall) -> Result<NoteBoard, ClientError>;
 }
 
+pub(crate) fn now_iso() -> String {
+    chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+}
+
 pub fn outcome_of(failure: Option<&ClientError>) -> CallOutcome {
     match failure {
         None => CallOutcome::Valid,
@@ -331,7 +335,7 @@ impl FakeAi {
             task: task.to_string(),
             attempt,
             outcome: outcome_of(failure),
-            started_at: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+            started_at: now_iso(),
             observation: CallObservation {
                 requested_model: FAKE_MODEL.into(),
                 served_model: failure.is_none().then(|| FAKE_MODEL.into()),
@@ -394,7 +398,7 @@ impl AiBackend for FakeAi {
                 task: call.task,
                 attempt: 1,
                 outcome: CallOutcome::Valid,
-                started_at: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+                started_at: now_iso(),
                 observation: decision.observation,
                 generation: None,
                 timing: CallTiming {
@@ -668,7 +672,7 @@ mod tests {
             failure: None,
             stopped: true,
         }]);
-        assert!(events.is_empty());
+        assert_eq!(events, Vec::<ReviewEvent>::new());
     }
 
     fn review_call(document: &str) -> ReviewCall {

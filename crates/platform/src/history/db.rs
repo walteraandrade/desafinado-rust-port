@@ -10,9 +10,10 @@ use flate2::write::GzEncoder;
 use rusqlite::{Connection, OptionalExtension, params};
 use sha2::{Digest, Sha256};
 
-use super::thin::{ThinCandidate, ids_to_thin};
 use super::types::{MarkSavedInput, RecordInput, Unsaved, VersionCause, VersionId, VersionSummary};
 use super::word_delta::{count_words, word_delta};
+use desafinado_features::history::thin::{ThinCandidate, ids_to_thin};
+use desafinado_features::history::types::CauseKind;
 
 pub const SCHEMA_VERSION: i64 = 1;
 const BUSY_TIMEOUT_MS: u32 = 5000;
@@ -369,7 +370,11 @@ impl HistoryDb {
                 candidates.push(ThinCandidate {
                     id,
                     at,
-                    kind: cause_of(&cause)?.kind().to_owned(),
+                    kind: if cause_of(&cause)? == VersionCause::Edited {
+                        CauseKind::Edited
+                    } else {
+                        CauseKind::External
+                    },
                     saved: saved.is_some(),
                 });
             }
