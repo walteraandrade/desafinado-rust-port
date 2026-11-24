@@ -1,3 +1,4 @@
+pub mod crash_log;
 pub mod evals;
 pub mod files;
 mod fs_failure;
