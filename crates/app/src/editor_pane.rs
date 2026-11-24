@@ -17,7 +17,7 @@ use desafinado_ai::{
             BubbleChange, BubbleRange, BubbleState, BubbleView, bubble_visible, next_bubble,
         },
         ask_menu::{self, AskMenu, AskRow},
-        card_placement::{CardPlacement, MARGIN_CARD_WIDTH, placement_for},
+        card_placement::{CardPlacement, MARGIN_CARD_WIDTH, margin_card_left, placement_for},
         focus_cycle::cycle_index,
         geometry::{Rect, Viewport},
         inline_diff::{block_replacement, inline_inserts, rows_before, zone_rows},
@@ -104,7 +104,6 @@ actions!(
 
 const COLUMN_WIDTH: f32 = 768.;
 const COLUMN_PADDING: f32 = 24.;
-const MARGIN_GAP: f32 = 24.;
 const BUBBLE_WIDTH: f32 = 360.;
 const BUBBLE_KEY: &str = "\u{0}bubble";
 /// Space above and below an element drawn in the rows reserved under a Suggestion.
@@ -1913,8 +1912,7 @@ impl EditorPane {
 
     pub(crate) fn card_placement(&self) -> CardPlacement {
         let pane = self.bounds.get();
-        let right = f64::from(f32::from(self.content_right() - pane.origin.x));
-        placement_for(right, f64::from(f32::from(pane.size.width)))
+        placement_for(f64::from(f32::from(self.content_left() - pane.origin.x)))
     }
 
     fn render_card(
@@ -1956,7 +1954,7 @@ impl EditorPane {
 
     fn card_enter(&self, item: &Suggestion, card: Bounds<Pixels>, cx: &App) -> ui::Enter {
         if self.card_placement() == CardPlacement::Margin {
-            return ui::Enter::Slide(-8.);
+            return ui::Enter::Slide(8.);
         }
         let anchor_at = match item {
             Suggestion::Ready(ready) => {
@@ -2004,7 +2002,7 @@ impl EditorPane {
         let placement = self.card_placement();
         let (left, flip, gap, bottom) = match placement {
             CardPlacement::Margin => (
-                self.content_right() + px(MARGIN_GAP) - origin.x,
+                px(margin_card_left(to_f64(self.content_left() - origin.x)) as f32),
                 false,
                 0.,
                 line.top() - origin.y,
@@ -2980,14 +2978,7 @@ impl Render for EditorPane {
         let marks = self.render_note_marks(roles, cx);
         let note_card = self.render_note_card(roles, cx);
         let panel = self.render_notes_panel(roles, cx);
-        let frame = self.map_frame(cx);
-        let map = frame
-            .as_ref()
-            .and_then(|frame| self.render_text_map(frame, roles, cx));
-        let chips = frame
-            .as_ref()
-            .map(|frame| self.render_edge_chips(frame, roles, cx))
-            .unwrap_or_default();
+        let map = self.render_map_and_chips(roles, cx);
         let text = div()
             .id("editor-pane")
             .key_context("EditorPane")
@@ -3039,7 +3030,6 @@ impl Render for EditorPane {
             ))
             .children(caret)
             .children(map)
-            .children(chips)
             .children(marks)
             .children(note_card)
             .children(cards)

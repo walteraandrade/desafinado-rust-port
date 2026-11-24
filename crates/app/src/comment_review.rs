@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use desafinado_ai::{
     editor::{
-        card_placement::{CardPlacement, MARGIN_CARD_WIDTH},
+        card_placement::{CardPlacement, MARGIN_CARD_WIDTH, margin_card_left},
         geometry::{Rect, Viewport},
         popover_place::{PopoverInput, Side, place_popover},
     },
@@ -37,7 +37,6 @@ use crate::{
 pub const NOTES_PANEL_WIDTH: f32 = 320.;
 const MARK_SIZE: f32 = 24.;
 const MARK_GAP: f32 = 8.;
-const MARGIN_GAP: f32 = 24.;
 const NOTE_CARD_HEIGHT: f32 = 160.;
 
 /// A Review that has not answered yet: the decision, then the Comment call.
@@ -385,7 +384,8 @@ impl EditorPane {
         let width = px(MARGIN_CARD_WIDTH as f32);
         let margin = self.card_placement() == CardPlacement::Margin;
         let (left, bottom) = if margin {
-            (self.content_right() + px(MARGIN_GAP), line.top())
+            let content_left = f64::from(f32::from(self.content_left()));
+            (px(margin_card_left(content_left) as f32), line.top())
         } else {
             (self.content_right() - width, end.bottom())
         };
@@ -469,7 +469,11 @@ impl EditorPane {
             ui::enter(
                 "note-card-in",
                 card,
-                ui::Enter::Slide(-8.),
+                ui::Enter::Slide(if self.card_placement() == CardPlacement::Margin {
+                    8.
+                } else {
+                    -8.
+                }),
                 ui::MOTION_ENTER,
             )
             .into_any_element(),

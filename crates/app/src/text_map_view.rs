@@ -1,5 +1,7 @@
-//! Suggestions past the edges of the screen: the text map beside the column, and a chip at the
-//! top and the foot of the text that counts them and goes to the nearest one.
+//! The text map, which stands where the scrollbar was: the Document in miniature, with the
+//! Suggestions in it and the part on screen; a click or a drag scrolls there. And a chip at the
+//! top and the foot of the text that counts the Suggestions past that edge and goes to the
+//! nearest one.
 
 use desafinado_core::{
     suggestions::{RefineState, Suggestion, active_suggestion, suggestion_anchor},
@@ -8,16 +10,18 @@ use desafinado_core::{
         reveal_first_row, scroll_row_for, step_in_view, text_map,
     },
 };
-use gpui_kit::{base::input::BufferPoint, *};
+use gpui_kit::{
+    base::input::{BufferPoint, EditorScrollbarRenderer},
+    *,
+};
 use std::rc::Rc;
 
 use crate::{editor_pane::EditorPane, theme::Roles, ui};
 
-const MAP_WIDTH: f32 = 48.;
-/// Room left of the column for the Notes' marks, and the gap before the map.
-const NOTE_MARKS: f32 = 32.;
-const MAP_GAP: f32 = 16.;
-const MAP_INSET: f32 = 16.;
+const MAP_WIDTH: f32 = 40.;
+/// From the right edge of the text to the map.
+const MAP_GAP: f32 = 8.;
+const MAP_INSET: f32 = 8.;
 const CHIP_INSET: f32 = 8.;
 /// How close a click on the map must land to a Suggestion's bar to open it.
 const MAP_REACH: f32 = 6.;
@@ -102,10 +106,7 @@ impl EditorPane {
         }
     }
 
-    pub(crate) fn map_frame(&self, cx: &App) -> Option<MapFrame> {
-        if self.suggestions.items.is_empty() {
-            return None;
-        }
+    fn map_frame(&self, cx: &App) -> Option<MapFrame> {
         let state = self.editor.read(cx);
         let (lines, view, line_height) = self.rows_on_screen(cx)?;
         let active = active_suggestion(&self.suggestions, Some(state.cursor()))
@@ -142,14 +143,15 @@ impl EditorPane {
         suggestion_anchor(&self.suggestions, frame.ids.get(index)?)
     }
 
-    /// The map's left edge in the pane, when the margin left of the column has room for it.
-    fn map_left(&self) -> Option<Pixels> {
+    /// The map's left edge in the pane, right of the text where the scrollbar was, when the pane
+    /// has room for it. Without room the editor keeps its own scrollbar.
+    pub(crate) fn map_left(&self) -> Option<Pixels> {
         let pane = self.pane_bounds();
-        let left = self.content_left() - pane.origin.x - px(NOTE_MARKS + MAP_GAP + MAP_WIDTH);
-        (left >= px(MAP_INSET)).then_some(left)
+        let left = self.content_right() - pane.origin.x + px(MAP_GAP);
+        (left + px(MAP_WIDTH + MAP_INSET) <= pane.size.width).then_some(left)
     }
 
-    pub(crate) fn render_text_map(
+    fn render_text_map(
         &self,
         frame: &MapFrame,
         roles: Roles,
@@ -175,22 +177,36 @@ impl EditorPane {
         let band = ui::text_map_band(px(map.band_top), px(map.band_height), roles);
         let height = px(map.height);
         let origin_y = pane.origin.y + px(MAP_INSET);
-        let click = MapClick {
+        let click = Rc::new(MapClick {
             marks: Rc::clone(&frame.marks),
             ids: Rc::clone(&frame.ids),
             map,
             view_rows: frame.view.rows,
             line_height: frame.line_height,
-        };
+        });
+        let drag = Rc::clone(&click);
+        let line_height = frame.line_height;
         let element = ui::text_map_frame("text-map", px(MAP_WIDTH), height)
             .absolute()
             .left(left)
             .top(px(MAP_INSET))
             .child(band)
             .children(bars)
-            .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
-                let y = f32::from(event.position().y - origin_y);
-                this.on_map_click(&click, y, window, cx);
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |this, event: &MouseDownEvent, window, cx| {
+                    let y = f32::from(event.position.y - origin_y);
+                    this.on_map_click(&click, y, window, cx);
+                }),
+            )
+            .on_scroll(cx.listener(move |this, event: &ScrollEvent, _, cx| {
+                this.scroll_by(event.delta.pixel_delta(line_height).y, cx);
+            }))
+            .on_mouse_move(cx.listener(move |this, event: &MouseMoveEvent, _, cx| {
+                if event.pressed_button == Some(MouseButton::Left) {
+                    let y = f32::from(event.position.y - origin_y);
+                    this.scroll_map_to(&drag, y, cx);
+                }
             }));
         Some(element.into_any_element())
     }
@@ -208,6 +224,45 @@ impl EditorPane {
             self.go_to_suggestion(id, window, cx);
             return;
         }
+        self.scroll_map_to(click, y, cx);
+    }
+
+    fn scroll_by(&mut self, delta: Pixels, cx: &mut Context<Self>) {
+        self.editor.update(cx, |state, cx| {
+            let offset = state.scroll_offset();
+            state.set_scroll_offset(point(offset.x, (offset.y + delta).min(px(0.))), cx);
+        });
+        cx.notify();
+    }
+
+    /// The text map and the edge chips, with the editor's scrollbar hidden while the map shows.
+    pub(crate) fn render_map_and_chips(
+        &self,
+        roles: Roles,
+        cx: &mut Context<Self>,
+    ) -> Vec<AnyElement> {
+        self.hide_scrollbar_under_map(cx);
+        let Some(frame) = self.map_frame(cx) else {
+            return Vec::new();
+        };
+        let map = self.render_text_map(&frame, roles, cx);
+        map.into_iter()
+            .chain(self.render_edge_chips(&frame, roles, cx))
+            .collect()
+    }
+
+    /// While the map stands in for it, the editor draws no scrollbar of its own.
+    fn hide_scrollbar_under_map(&self, cx: &mut Context<Self>) {
+        let shown = self.map_left().is_some();
+        self.editor.update(cx, |state, _| {
+            state.set_scrollbar_renderer(shown.then(|| {
+                let empty: EditorScrollbarRenderer = Rc::new(|_, _, _| div().into_any_element());
+                empty
+            }));
+        });
+    }
+
+    fn scroll_map_to(&mut self, click: &MapClick, y: f32, cx: &mut Context<Self>) {
         let row = scroll_row_for(&click.map, y, click.view_rows);
         self.editor.update(cx, |state, cx| {
             state.set_scroll_offset(point(px(0.), -(click.line_height * row)), cx);
@@ -232,7 +287,7 @@ impl EditorPane {
         cx.notify();
     }
 
-    pub(crate) fn render_edge_chips(
+    fn render_edge_chips(
         &self,
         frame: &MapFrame,
         roles: Roles,
