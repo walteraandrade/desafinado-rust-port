@@ -51,6 +51,7 @@ use desafinado_runtime::services::Services;
 use futures::{FutureExt as _, StreamExt as _, channel::mpsc::UnboundedReceiver, future::Shared};
 use gpui_kit::{component::TitleBar, prelude::FluentBuilder as _, *};
 
+use crate::spelling::{NextIssue, PreviousIssue};
 use crate::{
     caret,
     document::{
@@ -2481,6 +2482,21 @@ impl Workspace {
                 MenuRow {
                     separated: true,
                     ..row(
+                        "Next spelling mistake",
+                        Some("F8"),
+                        Box::new(NextIssue),
+                        false,
+                    )
+                },
+                row(
+                    "Previous spelling mistake",
+                    Some("Shift+F8"),
+                    Box::new(PreviousIssue),
+                    false,
+                ),
+                MenuRow {
+                    separated: true,
+                    ..row(
                         if self.reading() {
                             "Edit text"
                         } else {
@@ -3334,11 +3350,24 @@ impl Workspace {
                 this.open_menu = None;
                 this.reject_all(window, cx);
             }))
+            .on_action(cx.listener(|this, _: &NextIssue, window, cx| {
+                this.step_issue(false, window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &PreviousIssue, window, cx| {
+                this.step_issue(true, window, cx);
+            }))
     }
 
     fn accept_all(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.show_editing(window, cx);
         self.pane.update(cx, |pane, cx| pane.accept_all(window, cx));
+    }
+
+    fn step_issue(&mut self, backward: bool, window: &mut Window, cx: &mut Context<Self>) {
+        self.open_menu = None;
+        self.show_editing(window, cx);
+        self.pane
+            .update(cx, |pane, cx| pane.step_issue(backward, window, cx));
     }
 
     fn reject_all(&mut self, window: &mut Window, cx: &mut Context<Self>) {
