@@ -31,12 +31,6 @@ pub fn ai_caret_of(state: &SuggestionsState, reviewing: bool) -> Option<AiCaret>
     if refining.is_some() {
         return refining;
     }
-    if let Some(pending) = latest(state.items.iter().filter(|item| item.is_pending())) {
-        return Some(AiCaret {
-            pos: pending.to,
-            label: instruction_label(&pending.instruction).to_string(),
-        });
-    }
     if !reviewing {
         return None;
     }
@@ -99,26 +93,9 @@ mod tests {
     }
 
     #[test]
-    fn sits_at_the_end_of_the_latest_pending_suggestion_with_its_label() {
+    fn leaves_a_pending_request_to_the_requests_tray() {
         let state = begin_suggestion(&empty_suggestions(), draft("a", 0, 4, None));
-        let state = begin_suggestion(&state, draft("b", 10, 14, None));
-        assert_eq!(
-            ai_caret_of(&state, false),
-            Some(AiCaret {
-                pos: 14,
-                label: "Shorter".into()
-            })
-        );
-    }
-
-    #[test]
-    fn labels_free_text_with_the_text_itself() {
-        let mut free = draft("a", 0, 4, None);
-        free.instruction = Instruction::FreeText {
-            text: "make it rhyme".into(),
-        };
-        let state = begin_suggestion(&empty_suggestions(), free);
-        assert_eq!(ai_caret_of(&state, false).unwrap().label, "make it rhyme");
+        assert_eq!(ai_caret_of(&state, false), None);
     }
 
     #[test]

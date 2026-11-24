@@ -635,6 +635,14 @@ mod tests {
         ] {
             pairs.push((name, text.clone(), format!("{surface}:{background}"), TEXT));
         }
+        for (name, mark, surface, background) in [
+            ("ai job mark", &r.ai, "overlay", &r.overlay),
+            ("ai job mark", &r.ai, "fill_hover", &r.fill_hover),
+            ("success job mark", &r.success, "overlay", &r.overlay),
+            ("success job mark", &r.success, "fill_hover", &r.fill_hover),
+        ] {
+            pairs.push((name, mark.clone(), format!("{surface}:{background}"), MARK));
+        }
         pairs
     }
 

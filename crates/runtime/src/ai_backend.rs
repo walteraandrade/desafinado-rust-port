@@ -268,14 +268,24 @@ fn fake_script(prompt: &str) -> FakeScript {
     .map_or(FakeScript::Normal, |(_, script)| script)
 }
 
+/// Two thirds of each line's words, so a request over many paragraphs keeps its paragraphs.
 fn fake_rewrite(original: &str) -> String {
-    let words: Vec<&str> = original.split_whitespace().collect();
-    let keep = (words.len() * 2 / 3).max(1);
-    let mut text = words[..keep.min(words.len())].join(" ");
-    if !text.ends_with('.') {
-        text.push('.');
-    }
-    text
+    original
+        .split('\n')
+        .map(|line| {
+            let words: Vec<&str> = line.split_whitespace().collect();
+            if words.is_empty() {
+                return String::new();
+            }
+            let keep = (words.len() * 2 / 3).max(1);
+            let mut text = words[..keep].join(" ");
+            if !text.ends_with('.') {
+                text.push('.');
+            }
+            text
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn fake_refine(original: &str) -> String {
@@ -532,6 +542,14 @@ mod tests {
             description: "Helps with PDFs.".into(),
             body: "# PDF tools".into(),
         }
+    }
+
+    #[test]
+    fn the_fake_rewrite_shortens_each_paragraph_and_keeps_the_blank_lines() {
+        assert_eq!(
+            fake_rewrite("One two three four five six.\n\nSeven eight nine\n"),
+            "One two three four.\n\nSeven eight.\n"
+        );
     }
 
     #[test]

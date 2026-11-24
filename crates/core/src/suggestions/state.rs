@@ -1,8 +1,9 @@
+use super::in_flight::{edits_inside, inserts_at, rebase_replacement};
 use super::replacement::match_edge_whitespace;
 use super::types::{
-    ClientError, FailedSuggestion, Instruction, NoticeKind, ReadySuggestion, RefineState,
-    RefineStep, Suggestion, SuggestionBase, SuggestionDraft, SuggestionId, SuggestionNotice,
-    SuggestionOrigin, SuggestionResult, SuggestionsState,
+    ClientError, FailedSuggestion, Instruction, NoticeKind, PendingSuggestion, ReadySuggestion,
+    RefineState, RefineStep, Suggestion, SuggestionBase, SuggestionDraft, SuggestionId,
+    SuggestionNotice, SuggestionOrigin, SuggestionResult, SuggestionsState,
 };
 use crate::blocks::{Frontmatter, Range, touches_frontmatter};
 use crate::change_set::{Assoc, ChangeDesc};
@@ -65,16 +66,18 @@ pub fn begin_suggestion(state: &SuggestionsState, draft: SuggestionDraft) -> Sug
         .cloned()
         .collect();
     let replaced = items.len() != state.items.len();
-    items.push(Suggestion::Pending(SuggestionBase {
-        id: draft.id,
-        from: draft.from,
-        to: draft.to,
-        source: draft.source,
-        original: draft.original,
-        instruction: draft.instruction,
-        sequence: state.next_sequence,
-        origin: draft.origin.unwrap_or(SuggestionOrigin::Ask),
-    }));
+    items.push(Suggestion::Pending(PendingSuggestion::new(
+        SuggestionBase {
+            id: draft.id,
+            from: draft.from,
+            to: draft.to,
+            source: draft.source,
+            original: draft.original,
+            instruction: draft.instruction,
+            sequence: state.next_sequence,
+            origin: draft.origin.unwrap_or(SuggestionOrigin::Ask),
+        },
+    )));
     let next = SuggestionsState {
         items,
         next_sequence: state.next_sequence + 1,
@@ -92,27 +95,62 @@ pub fn resolve_suggestion(
     id: &str,
     result: &SuggestionResult,
 ) -> SuggestionsState {
-    let Some(Suggestion::Pending(base)) = find_suggestion(state, id) else {
+    let Some(Suggestion::Pending(pending)) = find_suggestion(state, id) else {
         return state.clone();
     };
     if result.unchanged {
         return with_notice(without(state, id), NoticeKind::NoChange);
     }
-    let replacement = match_edge_whitespace(&base.original, &result.replacement);
+    let answer = match_edge_whitespace(&pending.original, &result.replacement);
+    let (base, answer, notice) = match rebased_answer(pending, answer) {
+        Ok(rebased) => rebased,
+        Err(kind) => return with_notice(without(state, id), kind),
+    };
+    let replacement = match_edge_whitespace(&base.original, &answer);
     let ready = ReadySuggestion {
-        base: base.clone(),
         diff: adaptive_diff(&base.original, &replacement),
         history: vec![RefineStep {
             instruction: base.instruction.clone(),
             replacement: replacement.clone(),
             rationale: result.rationale.clone(),
         }],
+        base,
         replacement,
         rationale: result.rationale.clone(),
         shown: 0,
         refine: RefineState::Idle,
     };
-    replace_item(state, Suggestion::Ready(ready))
+    let next = replace_item(state, Suggestion::Ready(ready));
+    match notice {
+        Some(kind) => with_notice(next, kind),
+        None => next,
+    }
+}
+
+type RebasedAnswer = (SuggestionBase, String, Option<NoticeKind>);
+
+/// The answer over the text as it is now, when the writer edited it while the model worked.
+fn rebased_answer(
+    pending: &PendingSuggestion,
+    answer: String,
+) -> Result<RebasedAnswer, NoticeKind> {
+    let current = pending.current();
+    if current == pending.original {
+        return Ok((pending.base.clone(), answer, None));
+    }
+    let rebased = rebase_replacement(&pending.original, &pending.edits, &answer);
+    match (rebased.kept, rebased.dropped) {
+        (0, 0) => Err(NoticeKind::NoChange),
+        (0, _) => Err(NoticeKind::TextChanged),
+        (_, dropped) => Ok((
+            SuggestionBase {
+                original: rebased.original,
+                ..pending.base.clone()
+            },
+            rebased.replacement,
+            (dropped > 0).then_some(NoticeKind::PartlyKept),
+        )),
+    }
 }
 
 fn showing_step(
@@ -272,10 +310,13 @@ pub fn instruction_history(suggestion: &ReadySuggestion) -> Vec<String> {
 
 pub fn fail_suggestion(state: &SuggestionsState, id: &str, error: ClientError) -> SuggestionsState {
     match find_suggestion(state, id) {
-        Some(Suggestion::Pending(base)) => replace_item(
+        Some(Suggestion::Pending(pending)) => replace_item(
             state,
             Suggestion::Failed(FailedSuggestion {
-                base: base.clone(),
+                base: SuggestionBase {
+                    original: pending.current(),
+                    ..pending.base.clone()
+                },
                 error,
             }),
         ),
@@ -285,9 +326,10 @@ pub fn fail_suggestion(state: &SuggestionsState, id: &str, error: ClientError) -
 
 pub fn retry_suggestion(state: &SuggestionsState, id: &str) -> SuggestionsState {
     match find_suggestion(state, id) {
-        Some(Suggestion::Failed(failed)) => {
-            replace_item(state, Suggestion::Pending(failed.base.clone()))
-        }
+        Some(Suggestion::Failed(failed)) => replace_item(
+            state,
+            Suggestion::Pending(PendingSuggestion::new(failed.base.clone())),
+        ),
         _ => state.clone(),
     }
 }
@@ -394,11 +436,20 @@ pub fn map_suggestions(
     if changes.is_empty() || state.items.is_empty() {
         return state.clone();
     }
+    let ends: Vec<usize> = state
+        .items
+        .iter()
+        .filter(|item| item.is_pending())
+        .map(|item| item.to)
+        .collect();
     let survivors: Vec<Suggestion> = state
         .items
         .iter()
-        .filter(|item| !touches_interior(item, changes))
-        .map(|item| remap(item, changes))
+        .filter_map(|item| match item {
+            Suggestion::Pending(pending) => follow_edits(pending, changes, &ends),
+            _ if touches_interior(item, changes) => None,
+            _ => Some(remap(item, changes)),
+        })
         .filter(|item| {
             !touches_frontmatter(
                 frontmatter,
@@ -421,6 +472,48 @@ pub fn map_suggestions(
     }
 }
 
+/// A request keeps running while the writer edits its text, typing at its edges included; only
+/// deleting all of it ends it.
+/// `ends` are where the pending requests end: text typed where one ends and another starts
+/// joins the one that ends there.
+fn follow_edits(
+    pending: &PendingSuggestion,
+    changes: &ChangeDesc,
+    ends: &[usize],
+) -> Option<Suggestion> {
+    let joins_start = inserts_at(changes, pending.from) && !ends.contains(&pending.from);
+    let edits = pending.edits.compose(&edits_inside(
+        pending.from,
+        pending.to,
+        changes,
+        joins_start,
+    ));
+    let from = changes.map_pos(
+        pending.from,
+        if joins_start {
+            Assoc::Before
+        } else {
+            Assoc::After
+        },
+    );
+    let to_assoc = if inserts_at(changes, pending.to) {
+        Assoc::After
+    } else {
+        Assoc::Before
+    };
+    let to = changes.map_pos(pending.to, to_assoc).max(from);
+    (to > from || pending.from == pending.to).then(|| {
+        Suggestion::Pending(PendingSuggestion {
+            base: SuggestionBase {
+                from,
+                to,
+                ..pending.base.clone()
+            },
+            edits,
+        })
+    })
+}
+
 fn remap(item: &Suggestion, changes: &ChangeDesc) -> Suggestion {
     let from = changes.map_pos(item.from, Assoc::After);
     let to = changes.map_pos(item.to, Assoc::Before);
@@ -430,7 +523,10 @@ fn remap(item: &Suggestion, changes: &ChangeDesc) -> Suggestion {
         ..base.clone()
     };
     match item {
-        Suggestion::Pending(base) => Suggestion::Pending(moved(base)),
+        Suggestion::Pending(pending) => Suggestion::Pending(PendingSuggestion {
+            base: moved(&pending.base),
+            edits: pending.edits.clone(),
+        }),
         Suggestion::Ready(ready) => Suggestion::Ready(ReadySuggestion {
             base: moved(&ready.base),
             ..ready.clone()
@@ -661,16 +757,18 @@ mod tests {
             }]);
             assert_eq!(
                 state.items,
-                vec![Suggestion::Pending(SuggestionBase {
-                    id: "a".into(),
-                    from: 5,
-                    to: 15,
-                    source: TargetSource::Block,
-                    original: "ten chars!".into(),
-                    instruction: shorter(),
-                    sequence: 0,
-                    origin: SuggestionOrigin::Ask,
-                })]
+                vec![Suggestion::Pending(PendingSuggestion::new(
+                    SuggestionBase {
+                        id: "a".into(),
+                        from: 5,
+                        to: 15,
+                        source: TargetSource::Block,
+                        original: "ten chars!".into(),
+                        instruction: shorter(),
+                        sequence: 0,
+                        origin: SuggestionOrigin::Ask,
+                    }
+                ))]
             );
             assert_eq!(state.notice, None);
         }
@@ -1154,13 +1252,153 @@ mod tests {
             assert_eq!(next.notice, None);
         }
 
+        fn two_paragraphs(id: &str) -> SuggestionsState {
+            begun(vec![SuggestionDraft {
+                original: "First one.\n\nSecond one.\n".into(),
+                ..draft(id, 20, 44)
+            }])
+        }
+
         #[test]
-        fn discards_a_pending_suggestion_when_its_target_is_edited() {
-            let state = begun(vec![draft("a", 20, 40)]);
-            let next = map_suggestions(&state, &change(30, 31, "q"), None);
+        fn keeps_a_pending_suggestion_running_while_its_text_is_edited() {
+            let next = map_suggestions(&two_paragraphs("a"), &change(26, 29, "two!"), None);
+            assert_eq!(spans(&next), [(20, 45)]);
+            assert_eq!(next.notice, None);
+            assert_eq!(in_flight_suggestion_ids(&next), ["a"]);
+            let Some(Suggestion::Pending(pending)) = find_suggestion(&next, "a") else {
+                panic!("a is not pending");
+            };
+            assert_eq!(pending.original, "First one.\n\nSecond one.\n");
+            assert_eq!(pending.current(), "First two!.\n\nSecond one.\n");
+        }
+
+        #[test]
+        fn discards_a_pending_suggestion_when_all_its_text_is_deleted() {
+            let next = map_suggestions(&two_paragraphs("a"), &change(15, 50, ""), None);
             assert_eq!(next.items, vec![]);
             assert_eq!(notice_kind(&next), Some(NoticeKind::TextChanged));
-            assert!(in_flight_suggestion_ids(&next).is_empty());
+        }
+
+        #[test]
+        fn lays_the_answer_over_the_edits_and_leaves_out_the_edited_lines() {
+            let edited = map_suggestions(&two_paragraphs("a"), &change(26, 29, "two"), None);
+            let next = resolve_suggestion(
+                &edited,
+                "a",
+                &result("First, shorter.\n\nSecond, shorter.\n"),
+            );
+            let found = ready_of(&next, "a");
+            assert_eq!(found.original, "First two.\n\nSecond one.\n");
+            assert_eq!(found.replacement, "First two.\n\nSecond, shorter.\n");
+            assert_eq!((found.from, found.to), (20, 44));
+            assert_eq!(notice_kind(&next), Some(NoticeKind::PartlyKept));
+        }
+
+        #[test]
+        fn keeps_the_whole_answer_without_a_notice_when_the_edits_miss_its_lines() {
+            let edited = map_suggestions(&two_paragraphs("a"), &change(26, 29, "two"), None);
+            let next = resolve_suggestion(&edited, "a", &result("First one.\n\nSecond!\n"));
+            assert_eq!(ready_of(&next, "a").replacement, "First two.\n\nSecond!\n");
+            assert_eq!(next.notice, None);
+        }
+
+        #[test]
+        fn discards_the_answer_when_every_change_was_on_an_edited_line() {
+            let edited = map_suggestions(&two_paragraphs("a"), &change(26, 29, "two"), None);
+            let next = resolve_suggestion(&edited, "a", &result("First!\n\nSecond one.\n"));
+            assert_eq!(next.items, vec![]);
+            assert_eq!(notice_kind(&next), Some(NoticeKind::TextChanged));
+        }
+
+        fn pending_of<'a>(state: &'a SuggestionsState, id: &str) -> &'a PendingSuggestion {
+            match must_find(state, id) {
+                Suggestion::Pending(pending) => pending,
+                _ => panic!("{id} is not pending"),
+            }
+        }
+
+        #[test]
+        fn follows_several_edits_in_turn_and_across_its_edges() {
+            let mut doc = format!(
+                "{}First one.\n\nSecond one.\n{}",
+                "a".repeat(20),
+                "z".repeat(56)
+            );
+            let mut state = two_paragraphs("a");
+            for (from, to, insert) in [
+                (26, 29, "two"),
+                (32, 32, " ✨ more"),
+                (15, 23, "WX"),
+                (40, 50, "é"),
+            ] {
+                let changes = ChangeSet::of(&[TextChange::new(from, to, insert)], doc.len());
+                doc = changes.apply(&doc);
+                state = map_suggestions(&state, &changes, None);
+                let pending = pending_of(&state, "a");
+                assert_eq!(doc[pending.from..pending.to], pending.current());
+                assert_eq!(pending.edits.length(), pending.original.len());
+            }
+            assert_eq!(
+                pending_of(&state, "a").original,
+                "First one.\n\nSecond one.\n"
+            );
+        }
+
+        #[test]
+        fn counts_typing_on_at_the_end_of_its_text_as_an_edit_to_its_last_line() {
+            let state = begun(vec![SuggestionDraft {
+                original: "The cat sat".into(),
+                ..draft("a", 10, 21)
+            }]);
+            let typed = map_suggestions(&state, &change(21, 21, "isfied."), None);
+            assert_eq!(spans(&typed), [(10, 28)]);
+            assert_eq!(pending_of(&typed, "a").current(), "The cat satisfied.");
+            let next = resolve_suggestion(&typed, "a", &result("The feline rested"));
+            assert_eq!(next.items, vec![]);
+            assert_eq!(notice_kind(&next), Some(NoticeKind::TextChanged));
+        }
+
+        #[test]
+        fn gives_text_typed_between_two_requests_to_the_one_that_ends_there() {
+            let state = begun(vec![
+                SuggestionDraft {
+                    original: "l1\nl2\n".into(),
+                    ..draft("a", 0, 6)
+                },
+                SuggestionDraft {
+                    original: "l3\nl4\n".into(),
+                    ..draft("b", 6, 12)
+                },
+            ]);
+            let typed = map_suggestions(&state, &change(6, 6, "X"), None);
+            assert_eq!(spans(&typed), [(0, 7), (7, 13)]);
+            assert_eq!(pending_of(&typed, "a").current(), "l1\nl2\nX");
+            assert_eq!(pending_of(&typed, "b").current(), "l3\nl4\n");
+        }
+
+        #[test]
+        fn says_no_change_when_the_answer_matches_the_text_the_model_saw() {
+            let edited = map_suggestions(&two_paragraphs("a"), &change(26, 29, "two"), None);
+            let next = resolve_suggestion(&edited, "a", &result("First one.\n\nSecond one.\n"));
+            assert_eq!(next.items, vec![]);
+            assert_eq!(notice_kind(&next), Some(NoticeKind::NoChange));
+        }
+
+        #[test]
+        fn a_failed_request_keeps_the_text_as_edited_for_a_retry() {
+            let edited = map_suggestions(&two_paragraphs("a"), &change(26, 29, "two"), None);
+            let failed = fail_suggestion(&edited, "a", network());
+            assert_eq!(
+                must_find(&failed, "a").original,
+                "First two.\n\nSecond one.\n"
+            );
+            let retried = retry_suggestion(&failed, "a");
+            let again = resolve_suggestion(&retried, "a", &result("First two!\n\nSecond one.\n"));
+            assert_eq!(again.notice, None);
+            assert_eq!(
+                ready_of(&again, "a").replacement,
+                "First two!\n\nSecond one.\n"
+            );
         }
 
         #[test]

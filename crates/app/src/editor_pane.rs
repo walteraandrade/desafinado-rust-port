@@ -266,6 +266,8 @@ pub struct EditorPane {
     bounds: Rc<Cell<Bounds<Pixels>>>,
     heights: Rc<RefCell<HashMap<String, Pixels>>>,
     card_rects: CardRects,
+    /// The Suggestions whose Card the last frame drew.
+    pub(crate) drawn_cards: RefCell<Vec<String>>,
     hovered: Option<String>,
     pub review: Option<ReviewRun>,
     pub(crate) pending: Option<crate::comment_review::PendingReview>,
@@ -276,6 +278,7 @@ pub struct EditorPane {
     pub(crate) note_rewrites: Vec<(String, usize)>,
     reveal_pending: bool,
     pub(crate) text_map: crate::text_map_view::TextMapState,
+    pub(crate) jobs: crate::jobs_tray::JobsState,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -383,6 +386,7 @@ impl EditorPane {
             bounds: Rc::new(Cell::new(Bounds::default())),
             heights: Rc::new(RefCell::new(HashMap::new())),
             card_rects: Rc::new(RefCell::new(Vec::new())),
+            drawn_cards: RefCell::new(Vec::new()),
             hovered: None,
             review: None,
             pending: None,
@@ -392,6 +396,7 @@ impl EditorPane {
             note_rewrites: Vec::new(),
             reveal_pending: false,
             text_map: crate::text_map_view::TextMapState::default(),
+            jobs: crate::jobs_tray::JobsState::default(),
             _subscriptions: vec![edits, moves, typing, bubble_focused, bubble_blurred],
         }
     }
@@ -474,7 +479,7 @@ impl EditorPane {
         self.editor.read(cx).value().to_string()
     }
 
-    fn set_suggestions(&mut self, next: SuggestionsState, cx: &mut Context<Self>) {
+    pub(crate) fn set_suggestions(&mut self, next: SuggestionsState, cx: &mut Context<Self>) {
         let notice = next.notice.filter(|notice| {
             self.suggestions.notice.map(|before| before.serial) != Some(notice.serial)
         });
@@ -512,6 +517,7 @@ impl EditorPane {
         self.notes = None;
         self.note_rewrites.clear();
         self.tasks.clear();
+        self.jobs.clear();
         self.suggestions = empty_suggestions();
         self.bubble = BubbleState::default();
         self.refine = None;
@@ -614,6 +620,7 @@ impl EditorPane {
             .map(|item| item.id.clone())
             .collect();
         self.tasks.retain(|id, _| live.contains(id));
+        self.jobs.keep_started(&live);
     }
 
     fn cursor(&self, cx: &App) -> usize {
@@ -722,7 +729,7 @@ impl EditorPane {
             .suggestions
             .items
             .iter()
-            .filter(|item| item.to > item.from)
+            .filter(|item| item.to > item.from && !item.is_pending())
             .map(|item| {
                 let active = Some(&item.id) == active_id.as_ref();
                 let decoration = RangeDecoration::new(item.from..item.to);
@@ -1101,7 +1108,10 @@ impl EditorPane {
             })
             .log_warn();
         });
+        let text = self.text(cx);
+        self.jobs.started(&id, &self.suggestions, &text);
         self.tasks.insert(id, task);
+        self.keep_tray_ticking(cx);
         self.refresh_decorations(cx);
         cx.notify();
     }
@@ -1122,6 +1132,9 @@ impl EditorPane {
             (Err(error), false) => fail_suggestion(&self.suggestions, id, error),
             (Err(error), true) => fail_refine(&self.suggestions, id, error),
         };
+        if !refine && find_suggestion(&next, id).is_some_and(Suggestion::is_ready) {
+            self.jobs.answered(id, &self.suggestions, &next);
+        }
         self.set_suggestions(next, cx);
         cx.emit(PaneEvent::Changed);
     }
@@ -1970,6 +1983,7 @@ impl EditorPane {
         }
         let (bounds, height) = self.place_card(item, floor, cx)?;
         self.card_rects.borrow_mut().push((bounds, kind));
+        self.drawn_cards.borrow_mut().push(item.id.clone());
         let origin = self.origin();
         let frame = self
             .card_frame(&item.id, bounds.size.width, roles, cx)
@@ -2929,6 +2943,7 @@ impl EditorPane {
         .map(|(id, kind)| (id.to_string(), kind))
         .collect();
         self.card_rects.borrow_mut().clear();
+        self.drawn_cards.borrow_mut().clear();
         let mut cards: Vec<AnyElement> = Vec::new();
         let mut floor = px(0.);
         let is_hover = |item: &&Suggestion| shown.get(&item.id) == Some(&CardKind::Hover);
@@ -3012,6 +3027,7 @@ impl Render for EditorPane {
         let note_card = self.render_note_card(roles, cx);
         let panel = self.render_notes_panel(roles, cx);
         let map = self.render_map_and_chips(roles, cx);
+        let tray = self.render_jobs_tray(roles, cx);
         let text = div()
             .id("editor-pane")
             .key_context("EditorPane")
@@ -3069,6 +3085,7 @@ impl Render for EditorPane {
             .children(map)
             .children(marks)
             .children(note_card)
+            .children(tray)
             .children(cards)
             .children(bubble);
         div()

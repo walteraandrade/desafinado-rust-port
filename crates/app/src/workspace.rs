@@ -3540,7 +3540,6 @@ impl Workspace {
             .file_label(cx)
             .map_or_else(|| self.file_name(), SharedString::from);
         let dirty = self.session.as_ref().is_some_and(|session| session.dirty);
-        let review = self.pane.read(cx).busy();
         let mode = self.pane.read(cx).mode_chip();
         let open = self.pane.read(cx).open_review_count();
         h_flex_row()
@@ -3623,35 +3622,6 @@ impl Workspace {
                         .child(div().text_color(roles.ai).child(label)),
                 )
             })
-            .when_some(review, |this, added| {
-                this.child(self.render_reviewing(added, roles, cx))
-            })
-    }
-
-    fn render_reviewing(
-        &self,
-        added: usize,
-        roles: Roles,
-        cx: &mut Context<Self>,
-    ) -> Stateful<Div> {
-        ui::chip("header-reviewing", roles)
-            .tooltip(|window, cx| {
-                gpui_kit::component::tooltip::Tooltip::new("Stop the Review pass").build(window, cx)
-            })
-            .on_click(cx.listener(|this, _, window, cx| this.stop_review(&StopReview, window, cx)))
-            .child(div().size(px(8.)).bg(roles.ai))
-            .child("Reviewing…")
-            .when(added > 0, |this| {
-                this.child(div().text_color(roles.ai).child(format!(
-                    "{added} {}",
-                    if added == 1 {
-                        "suggestion"
-                    } else {
-                        "suggestions"
-                    }
-                )))
-            })
-            .child(div().ml(px(4.)).weight_strong().child("Stop"))
     }
 
     fn with_overlays(
