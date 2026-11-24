@@ -3297,7 +3297,7 @@ mod tests {
 
     #[test]
     fn space_types_in_the_refine_field() {
-        assert_eq!(bound("space", REFINE_FIELD), Vec::<&str>::new());
+        assert!(bound("space", REFINE_FIELD).is_empty());
     }
 
     #[test]
