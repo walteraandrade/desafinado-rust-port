@@ -63,6 +63,12 @@ pub fn bubble_visible(state: BubbleState, view: BubbleView) -> bool {
             && state.dismissed != Some(view.selection))
 }
 
+/// The selection to keep painted while focus is in the bubble's field,
+/// where the editor no longer draws its own selection.
+pub fn held_selection(typing_in_bubble: bool, selection: BubbleRange) -> Option<BubbleRange> {
+    (typing_in_bubble && !selection.is_empty()).then_some(selection)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -161,5 +167,20 @@ mod tests {
             },
         );
         assert!(bubble_visible(changed, view(other)));
+    }
+
+    #[test]
+    fn typing_in_the_bubble_holds_the_selection() {
+        assert_eq!(held_selection(true, WORDS), Some(WORDS));
+    }
+
+    #[test]
+    fn the_editor_paints_its_own_selection() {
+        assert_eq!(held_selection(false, WORDS), None);
+    }
+
+    #[test]
+    fn an_empty_selection_holds_nothing() {
+        assert_eq!(held_selection(true, EMPTY), None);
     }
 }
