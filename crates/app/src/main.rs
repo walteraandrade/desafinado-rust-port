@@ -21,6 +21,7 @@ mod single_instance;
 mod spend;
 mod spend_view;
 mod start_error;
+mod text_map_view;
 mod theme;
 mod ui;
 mod workspace;

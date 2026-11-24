@@ -45,6 +45,21 @@ pub fn step_suggestion(
     target.map(|item| anchor_of(state, item))
 }
 
+/// The first Suggestion that starts at `offset` or after it, without wrapping: where the caret
+/// goes once the Suggestion it stood in is accepted or rejected.
+pub fn next_from(state: &SuggestionsState, offset: usize) -> Option<usize> {
+    in_document_order(&state.items)
+        .into_iter()
+        .find(|item| item.from >= offset)
+        .map(|item| anchor_of(state, item))
+}
+
+/// Where the caret goes to stand in a Suggestion, so that its Card opens.
+pub fn suggestion_anchor(state: &SuggestionsState, id: &str) -> Option<usize> {
+    let target = state.items.iter().find(|item| item.id == id)?;
+    Some(anchor_of(state, target))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -69,6 +84,34 @@ mod tests {
             .fold(empty_suggestions(), |state, draft| {
                 begin_suggestion(&state, draft)
             })
+    }
+
+    #[test]
+    fn moves_on_to_a_suggestion_that_starts_where_the_last_one_ended_and_never_wraps() {
+        let after_accepting_a = [draft("b", 10, 20), draft("c", 40, 50)]
+            .into_iter()
+            .fold(empty_suggestions(), |state, draft| {
+                begin_suggestion(&state, draft)
+            });
+        assert_eq!(next_from(&after_accepting_a, 10), Some(10));
+        assert_eq!(
+            step_suggestion(&after_accepting_a, 10, Direction::Forward),
+            Some(40),
+            "stepping from the caret would skip b"
+        );
+        assert_eq!(next_from(&after_accepting_a, 21), Some(40));
+        assert_eq!(next_from(&after_accepting_a, 51), None);
+    }
+
+    #[test]
+    fn anchors_a_suggestion_where_the_caret_finds_it() {
+        let state = state();
+        assert_eq!(suggestion_anchor(&state, "b"), Some(20));
+        assert_eq!(
+            suggestion_at(&state, 20).map(|item| item.id.as_str()),
+            Some("b")
+        );
+        assert_eq!(suggestion_anchor(&state, "missing"), None);
     }
 
     #[test]

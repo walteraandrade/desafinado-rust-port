@@ -13,7 +13,7 @@ The AI proposes; your voice wins. Every change it suggests sits in your text as 
 **Write with the AI.**
 
 - Select text, or put the cursor in a paragraph, and press `Ctrl+K`. Pick a Quick action (Shorter, Clearer, Fix grammar, or one of your own) or type any instruction.
-- The answer shows in place: the old text struck through and the new text next to it, or in a block under the paragraph when most of it changes, with a one-line rationale on a card in the margin. Accept (`Ctrl+Enter`), Reject (`Esc`), or Refine it ("shorter", then "now more formal") and step between versions with `Ctrl+H` and `Ctrl+L`.
+- The answer shows in place: the old text struck through and the new text next to it, or in a block under the paragraph when most of it changes, with a one-line rationale on a card in the left margin. Accept (`Ctrl+Enter`), Reject (`Esc`), or Refine it ("shorter", then "now more formal") and step between versions with `Ctrl+H` and `Ctrl+L`.
 - Accept is a normal edit, so `Ctrl+Z` undoes it.
 - **Edit → Review…** reads the whole document as an editor who comments. Without a focus, or with one that asks for an opinion ("what about the tone?"), it leaves Notes and does not touch the text: General notes in a panel beside the text, and a numbered mark in the margin for each Note, the 15 most important first. Click a mark to read its Note; **Suggest rewrite** turns that one Note into a Suggestion. When the focus asks for changes ("fix the spelling"), it streams up to six suggestions instead, with Accept all and Reject all. Jev, a small decision model on OpenRouter, reads the focus and picks the mode; the chip in the header shows its choice, and clicking it runs the Review again in the other mode.
 
@@ -32,7 +32,7 @@ The app talks to [OpenRouter](https://openrouter.ai) directly. You bring your ow
 Every feature of the Electron build works here; [docs/PARITY.md](docs/PARITY.md) lists them one by one, with each place the native build behaves differently. The main differences come from GPUI:
 
 - In the editor, headings are bold but keep the body text size, and code uses the body font. The Reading view shows both as they should be.
-- Menus, the bubble, Cards, toasts and the Library fade and slide in, and the AI caret breathes, as in Electron (without its slight scale and blur). Beyond Electron, the Library and Preferences also slide out to their own sides, the bubble fades out and its Quick action rows enter one after another, the Quick actions list in Preferences glides on reorder and shrinks a deleted row, and the AI spend charts grow in. Scrollbars always show in the editor, the Reading view and the scrolling pages and panels (not yet in the Evals run dialog). Still missing: the caret glide, the shimmer, the word-by-word reveal, the rise of the Review toolbar and Refine row, hover transitions, the unfold of descriptions and lists, the exit motion of menus, Cards and toasts, and the theme crossfade. With reduced motion on in the desktop (the XDG portal setting GNOME and KDE back), surfaces appear at rest and the AI caret's dots hold still.
+- Menus, the bubble, Cards, toasts and the Library fade and slide in, and the AI caret breathes, as in Electron (without its slight scale and blur). Beyond Electron, the Library and Preferences also slide out to their own sides, the bubble fades out and its Quick action rows enter one after another, the Quick actions list in Preferences glides on reorder and shrinks a deleted row, and the AI spend charts grow in. Scrollbars always show in the editor (or the text map in its place), the Reading view and the scrolling pages and panels (not yet in the Evals run dialog). Still missing: the caret glide, the shimmer, the word-by-word reveal, the rise of the Review toolbar and Refine row, hover transitions, the unfold of descriptions and lists, the exit motion of menus, Cards and toasts, and the theme crossfade. With reduced motion on in the desktop (the XDG portal setting GNOME and KDE back), surfaces appear at rest and the AI caret's dots hold still.
 
 Linux only. There is no distribution package yet: you build and install it from this repository. The decision to build on GPUI is recorded in [ADR 0001](docs/adr/0001-native-app-on-rust-and-gpui.md).
 
@@ -104,10 +104,10 @@ If your machine reaches the internet through a proxy, such as oneCLI, start the 
 |---|---|
 | `Ctrl+N` `Ctrl+O` `Ctrl+S` `Ctrl+Shift+S` | New, Open, Save, Save as |
 | `Ctrl+K` | Ask the AI about the selection or the paragraph under the cursor |
-| `Ctrl+Enter` / `Esc` | Accept / Reject the suggestion at the cursor |
+| `Ctrl+Enter` / `Esc` | Accept / Reject the suggestion at the cursor, then go to the next one |
 | `Tab` | Move into the suggestion's card |
 | `Ctrl+H` / `Ctrl+L` | Previous / next version of a refined suggestion |
-| `Alt+[` / `Alt+]` | Previous / next suggestion |
+| `Alt+↑` / `Alt+↓` (or `Alt+[` / `Alt+]`) | Previous / next suggestion |
 | `Ctrl+Z` / `Ctrl+Shift+Z` | Undo / Redo |
 | `Ctrl+B` / `Ctrl+P` | Library / Library search |
 | `Ctrl+,` | Preferences |

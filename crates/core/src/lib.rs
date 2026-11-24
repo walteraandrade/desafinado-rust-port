@@ -8,3 +8,4 @@ pub mod log_err;
 pub mod sample;
 pub mod suggestions;
 pub mod text;
+pub mod text_map;
