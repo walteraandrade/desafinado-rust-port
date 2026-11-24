@@ -10,9 +10,10 @@ timer checks origin/main every 5 minutes; when it moved, a private clone builds
 it with ./install.sh and replaces ~/.cargo/bin/desafinado. Your checkout and any
 running window are left alone: reopen the app to use the new version. A desktop
 notification says when a version is installed or a build fails; a failed build
-keeps the old binary.
+keeps the old binary and is retried after an hour. A manual ./install.sh of a
+branch is replaced the next time main moves.
 
-  enable    clone main, install and start the timer
+  enable    clone main, start the timer and build main right away
   disable   stop and remove the timer (the clone stays in the state dir)
   status    show the timer, the installed commit and the last failure
   run       check once now (--force rebuilds even a commit that failed)
@@ -47,6 +48,16 @@ ensure_clone() {
   git clone --quiet "$remote" "$clone"
 }
 
+on_exit() {
+  local status=$?
+  if [ "$status" -eq 0 ]; then
+    rm -f "$state/error-notified"
+  elif [ -z "$(find "$state/error-notified" -mmin -1440 2>/dev/null)" ]; then
+    touch "$state/error-notified"
+    notify critical "Desafinado auto-install failed" "journalctl --user -u $unit.service"
+  fi
+}
+
 run_once() {
   local force="${1:-}"
   mkdir -p "$state"
@@ -55,6 +66,8 @@ run_once() {
     log "another run is in progress"
     return 0
   fi
+  trap on_exit EXIT
+  trap 'exit 143' TERM
   if [ -r "$env_file" ]; then
     # shellcheck source=/dev/null
     . "$env_file"
@@ -73,7 +86,8 @@ run_once() {
   if [ "$head" = "$installed" ]; then
     return 0
   fi
-  if [ "$head" = "$failed" ] && [ "$force" != --force ]; then
+  if [ "$head" = "$failed" ] && [ "$force" != --force ] &&
+    [ -n "$(find "$state/failed" -mmin -60)" ]; then
     return 0
   fi
 
@@ -95,7 +109,8 @@ run_once() {
   else
     echo "$head" >"$state/failed"
     tail -n 40 "$state/build.log"
-    notify critical "Desafinado build failed" "$short $subject. The old version stays. Log: $state/build.log"
+    notify critical "Desafinado install failed" "$short $subject. Retrying in an hour. Log: $state/build.log"
+    touch "$state/error-notified"
     return 1
   fi
 }
@@ -108,8 +123,8 @@ Description=Build and install Desafinado when origin/main moves
 
 [Service]
 Type=oneshot
-ExecStart=$state/auto-install.sh run
-Environment=PATH=$HOME/.cargo/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart="${state//%/%%}/auto-install.sh" run
+Environment="PATH=${HOME//%/%%}/.cargo/bin:/usr/local/bin:/usr/bin:/bin"
 Nice=10
 CPUWeight=20
 TimeoutStartSec=90min
@@ -144,6 +159,7 @@ enable() {
 
 disable() {
   systemctl --user disable --now "$unit.timer" 2>/dev/null || true
+  systemctl --user stop "$unit.service" 2>/dev/null || true
   rm -f "$units/$unit.timer" "$units/$unit.service"
   systemctl --user daemon-reload
   log "disabled; remove $state to free the clone and its build cache"
