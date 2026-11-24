@@ -1166,6 +1166,44 @@ mod tests {
     }
 
     #[test]
+    fn thin_keeps_accepted_and_restored_versions_among_old_edited_ones() {
+        let f = fixture();
+        let db = open(&f);
+        let base = NOW - 10 * DAY;
+        db.record(PATH, &edit("one", base)).unwrap();
+        db.record(PATH, &edit("one zero", base + 500)).unwrap();
+        db.record(
+            PATH,
+            &input(
+                "one two",
+                base + 1000,
+                VersionCause::Accepted {
+                    changes: Vec::new(),
+                },
+            ),
+        )
+        .unwrap();
+        db.record(
+            PATH,
+            &input("one", base + 2000, VersionCause::Restored { from: 1 }),
+        )
+        .unwrap();
+        db.record(PATH, &edit("one three", base + 3000)).unwrap();
+        db.record(PATH, &edit("one three four", NOW)).unwrap();
+        assert_eq!(db.thin(PATH, NOW).unwrap(), 1);
+        let kinds: Vec<&str> = db
+            .list(PATH)
+            .unwrap()
+            .iter()
+            .map(|v| v.cause.kind())
+            .collect();
+        assert_eq!(
+            kinds,
+            ["started", "accepted", "restored", "edited", "edited"]
+        );
+    }
+
+    #[test]
     fn thin_keeps_a_text_a_draft_still_builds_on() {
         let f = fixture();
         let db = open(&f);
