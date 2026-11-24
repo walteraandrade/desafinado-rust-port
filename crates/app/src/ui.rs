@@ -483,6 +483,66 @@ pub fn edge_chip(id: impl Into<ElementId>, roles: Roles) -> Stateful<Div> {
         .hover(move |this| this.bg(roles.ai).text_color(roles.canvas))
 }
 
+/// The requests tray: a raised list in the editor's corner, set apart by its fill.
+pub fn jobs_tray(id: impl Into<ElementId>, width: Pixels, roles: Roles) -> Stateful<Div> {
+    div()
+        .id(id)
+        .w(width)
+        .py(px(4.))
+        .flex()
+        .flex_col()
+        .bg(roles.overlay)
+        .text_color(roles.ink)
+        .type_body()
+}
+
+/// One request in the tray. A row that goes somewhere answers the pointer.
+pub fn job_row(id: impl Into<ElementId>, goes: bool, roles: Roles) -> Stateful<Div> {
+    div()
+        .id(id)
+        .px(px(12.))
+        .py(px(8.))
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap(px(8.))
+        .when(goes, |this| {
+            this.cursor_pointer()
+                .hover(move |this| this.bg(roles.fill_hover))
+        })
+}
+
+/// A request's state: a breathing AI mark while the model works, a success mark once it answers.
+pub fn job_mark(id: impl Into<ElementId>, working: bool, roles: Roles) -> AnyElement {
+    if working {
+        breathe(id, div().flex_none().size(px(8.)).bg(roles.ai)).into_any_element()
+    } else {
+        pip(Pip::Pass, roles).into_any_element()
+    }
+}
+
+/// What a request asked for, in the AI color, over where it is and how long it has run.
+pub fn job_text(
+    label: impl Into<SharedString>,
+    detail: impl Into<SharedString>,
+    roles: Roles,
+) -> Div {
+    let line = |text: SharedString| {
+        div()
+            .overflow_hidden()
+            .text_ellipsis()
+            .whitespace_nowrap()
+            .child(text)
+    };
+    div()
+        .flex_1()
+        .min_w_0()
+        .flex()
+        .flex_col()
+        .child(line(label.into()).text_color(roles.ai))
+        .child(line(detail.into()).type_small().text_color(roles.muted))
+}
+
 /// The key that does what a chip does, quieter than the chip's own words.
 pub fn chip_key(text: impl Into<SharedString>) -> Div {
     div().weight_regular().child(text.into())

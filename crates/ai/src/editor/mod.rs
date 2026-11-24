@@ -8,6 +8,7 @@ pub mod frontmatter_marks;
 pub mod geometry;
 pub mod inline_diff;
 pub mod interaction_state;
+pub mod jobs;
 pub mod keep_in_view;
 pub mod minimal_change;
 pub mod motion_field;

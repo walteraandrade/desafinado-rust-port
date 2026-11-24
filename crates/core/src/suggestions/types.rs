@@ -3,6 +3,7 @@ use std::ops::Deref;
 use serde::{Deserialize, Serialize};
 
 pub use crate::blocks::TargetSource;
+use crate::change_set::ChangeSet;
 use crate::diff::AdaptiveDiff;
 
 pub type SuggestionId = String;
@@ -145,9 +146,37 @@ pub struct FailedSuggestion {
     pub error: ClientError,
 }
 
+/// A request the model is still answering. `base.from..base.to` follows the text; `base.original`
+/// stays the text the model saw, and `edits` holds the writer's changes to it since.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PendingSuggestion {
+    pub base: SuggestionBase,
+    pub edits: ChangeSet,
+}
+
+impl PendingSuggestion {
+    pub fn new(base: SuggestionBase) -> Self {
+        let edits = ChangeSet::empty(base.original.len());
+        Self { base, edits }
+    }
+
+    /// The range's text now: the text the model saw with the writer's edits.
+    pub fn current(&self) -> String {
+        self.edits.apply(&self.base.original)
+    }
+}
+
+impl Deref for PendingSuggestion {
+    type Target = SuggestionBase;
+
+    fn deref(&self) -> &SuggestionBase {
+        &self.base
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum Suggestion {
-    Pending(SuggestionBase),
+    Pending(PendingSuggestion),
     Ready(ReadySuggestion),
     Failed(FailedSuggestion),
 }
@@ -173,7 +202,7 @@ impl Deref for Suggestion {
 
     fn deref(&self) -> &SuggestionBase {
         match self {
-            Self::Pending(base) => base,
+            Self::Pending(pending) => &pending.base,
             Self::Ready(ready) => &ready.base,
             Self::Failed(failed) => &failed.base,
         }
@@ -205,6 +234,7 @@ impl Suggestion {
 #[serde(rename_all = "kebab-case")]
 pub enum NoticeKind {
     TextChanged,
+    PartlyKept,
     Replaced,
     NoChange,
 }

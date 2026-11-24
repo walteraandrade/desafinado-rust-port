@@ -3,6 +3,7 @@ use super::types::NoticeKind;
 pub const fn notice_message(kind: NoticeKind) -> &'static str {
     match kind {
         NoticeKind::TextChanged => "Suggestion discarded: the text changed",
+        NoticeKind::PartlyKept => "Some changes left out: you edited those lines meanwhile",
         NoticeKind::Replaced => "Suggestion discarded: replaced by your new request",
         NoticeKind::NoChange => "No change suggested",
     }

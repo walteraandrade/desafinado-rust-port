@@ -9,6 +9,7 @@ mod evals_view;
 mod frontmatter_view;
 mod history_store;
 mod history_view;
+mod jobs_tray;
 mod key_dialog;
 mod last_file;
 mod library_panel;

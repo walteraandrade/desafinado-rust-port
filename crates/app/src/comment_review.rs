@@ -59,6 +59,7 @@ impl EditorPane {
         }
         let focus = focus.trim().to_string();
         self.mode = None;
+        self.jobs.review_started = Some(std::time::Instant::now());
         if let Some(choice) = mode_without_decision(&focus) {
             self.run_mode(choice, focus, cx);
             return;
@@ -188,6 +189,7 @@ impl EditorPane {
         let focus = focus.trim().to_string();
         match self.mode.clone() {
             Some(state) if state.focus == focus && self.busy().is_none() => {
+                self.jobs.review_started = Some(std::time::Instant::now());
                 self.run_mode(state.choice, focus, cx);
             }
             _ => self.start_review(focus, cx),
@@ -235,6 +237,7 @@ impl EditorPane {
         };
         self.stop_review_quietly(cx);
         self.pending = None;
+        self.jobs.review_started = Some(std::time::Instant::now());
         self.run_mode(
             ModeChoice::by_writer(state.choice.mode.other()),
             state.focus,

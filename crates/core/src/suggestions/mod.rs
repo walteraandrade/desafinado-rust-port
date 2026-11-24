@@ -1,5 +1,6 @@
 mod changes;
 mod error_message;
+mod in_flight;
 mod instruction;
 mod moments;
 mod navigation;
@@ -13,6 +14,7 @@ pub use changes::{
     ChangeRange, change_label, change_ranges, first_change_at, shows_changes, step_change,
 };
 pub use error_message::describe_error;
+pub use in_flight::{Rebased, edits_inside, rebase_replacement};
 pub use instruction::{
     QuickAction, free_text_instruction, instruction_label, quick_action_instruction,
     refine_task_label, task_label,
@@ -36,8 +38,8 @@ pub use state::{
     retry_suggestion, show_version, suggestion_at,
 };
 pub use types::{
-    ClientError, Direction, FailedSuggestion, Instruction, NoticeKind, ReadySuggestion,
-    RefineState, RefineStep, Suggestion, SuggestionBase, SuggestionDraft, SuggestionId,
-    SuggestionNotice, SuggestionOrigin, SuggestionResult, SuggestionsState, TargetSource,
-    ValidatedEdit,
+    ClientError, Direction, FailedSuggestion, Instruction, NoticeKind, PendingSuggestion,
+    ReadySuggestion, RefineState, RefineStep, Suggestion, SuggestionBase, SuggestionDraft,
+    SuggestionId, SuggestionNotice, SuggestionOrigin, SuggestionResult, SuggestionsState,
+    TargetSource, ValidatedEdit,
 };
