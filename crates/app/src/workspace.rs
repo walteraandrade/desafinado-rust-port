@@ -76,7 +76,9 @@ use crate::{
     theme::{self, Roles},
     ui::{self, ButtonKind, ToastTone, Type as _},
 };
-use desafinado_ai::editor::place::{SavedPlace, place_from_json, place_to_json, restore_place};
+use desafinado_ai::editor::place::{
+    PlaceWrites, SavedPlace, place_from_json, place_to_json, restore_place,
+};
 use desafinado_ai::quick_action_settings::{
     QuickActionSettings, default_quick_action_settings, enabled_quick_actions,
     parse_quick_action_settings, serialize_quick_action_settings,
@@ -93,8 +95,37 @@ struct SettingsSaves {
     spelling: Option<Task<()>>,
 }
 
+#[derive(Default)]
+struct KeptPlaces {
+    /// Places taken in this run, by History key, so a file opened again finds its place
+    /// before the background write of it lands.
+    taken: HashMap<String, SavedPlace>,
+    written: PlaceWrites,
+    writer: Option<Task<()>>,
+    /// Clearing the stored place once used; the next interval write waits for it, so the
+    /// clear cannot land after the write and wipe it.
+    clearing: Option<Task<()>>,
+}
+
+/// Writes a place off the UI thread, after `after` when it is given.
+fn save_place_in_background(
+    db: Arc<HistoryDb>,
+    (key, json): (String, String),
+    after: Option<Task<()>>,
+    cx: &mut Context<Workspace>,
+) -> Task<()> {
+    cx.background_spawn(async move {
+        if let Some(after) = after {
+            after.await;
+        }
+        db.save_place(&key, &json, now_ms()).log_err();
+    })
+}
+
 const HISTORY_IDLE_MS: i64 = 30_000;
 const UNSAVED_DELAY: Duration = Duration::from_millis(400);
+/// How often the open Document's place is written, so a crash does not lose it.
+const PLACE_INTERVAL: Duration = Duration::from_secs(3);
 const TOAST_DURATION: Duration = Duration::from_millis(4500);
 const ACTION_TOAST_DURATION: Duration = Duration::from_secs(12);
 const FLASH_DURATION: Duration = Duration::from_millis(1200);
@@ -411,9 +442,7 @@ pub struct Workspace {
     history_tick: Option<Task<()>>,
     unsaved: HashMap<String, Unsaved>,
     unsaved_task: Option<Task<()>>,
-    /// Places taken in this run, by History key, so a file opened again finds its place
-    /// before the background write of it lands.
-    places: HashMap<String, SavedPlace>,
+    places: KeptPlaces,
     remembered: Option<PathBuf>,
     watcher: Option<ExternalChangesController>,
     watched: Option<Watching>,
@@ -512,7 +541,7 @@ impl Workspace {
             history_tick: None,
             unsaved: HashMap::new(),
             unsaved_task: None,
-            places: HashMap::new(),
+            places: KeptPlaces::default(),
             remembered,
             watcher: None,
             watched: None,
@@ -578,6 +607,7 @@ impl Workspace {
             self.focus_text(window, cx);
         }
         let dropped = returned.unwrap_or(0);
+        self.start_place_keeper(cx);
         self.start_watcher(window, cx);
         self.sync_library(cx);
         self.listen_for_launches(launches, window, cx);
@@ -949,7 +979,7 @@ impl Workspace {
     fn remember_place(&mut self, cx: &App) -> String {
         let key = history_key(self.session_path());
         let place = self.pane.read(cx).place(cx);
-        self.places.insert(key.clone(), place);
+        self.places.taken.insert(key.clone(), place);
         key
     }
 
@@ -959,6 +989,7 @@ impl Workspace {
         let key = self.remember_place(cx);
         let json = self
             .places
+            .taken
             .get(&key)
             .and_then(|place| place_to_json(place).log_err());
         Some((self.db.clone()?, key, json?))
@@ -967,26 +998,57 @@ impl Workspace {
     /// Keeps where the writer is in the open Document, to come back to it later.
     fn keep_place(&mut self, cx: &mut Context<Self>) -> Task<()> {
         match self.take_place(cx) {
-            Some((db, key, json)) => cx.background_spawn(async move {
-                db.save_place(&key, &json, now_ms()).log_err();
-            }),
+            Some((db, key, json)) => save_place_in_background(db, (key, json), None, cx),
             None => Task::ready(()),
         }
+    }
+
+    /// Writes the open Document's place every few seconds while it moves, so a crash
+    /// keeps the caret, the scroll and the open Suggestions as the last write left them.
+    fn start_place_keeper(&mut self, cx: &mut Context<Self>) {
+        self.places.writer = Some(cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor().timer(PLACE_INTERVAL).await;
+                if this.update(cx, Workspace::write_moved_place).is_err() {
+                    break;
+                }
+            }
+        }));
+    }
+
+    fn write_moved_place(&mut self, cx: &mut Context<Self>) {
+        let Some(db) = self.db.clone() else {
+            return;
+        };
+        let key = history_key(self.session_path());
+        let Some(json) = place_to_json(&self.pane.read(cx).place(cx)).log_err() else {
+            return;
+        };
+        if !self.places.written.moved(&key, &json) {
+            return;
+        }
+        let clearing = self.places.clearing.take();
+        save_place_in_background(db, (key, json), clearing, cx).detach();
     }
 
     /// Returns to the place kept for the open Document, if there is one, and says how many
     /// of its Suggestions no longer fit the text.
     fn return_to_place(&mut self, cx: &mut Context<Self>) -> Option<usize> {
         let key = history_key(self.session_path());
-        let saved = self.places.remove(&key).or_else(|| {
+        self.places.written.forget();
+        let saved = self.places.taken.remove(&key).or_else(|| {
             let json = self.db.as_deref()?.load_place(&key).log_err().flatten()?;
             place_from_json(&json).log_warn()
         });
         let text = self.text(cx);
         if let Some(db) = self.db.clone() {
             let forget = key.clone();
-            cx.background_spawn(async move { db.clear_place(&forget).log_err() })
-                .detach();
+            let clearing = cx.background_spawn(async move {
+                db.clear_place(&forget).log_err();
+            });
+            if let Some(earlier) = self.places.clearing.replace(clearing) {
+                earlier.detach();
+            }
         }
         let restored = restore_place(&saved?, &text)?;
         let dropped = restored.dropped;

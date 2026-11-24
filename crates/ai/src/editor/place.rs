@@ -249,6 +249,60 @@ pub fn place_from_json(json: &str) -> Result<SavedPlace, serde_json::Error> {
     serde_json::from_str(json)
 }
 
+/// The last place written for a Document, so a place that did not move is not written again.
+#[derive(Default)]
+pub struct PlaceWrites {
+    last: Option<(String, String)>,
+}
+
+impl PlaceWrites {
+    /// Whether this place, by History key and JSON, differs from the last one written;
+    /// remembers it when it does.
+    pub fn moved(&mut self, key: &str, json: &str) -> bool {
+        let same = self
+            .last
+            .as_ref()
+            .is_some_and(|(last_key, last_json)| last_key == key && last_json == json);
+        if !same {
+            self.last = Some((key.to_string(), json.to_string()));
+        }
+        !same
+    }
+
+    /// Forgets the last write, for when the stored place was cleared under it.
+    pub fn forget(&mut self) {
+        self.last = None;
+    }
+}
+
+#[cfg(test)]
+mod place_writes_tests {
+    use super::PlaceWrites;
+
+    #[test]
+    fn writes_a_place_only_when_it_moved() {
+        let mut writes = PlaceWrites::default();
+        assert!(writes.moved("a.md", "{caret 3}"));
+        assert!(!writes.moved("a.md", "{caret 3}"));
+        assert!(writes.moved("a.md", "{caret 9}"));
+    }
+
+    #[test]
+    fn writes_the_same_place_for_another_file() {
+        let mut writes = PlaceWrites::default();
+        assert!(writes.moved("a.md", "{caret 3}"));
+        assert!(writes.moved("b.md", "{caret 3}"));
+    }
+
+    #[test]
+    fn writes_again_after_forgetting() {
+        let mut writes = PlaceWrites::default();
+        assert!(writes.moved("a.md", "{caret 3}"));
+        writes.forget();
+        assert!(writes.moved("a.md", "{caret 3}"));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use desafinado_core::suggestions::{
