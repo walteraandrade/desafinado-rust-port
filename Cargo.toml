@@ -20,8 +20,6 @@ log = "0.4"
 rustix = { version = "1.1.6", features = ["fs", "process"] }
 gpui-kit = { version = "=0.9.1", features = ["tree-sitter-markdown"] }
 
-# Smaller, faster installed binary: thin LTO across crates, one codegen unit and
-# no symbols. A panic message still names its file and line.
 # The spell checker's dictionaries are slow to load unoptimized, which makes tests crawl.
 [profile.dev.package.spellbook]
 opt-level = 3
@@ -35,10 +33,12 @@ opt-level = 3
 [profile.dev.package.miniz_oxide]
 opt-level = 3
 
+# Smaller, faster installed binary: thin LTO across crates and one codegen unit.
+# Debug info is stripped but function names stay, so a crash.log backtrace says
+# where a panic happened.
 [profile.release]
 lto = "thin"
 codegen-units = 1
-# Keep function names so a crash.log backtrace says where a panic happened.
 strip = "debuginfo"
 
 [workspace.lints.rust]
