@@ -1,6 +1,9 @@
-"""Writes the synthetic Markdown documents the performance scenarios open."""
+"""Writes the synthetic Markdown documents the performance scenarios open, in $PERF_DIR/docs."""
 import os, random, sys
-out = sys.argv[1] if len(sys.argv) > 1 else "docs"
+root = os.path.realpath(os.environ.get("PERF_DIR", os.path.expanduser("~/.cache/desafinado-perf")))
+out = os.path.realpath(os.path.join(root, "docs"))
+if not out.startswith(root + os.sep):
+    sys.exit(f"{out} is not under {root}")
 os.makedirs(out, exist_ok=True)
 random.seed(7)
 en = "the writer opens a draft and reads each paragraph slowly while the editor keeps every change as a tracked suggestion that waits for review before it becomes part of the text".split()

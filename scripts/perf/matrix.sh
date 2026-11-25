@@ -5,7 +5,7 @@ here=$(cd "$(dirname "$0")" && pwd)
 work=${PERF_DIR:-$HOME/.cache/desafinado-perf}
 p=${PREFIX:-run}
 mkdir -p "$work/docs" "$work/ud-nospell"
-[ -e "$work/docs/huge.md" ] || python3 "$here/gen_docs.py" "$work/docs"
+[ -e "$work/docs/huge.md" ] || PERF_DIR=$work python3 "$here/gen_docs.py"
 echo '{"enabled": false}' > "$work/ud-nospell/spelling.json"
 r() { "$here/run.sh" "$p/$1" "$work/docs/$2.md" "$here/scenarios/$3.txt" ${BIN:+"$BIN"} 2>&1 | grep -E 'done|failed'; }
 for s in small medium large huge; do r "startup-$s" "$s" startup; done
@@ -27,5 +27,5 @@ r review_notes-medium medium review_notes
 r replace_all-large large replace_all
 r save-large large save
 r resize-large large resize
-python3 "$here/analyze.py" "$work/runs/$p"/* > "$work/summary-$p.txt"
+(cd "$work/runs" && PERF_DIR=$work python3 "$here/analyze.py" "$p"/*) > "$work/summary-$p.txt"
 echo "summary in $work/summary-$p.txt"

@@ -1,4 +1,4 @@
-"""Summarizes performance runs: python3 analyze.py RUN_DIR [RUN_DIR ...]"""
+"""Summarizes performance runs: python3 analyze.py RUN [RUN ...], each a folder under $PERF_DIR/runs."""
 import json, sys, collections, os
 def pct(xs, p):
     if not xs: return 0
@@ -72,7 +72,13 @@ def summarize(d):
       'thread_cpu_ms': dict(sorted(threads(d).items(), key=lambda x:-x[1])[:6]),
     }
     return r
-for d in sys.argv[1:]:
+ROOT = os.path.realpath(os.environ.get('PERF_DIR', os.path.expanduser('~/.cache/desafinado-perf')))
+def inside_root(arg):
+    path = os.path.realpath(os.path.join(ROOT, 'runs', arg))
+    if not path.startswith(ROOT + os.sep):
+        sys.exit(f'{arg}: not a run under {ROOT}/runs')
+    return path
+for d in map(inside_root, sys.argv[1:]):
     if not os.path.exists(d+'/cpu'):
         print('==', os.path.basename(d), 'skipped: the run did not finish'); continue
     print('==', os.path.basename(d)); r=summarize(d)

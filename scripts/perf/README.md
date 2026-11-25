@@ -8,9 +8,9 @@ cargo build --release --manifest-path tools/xdrive/Cargo.toml
 Xvfb :97 -screen 0 1600x1000x24 &
 scripts/perf/matrix.sh                 # every scenario; PREFIX=name labels the runs
 scripts/perf/run.sh mine/type-large ~/.cache/desafinado-perf/docs/large.md scripts/perf/scenarios/type.txt
-python3 scripts/perf/analyze.py ~/.cache/desafinado-perf/runs/mine/type-large
+python3 scripts/perf/analyze.py mine/type-large      # a run folder under $PERF_DIR/runs
 ```
 
-`gen_docs.py` writes the documents (2 KB to 2 MB, and one 55 KB paragraph); the same seed gives the same files. A scenario file is one driver command per line: `focus`, `move X Y`, `click X Y`, `type GAP_MS TEXT`, `key COMBO [REPEAT] [GAP_MS]`, `scroll up|down N GAP_MS`, `resize W H`, `sleep MS`.
+`gen_docs.py` writes the documents into `$PERF_DIR/docs` (2 KB to 2 MB, and one 55 KB paragraph); the same seed gives the same files. A scenario file is one driver command per line: `focus`, `move X Y`, `click X Y`, `type GAP_MS TEXT`, `key COMBO [REPEAT] [GAP_MS]`, `scroll up|down N GAP_MS`, `resize W H`, `sleep MS`.
 
 Xvfb draws in software, so the time from a key to the frame on screen is longer than on a desktop with a GPU. Compare main-thread work (handlers, layout, prepaint, paint, task polls) and background CPU between builds; do not read the absolute key-to-frame latency as what a person sees. Runs are serial: each needs its own display (`PERF_DISPLAY`) and folder (`PERF_DIR`) to run beside another. Span totals overlap where one timed function calls another (`workspace.changed` holds `pane.on_edits`); `render` spans time building the elements, not their layout or paint, which the view timings cover. A `WARNING: the journal lost N events` line means the run is incomplete. The probe's own polls are left out of the task lists, but its CPU stays in the thread totals. `analyze.py` counts only what happens after the driver starts; startup work is in the run's `first_frame_ms` and in `perf.jsonl`.
