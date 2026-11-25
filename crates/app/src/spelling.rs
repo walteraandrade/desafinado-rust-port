@@ -284,12 +284,17 @@ impl EditorPane {
                 };
                 check_document(&text, &checked, anchor, &live, &publish)
             });
-            while let Some(mut progress) = receiver.next().await {
+            let mut next = {
+                perf_span!("spelling.first_marks");
+                receiver.next().await
+            };
+            while let Some(mut progress) = next {
                 while let Ok(newer) = receiver.try_recv() {
                     progress = newer;
                 }
                 this.update(cx, |this, cx| this.show_progress(progress, generation, cx))
                     .log_err();
+                next = receiver.next().await;
             }
             if matches!(work.await, Finished::NoSpeller) {
                 this.update(cx, |_, cx| {
