@@ -75,10 +75,10 @@ pub fn run(
         checked.extend(found);
         publish_if_due(plan, blocks, &checked, &mut last_publish);
     }
+    let mut checked = lock(checked);
     if !plan.live() {
         return Outcome::Superseded;
     }
-    let mut checked = lock(checked);
     document::keep_only(&mut checked, blocks);
     (plan.publish)(progress(blocks, &checked));
     Outcome::Complete
@@ -290,5 +290,49 @@ mod tests {
                 .iter()
                 .any(|range| range.start < blocks[30].0)
         );
+    }
+
+    #[test]
+    fn a_pass_superseded_before_it_cleans_up_leaves_the_results_alone() {
+        let blocks = corpus(6);
+        let calls = AtomicUsize::new(0);
+        let cleanup_lock_held = AtomicBool::new(false);
+        let checked = Mutex::new(Checked::new());
+        let counting = || {
+            calls.fetch_add(1, Ordering::SeqCst);
+            true
+        };
+        run(&blocks, &checked, &SPELLER, &plan(&counting, &|_| {}));
+        let total = calls.load(Ordering::SeqCst);
+
+        calls.store(0, Ordering::SeqCst);
+        let checked = Mutex::new(Checked::new());
+        lock(&checked).insert("a newer pass's Block".into(), vec![]);
+        let live = || {
+            cleanup_lock_held.store(checked.try_lock().is_err(), Ordering::SeqCst);
+            calls.fetch_add(1, Ordering::SeqCst) + 1 < total
+        };
+        let outcome = run(&blocks, &checked, &SPELLER, &plan(&live, &|_| {}));
+        assert_eq!(outcome, Outcome::Superseded);
+        assert!(
+            cleanup_lock_held.load(Ordering::SeqCst),
+            "liveness was read before the results were locked"
+        );
+        assert!(lock(&checked).contains_key("a newer pass's Block"));
+    }
+
+    #[test]
+    fn publishes_are_spaced_but_the_last_one_always_goes() {
+        let blocks = corpus(24);
+        let steps = Mutex::new(Vec::<Progress>::new());
+        let publish = |progress: Progress| lock(&steps).push(progress);
+        let checked = Mutex::new(Checked::new());
+        let mut plan = plan(&|| true, &publish);
+        plan.throttle = Duration::from_secs(3600);
+        run(&blocks, &checked, &SPELLER, &plan);
+        let steps = lock(&steps);
+        assert_eq!(steps.len(), 2);
+        assert!(!steps[0].pending.is_empty());
+        assert!(steps[1].pending.is_empty());
     }
 }

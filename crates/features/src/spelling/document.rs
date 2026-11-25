@@ -22,7 +22,7 @@ pub fn unchecked<'a>(blocks: &'a [(usize, String)], checked: &Checked) -> Vec<&'
 }
 
 /// The Blocks whose text has not been checked, each text once at its first place, in
-/// Document order.
+/// Document order. A Block on screen that repeats an earlier text waits for that earlier one.
 pub fn unchecked_at(blocks: &[(usize, String)], checked: &Checked) -> Vec<(usize, String)> {
     let mut seen = HashSet::new();
     blocks

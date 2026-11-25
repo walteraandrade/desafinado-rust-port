@@ -247,14 +247,14 @@ fn check_document(
     publish: &(dyn Fn(Progress) + Sync),
 ) -> Finished {
     perf_span!("spelling.check_document");
+    let Some(speller) = SPELLER.as_ref() else {
+        return Finished::NoSpeller;
+    };
     let blocks: Vec<(usize, String)> = extract_blocks(text)
         .into_iter()
         .filter(|block| checkable(block.kind))
         .map(|block| (block.from, block.text))
         .collect();
-    let Some(speller) = SPELLER.as_ref() else {
-        return Finished::NoSpeller;
-    };
     let plan = Plan {
         anchor,
         throttle: PUBLISH_EVERY,
@@ -294,7 +294,7 @@ impl EditorPane {
             };
             let (sender, mut receiver) = futures::channel::mpsc::unbounded::<Progress>();
             let work = cx.background_spawn(async move {
-                let live = || latest.load(Ordering::SeqCst) == generation;
+                let live = || latest.load(Ordering::SeqCst) == generation && !sender.is_closed();
                 let publish = |progress| {
                     sender.unbounded_send(progress).log_warn();
                 };
