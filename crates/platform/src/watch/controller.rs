@@ -41,7 +41,7 @@ impl WatchConfig {
             list: Box::new(list),
             emit: Box::new(emit),
             on_problem: Box::new(|_| {}),
-            watch: Box::new(NotifyDirectoryWatch),
+            watch: Box::new(NotifyDirectoryWatch::default()),
             real_path: Box::new(|path| {
                 std::fs::canonicalize(path)
                     .ok()
