@@ -22,7 +22,7 @@ use desafinado_core::{
 use desafinado_features::spelling::{
     Issue, IssueKind, Speller,
     document::{self, Checked, WORDBOOK_FILE_NAME, Wordbook},
-    pass::{self, Outcome, Plan, Progress},
+    pass::{self, Outcome, Plan, Update},
     settings::{MenuKey, Press, SPELLING_FILE_NAME, SpellSettings},
 };
 use desafinado_platform::files::write_atomic_unconditionally;
@@ -244,7 +244,7 @@ fn check_document(
     checked: &Mutex<Checked>,
     anchor: &(dyn Fn() -> usize + Sync),
     live: &(dyn Fn() -> bool + Sync),
-    publish: &(dyn Fn(Progress) + Sync),
+    publish: &(dyn Fn(Update) + Sync),
 ) -> Finished {
     perf_span!("spelling.check_document");
     let Some(speller) = SPELLER.as_ref() else {
@@ -292,11 +292,11 @@ impl EditorPane {
             else {
                 return;
             };
-            let (sender, mut receiver) = futures::channel::mpsc::unbounded::<Progress>();
+            let (sender, mut receiver) = futures::channel::mpsc::unbounded::<Update>();
             let work = cx.background_spawn(async move {
                 let live = || latest.load(Ordering::SeqCst) == generation && !sender.is_closed();
-                let publish = |progress| {
-                    sender.unbounded_send(progress).log_warn();
+                let publish = |update| {
+                    sender.unbounded_send(update).log_warn();
                 };
                 check_document(
                     &text,
@@ -310,11 +310,15 @@ impl EditorPane {
                 perf_span!("spelling.first_marks");
                 receiver.next().await
             };
-            while let Some(mut progress) = next {
+            while let Some(first) = next {
+                let mut updates = vec![first];
                 while let Ok(newer) = receiver.try_recv() {
-                    progress = newer;
+                    if matches!(newer, Update::Snapshot(_)) {
+                        updates.clear();
+                    }
+                    updates.push(newer);
                 }
-                this.update(cx, |this, cx| this.show_progress(progress, generation, cx))
+                this.update(cx, |this, cx| this.show_progress(updates, generation, cx))
                     .log_err();
                 next = receiver.next().await;
             }
@@ -333,14 +337,52 @@ impl EditorPane {
         }));
     }
 
-    /// Shows what a check found so far, unless a newer check has begun since.
-    fn show_progress(&mut self, progress: Progress, generation: u64, cx: &mut Context<Self>) {
+    /// Shows what a check found so far, unless a newer check has begun since. Redraws only when
+    /// a mark in or near the view changed.
+    fn show_progress(&mut self, updates: Vec<Update>, generation: u64, cx: &mut Context<Self>) {
+        perf_span!("spelling.show_progress");
         if self.spelling.generation.load(Ordering::SeqCst) != generation {
             return;
         }
-        self.spelling.issues =
-            document::merge_progress(&self.spelling.issues, &progress.pending, progress.issues);
-        cx.notify();
+        let view = self.view_bytes(cx);
+        let mut redraw = false;
+        for update in updates {
+            match update {
+                Update::Snapshot(progress) => {
+                    if progress.pending.is_empty() {
+                        perf_span!("spelling.complete");
+                    }
+                    self.spelling.issues = document::merge_progress(
+                        &self.spelling.issues,
+                        &progress.pending,
+                        progress.issues,
+                    );
+                    redraw = true;
+                }
+                Update::Delta(delta) => {
+                    let touched = document::apply_delta(&mut self.spelling.issues, delta);
+                    redraw |= touched.is_some_and(|span| {
+                        view.as_ref()
+                            .is_none_or(|view| span.start < view.end && view.start < span.end)
+                    });
+                }
+            }
+        }
+        if redraw {
+            cx.notify();
+        }
+    }
+
+    /// The bytes of the Document in view, with a screenful of margin on each side; `None`
+    /// before the first layout.
+    fn view_bytes(&self, cx: &App) -> Option<Range<usize>> {
+        let state = self.editor.read(cx);
+        let rows = state.visible_row_range()?;
+        let margin = rows.len().max(1);
+        let from =
+            component::RopeExt::line_start_offset(state.text(), rows.start.saturating_sub(margin));
+        let to = component::RopeExt::line_start_offset(state.text(), rows.end + margin);
+        Some(from..to.max(from))
     }
 
     /// Points a running check at the first line on screen, or at the caret before the first
@@ -386,6 +428,7 @@ impl EditorPane {
     }
 
     pub(crate) fn spell_marks(&self, roles: Roles, cx: &App) -> Vec<ui::SpellMark> {
+        perf_span!("spelling.spell_marks");
         let open = self
             .spelling
             .menu
@@ -866,8 +909,8 @@ fn save_wordbook(save: u64, file: &Path, text: &str) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        BlockKind, Checked, Finished, Issue, IssueKind, MenuChoice, Mutex, Progress,
-        check_document, checkable, choice_label, choices, text_in,
+        BlockKind, Checked, Finished, Issue, IssueKind, MenuChoice, Mutex, Update, check_document,
+        checkable, choice_label, choices, text_in,
     };
 
     #[test]
@@ -929,11 +972,14 @@ mod tests {
     fn checks_only_prose_blocks_and_places_issues_in_the_document() {
         let text = "# Title\n\nI belive it.\n\n```\nbelive\n```\n";
         let checked = Mutex::new(Checked::new());
-        let last = Mutex::new(None::<Progress>);
-        let publish = |progress| *last.lock().expect("lock") = Some(progress);
+        let last = Mutex::new(None::<Update>);
+        let publish = |update| *last.lock().expect("lock") = Some(update);
         let finished = check_document(text, &checked, &|| 0, &|| true, &publish);
         assert!(matches!(finished, Finished::Complete));
-        let issues = last.lock().expect("lock").take().expect("published").issues;
+        let Some(Update::Snapshot(done)) = last.lock().expect("lock").take() else {
+            panic!("the last update is a snapshot");
+        };
+        let issues = done.issues;
         let ranges: Vec<&str> = issues
             .iter()
             .map(|issue| &text[issue.range.clone()])
