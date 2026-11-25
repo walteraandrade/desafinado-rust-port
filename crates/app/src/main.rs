@@ -123,6 +123,7 @@ fn run_app<V: Render>(
             })
             .detach();
             cx.activate(true);
+            spelling::preload(cx);
         });
 }
 

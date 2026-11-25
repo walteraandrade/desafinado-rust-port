@@ -4,6 +4,7 @@
 
 pub mod document;
 mod english;
+pub mod pass;
 mod portuguese;
 pub mod settings;
 mod words;
