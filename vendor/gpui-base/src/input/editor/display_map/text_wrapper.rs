@@ -1,9 +1,14 @@
 use super::inline_line::InputLine;
+#[cfg(test)]
+mod fast_search_tests;
 mod measurements;
+#[cfg(test)]
+mod reference;
 mod wrap_width;
 use gpui::Half;
 use measurements::WidthMeasurements;
 use std::borrow::Cow;
+use std::cell::Cell;
 use std::ops::Range;
 use std::rc::Rc;
 use wrap_width::{MeasuredWrap, WidthRange};
@@ -107,11 +112,69 @@ fn measured_wrap_boundaries(
     result
 }
 
-/// Preserve the measured comparisons that make these breaks valid at nearby widths.
+/// Number of leading `candidates` (1-based count) that fit, for a measure that grows with the
+/// prefix. Starts at `guess` and gallops away from it, so a good guess costs two probes:
+/// `fits(k)` and `fits(k + 1)` bracket the answer.
+fn largest_fitting(n: usize, guess: usize, mut fits: impl FnMut(usize) -> bool) -> usize {
+    if n == 0 {
+        return 0;
+    }
+    let guess = guess.clamp(1, n);
+    let (mut low, mut high) = (0, n + 1);
+    let mut step = 1;
+    if fits(guess) {
+        low = guess;
+        while low < n {
+            let probe = (low + step).min(n);
+            if fits(probe) {
+                low = probe;
+                step *= 2;
+            } else {
+                high = probe;
+                break;
+            }
+        }
+    } else {
+        high = guess;
+        while high > 1 {
+            let probe = high.saturating_sub(step).max(1);
+            if fits(probe) {
+                low = probe;
+                break;
+            }
+            high = probe;
+            step *= 2;
+        }
+    }
+    while low + 1 < high {
+        let mid = (low + high) / 2;
+        if fits(mid) {
+            low = mid;
+        } else {
+            high = mid;
+        }
+    }
+    low
+}
+
+/// Wrap by exact shaped widths, preserving the measured comparisons that make these breaks valid
+/// at nearby widths. `pixels_per_byte` carries the width of the last row measured, to start the
+/// next search near its answer; it only changes which prefixes are measured, never the result.
+#[cfg(test)]
 fn measured_wrap(
     text: &str,
     width: Pixels,
     wrapping_indent: WrappingIndent,
+    measure: impl FnMut(&str) -> Pixels,
+) -> MeasuredWrap {
+    measured_wrap_hinted(text, width, wrapping_indent, &Cell::new(0.), measure)
+}
+
+fn measured_wrap_hinted(
+    text: &str,
+    width: Pixels,
+    wrapping_indent: WrappingIndent,
+    pixels_per_byte: &Cell<f32>,
     mut measure: impl FnMut(&str) -> Pixels,
 ) -> MeasuredWrap {
     #[cfg(test)]
@@ -143,57 +206,49 @@ fn measured_wrap(
         } else {
             width - indent_width
         };
-        // Probe legal word breaks first. Character-fit changes inside the same word do not
-        // change the result, so they must not invalidate a cached line during a divider drag.
-        // Bound word probes before shaping: a single word can span the entire remaining line.
-        // Beyond this local window, use the original exponential grapheme search instead.
-        const MAX_WORD_PROBE_GRAPHEMES: usize = 256;
-        let word_probe_end = ends[first..]
-            .get(MAX_WORD_PROBE_GRAPHEMES - 1)
-            .copied()
-            .unwrap_or(text.len());
-        let mut fitting = |candidates: &[usize], limit: Option<usize>| {
-            let mut fits = |end| {
-                if limit.is_some_and(|limit| end > limit) {
-                    return None;
-                }
-                Some(valid_widths.fits(
-                    measure(&text[start..end]),
-                    available,
-                    if start == 0 { px(0.) } else { indent_width },
-                ))
-            };
-            let mut low = 0;
-            let mut high = 1;
-            while high <= candidates.len() && fits(candidates[high - 1])? {
-                low = high;
-                if high == candidates.len() {
-                    break;
-                }
-                high = (high * 2).min(candidates.len());
+        let row_indent = if start == 0 { px(0.) } else { indent_width };
+        let mut widest_fit = (start, px(0.));
+        let mut fits = |end: usize| {
+            let measured = measure(&text[start..end]);
+            let fits = valid_widths.fits(measured, available, row_indent);
+            if fits && end > widest_fit.0 {
+                widest_fit = (end, measured);
             }
-            while low + 1 < high {
-                let mid = (low + high) / 2;
-                if fits(candidates[mid - 1])? {
-                    low = mid;
-                } else {
-                    high = mid;
-                }
+            fits
+        };
+        let reach = {
+            let per_byte = pixels_per_byte.get();
+            if per_byte > 0. {
+                start + (f32::from(available) / per_byte) as usize
+            } else {
+                start
             }
-            Some(low)
         };
         let first_word =
             opportunities.partition_point(|&ix| ix <= start || (start == 0 && ix <= indent));
         let words = &opportunities[first_word..];
-        let end = if let Some(word_count) = fitting(words, Some(word_probe_end))
-            && word_count > 0
-        {
-            words[word_count - 1]
+        // Word probes stay within a local window: one word can span the rest of the line, and
+        // shaping it whole would cost as much as the line. When every word in the window fits
+        // but more follow, the grapheme search below finds the fitting end and the last word
+        // break at or before it, which is the same answer.
+        const MAX_WORD_PROBE_GRAPHEMES: usize = 256;
+        let window_end = ends[first..]
+            .get(MAX_WORD_PROBE_GRAPHEMES - 1)
+            .copied()
+            .unwrap_or(text.len());
+        let window = &words[..words.partition_point(|&ix| ix <= window_end)];
+        let word_guess = window.partition_point(|&ix| ix <= reach);
+        let word_count = largest_fitting(window.len(), word_guess, |k| fits(window[k - 1]));
+        let decided = word_count > 0 && (word_count < window.len() || window.len() == words.len());
+        let end = if decided {
+            window[word_count - 1]
         } else {
-            // An oversized word retains the original complete-grapheme fallback. At least one
+            // An oversized word retains the complete-grapheme fallback. At least one
             // grapheme is consumed even when it is wider than the available viewport.
-            let count = fitting(&ends[first..], None).unwrap();
-            let fitting_end = ends[first + count.max(1) - 1];
+            let rest = &ends[first..];
+            let guess = rest.partition_point(|&ix| ix <= reach);
+            let count = largest_fitting(rest.len(), guess, |k| fits(rest[k - 1]));
+            let fitting_end = rest[count.max(1) - 1];
             if fitting_end == text.len() {
                 break;
             }
@@ -203,6 +258,9 @@ fn measured_wrap(
                 .map(|ix| words[ix])
                 .unwrap_or(fitting_end)
         };
+        if widest_fit.0 > start && widest_fit.1 > px(0.) {
+            pixels_per_byte.set(f32::from(widest_fit.1) / (widest_fit.0 - start) as f32);
+        }
         if end == text.len() {
             break;
         }
@@ -584,6 +642,7 @@ impl TextWrapper {
         let font_size = self.font_size;
         let wrapping_indent = self.wrapping_indent;
         let tab_stop = tab_stop_width(&text_system, &font, font_size, self.tab_size);
+        let pixels_per_byte = Cell::new(0.);
         self.update_lines(
             changed_text,
             range,
@@ -613,24 +672,30 @@ impl TextWrapper {
                     offset = range.end;
                 }
                 if fragments.is_empty() {
-                    return measured_wrap(line_str, wrap_width, wrapping_indent, |text| {
-                        measurements.borrow_mut().measure(text, || {
-                            let layout = text_system.layout_line(
-                                text,
-                                font_size,
-                                &[gpui::TextRun {
-                                    len: text.len(),
-                                    font: font.clone(),
-                                    color: gpui::black(),
-                                    background_color: None,
-                                    underline: None,
-                                    strikethrough: None,
-                                }],
-                                None,
-                            );
-                            expanded_width(&layout, text, tab_stop)
-                        })
-                    });
+                    return measured_wrap_hinted(
+                        line_str,
+                        wrap_width,
+                        wrapping_indent,
+                        &pixels_per_byte,
+                        |text| {
+                            measurements.borrow_mut().measure(text, || {
+                                let layout = text_system.layout_line(
+                                    text,
+                                    font_size,
+                                    &[gpui::TextRun {
+                                        len: text.len(),
+                                        font: font.clone(),
+                                        color: gpui::black(),
+                                        background_color: None,
+                                        underline: None,
+                                        strikethrough: None,
+                                    }],
+                                    None,
+                                );
+                                expanded_width(&layout, text, tab_stop)
+                            })
+                        },
+                    );
                 }
                 if offset < line_str.len() {
                     fragments.push(LineFragment::text(&line_str[offset..]));
