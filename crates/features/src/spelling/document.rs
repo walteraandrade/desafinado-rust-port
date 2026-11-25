@@ -87,40 +87,45 @@ pub struct Delta {
 }
 
 /// Applies `delta` to the marks shown, which are in Document order: the marks inside the
-/// finished Blocks give way to the issues found there, every other mark stays. Costs what the
-/// delta covers plus the move of the marks after it, not a pass over all of them. Returns the
-/// span of the Document whose marks changed, `None` when nothing did.
+/// finished Blocks give way to the issues found there, every other mark stays. Each Block is
+/// handled on its own, so the cost is a search and a small window per Block plus the move of
+/// the marks after it, however far apart the Blocks sit. Returns the span of the Document
+/// whose marks changed, `None` when nothing did.
 pub fn apply_delta(shown: &mut Vec<Issue>, delta: Delta) -> Option<Range<usize>> {
-    let (first, last) = (delta.blocks.first()?, delta.blocks.last()?);
-    let window_start = shown.partition_point(|issue| issue.range.start < first.start);
-    let window_end = shown.partition_point(|issue| issue.range.start < last.end);
-    let mut next_block = 0;
-    let (stale, kept): (Vec<Issue>, Vec<Issue>) = shown[window_start..window_end]
-        .iter()
-        .cloned()
-        .partition(|issue| {
-            while delta.blocks[next_block].end < issue.range.start {
-                next_block += 1;
-            }
-            let block = &delta.blocks[next_block];
-            block.start <= issue.range.start && issue.range.end <= block.end
+    let mut touched: Option<Range<usize>> = None;
+    let mut cover = |range: &Range<usize>| {
+        touched = Some(match touched.take() {
+            Some(hull) => hull.start.min(range.start)..hull.end.max(range.end),
+            None => range.clone(),
         });
-    if stale.is_empty() && delta.issues.is_empty() {
-        return None;
+    };
+    for block in &delta.blocks {
+        let from = shown.partition_point(|issue| issue.range.start < block.start);
+        let to = shown.partition_point(|issue| issue.range.start < block.end);
+        let (stale, mut window): (Vec<Issue>, Vec<Issue>) = shown[from..to]
+            .iter()
+            .cloned()
+            .partition(|issue| issue.range.end <= block.end);
+        let first = delta
+            .issues
+            .partition_point(|issue| issue.range.start < block.start);
+        let last = delta
+            .issues
+            .partition_point(|issue| issue.range.start < block.end);
+        let found = &delta.issues[first..last];
+        if stale.is_empty() && found.is_empty() {
+            continue;
+        }
+        stale
+            .iter()
+            .map(|issue| &issue.range)
+            .chain(found.iter().map(|issue| &issue.range))
+            .for_each(&mut cover);
+        window.extend(found.iter().cloned());
+        window.sort_by_key(|issue| (issue.range.start, issue.range.end));
+        shown.splice(from..to, window);
     }
-    let touched = stale
-        .iter()
-        .map(|issue| &issue.range)
-        .chain(delta.issues.iter().map(|issue| &issue.range))
-        .fold((usize::MAX, 0), |(from, to), range| {
-            (from.min(range.start), to.max(range.end))
-        });
-    let touched = touched.0..touched.1;
-    let mut window = kept;
-    window.extend(delta.issues);
-    window.sort_by_key(|issue| (issue.range.start, issue.range.end));
-    shown.splice(window_start..window_end, window);
-    Some(touched)
+    touched
 }
 
 /// The issues of every Block, placed at the Block's offset in the Document.
@@ -393,6 +398,21 @@ mod tests {
         assert_eq!(apply_delta(&mut shown, delta), None);
         assert_eq!(shown.len(), 1);
         assert_eq!(apply_delta(&mut shown, Delta::default()), None);
+    }
+
+    #[test]
+    fn blocks_far_apart_leave_the_marks_between_them_alone() {
+        let mut shown: Vec<Issue> = (0..10)
+            .map(|index| issue(index * 100..index * 100 + 3, IssueKind::Spelling))
+            .collect();
+        let delta = Delta {
+            blocks: vec![0..50, 900..950],
+            issues: vec![issue(10..12, IssueKind::Grammar)],
+        };
+        let touched = apply_delta(&mut shown, delta);
+        let starts: Vec<_> = shown.iter().map(|i| i.range.start).collect();
+        assert_eq!(starts, vec![10, 100, 200, 300, 400, 500, 600, 700, 800]);
+        assert_eq!(touched, Some(0..903));
     }
 
     #[test]

@@ -87,10 +87,12 @@ pub fn run(
         fresh.extend(found);
         if due(plan, last_publish) {
             let update = match last_publish {
-                None => Update::Snapshot(progress(blocks, &checked)),
+                None => {
+                    fresh.clear();
+                    Update::Snapshot(progress(blocks, &checked))
+                }
                 Some(_) => Update::Delta(delta(&places, std::mem::take(&mut fresh))),
             };
-            fresh.clear();
             last_publish = Some(Instant::now());
             (plan.publish)(update);
         }
