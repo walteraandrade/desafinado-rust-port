@@ -328,7 +328,7 @@ mod tests {
         let publish = |progress: Progress| lock(&steps).push(progress);
         let checked = Mutex::new(Checked::new());
         let mut plan = plan(&|| true, &publish);
-        plan.throttle = Duration::from_secs(3600);
+        plan.throttle = Duration::from_hours(1);
         run(&blocks, &checked, &SPELLER, &plan);
         let steps = lock(&steps);
         assert_eq!(steps.len(), 2);
