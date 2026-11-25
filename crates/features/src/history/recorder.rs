@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use super::store::{HistoryWrite, MarkSavedInput, RecordInput};
 use super::types::{AcceptedChange, VersionCause, VersionId};
 
@@ -8,9 +10,47 @@ pub struct AcceptedInput {
     pub changes: Vec<AcceptedChange>,
 }
 
+/// The text of a pending edit: ready, or read only when the version is written.
+#[derive(Clone)]
+enum PendingText {
+    Ready(String),
+    Lazy(Arc<dyn Fn() -> String + Send + Sync>),
+}
+
+impl PendingText {
+    fn read(self) -> String {
+        match self {
+            Self::Ready(text) => text,
+            Self::Lazy(read) => read(),
+        }
+    }
+}
+
+impl std::fmt::Debug for PendingText {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Ready(text) => f.debug_tuple("Ready").field(text).finish(),
+            Self::Lazy(_) => f.write_str("Lazy"),
+        }
+    }
+}
+
+/// An edit that came due, whose text is not read yet.
+pub struct LazyEdit {
+    text: PendingText,
+    at: i64,
+}
+
+impl LazyEdit {
+    /// Reads the text and makes the write.
+    pub fn into_write(self) -> HistoryWrite {
+        record(self.text.read(), VersionCause::Edited, self.at)
+    }
+}
+
 #[derive(Clone, Debug)]
 struct Pending {
-    text: String,
+    text: PendingText,
     due: i64,
 }
 
@@ -42,9 +82,30 @@ impl HistoryRecorder {
 
     pub fn edited(&mut self, text: String, now: i64) {
         self.pending = Some(Pending {
-            text,
+            text: PendingText::Ready(text),
             due: now + self.idle_ms,
         });
+    }
+
+    /// Like [`Self::edited`], but the text is read only when the version is recorded, so
+    /// typing does not copy the Document for a version that a later edit replaces.
+    pub fn edited_with(&mut self, read: impl Fn() -> String + Send + Sync + 'static, now: i64) {
+        self.pending = Some(Pending {
+            text: PendingText::Lazy(Arc::new(read)),
+            due: now + self.idle_ms,
+        });
+    }
+
+    /// Like [`Self::poll`] for the pending edit, but without reading its text: the caller
+    /// turns the result into a write apart from the UI thread.
+    pub fn poll_lazy(&mut self, now: i64) -> Option<LazyEdit> {
+        match self.next_due() {
+            Some(due) if due <= now => self.pending.take().map(|pending| LazyEdit {
+                text: pending.text,
+                at: now,
+            }),
+            _ => None,
+        }
     }
 
     pub fn poll(&mut self, now: i64) -> Vec<HistoryWrite> {
@@ -57,7 +118,7 @@ impl HistoryRecorder {
     pub fn flush(&mut self, now: i64) -> Vec<HistoryWrite> {
         self.pending
             .take()
-            .map(|pending| vec![record(pending.text, VersionCause::Edited, now)])
+            .map(|pending| vec![record(pending.text.read(), VersionCause::Edited, now)])
             .unwrap_or_default()
     }
 
@@ -471,5 +532,45 @@ mod tests {
             })
             .collect();
         assert_eq!(times, vec![1500, 1500]);
+    }
+
+    #[test]
+    fn a_lazy_edit_is_read_only_when_it_is_recorded_and_records_the_same_version() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let reads = Arc::new(AtomicUsize::new(0));
+        let mut recorder = HistoryRecorder::new(IDLE_MS);
+        for text in ["a", "ab", "abc"] {
+            let reads = Arc::clone(&reads);
+            recorder.edited_with(
+                move || {
+                    reads.fetch_add(1, Ordering::SeqCst);
+                    text.to_string()
+                },
+                1000,
+            );
+        }
+        assert_eq!(reads.load(Ordering::SeqCst), 0);
+        assert_eq!(recorder.next_due(), Some(1000 + IDLE_MS));
+        let writes = recorder.flush(2000);
+        assert_eq!(writes, vec![recorded("abc", VersionCause::Edited, 2000)]);
+        assert_eq!(reads.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn a_lazy_edit_replaced_by_an_accepted_version_is_never_read() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let read = Arc::new(AtomicBool::new(false));
+        let mut recorder = HistoryRecorder::new(IDLE_MS);
+        let flag = Arc::clone(&read);
+        recorder.edited_with(
+            move || {
+                flag.store(true, Ordering::SeqCst);
+                "typed".to_string()
+            },
+            1000,
+        );
+        recorder.saving("saved text".into(), 1500);
+        assert!(!read.load(Ordering::SeqCst));
+        assert_eq!(recorder.next_due(), None);
     }
 }

@@ -30,8 +30,10 @@ mod model_dialog;
 mod new_skill_dialog;
 #[cfg(feature = "perf-probe")]
 mod perf_probe;
+mod persist;
 mod preferences_view;
 mod reading_view;
+mod rope_text;
 mod single_instance;
 mod spelling;
 mod spend;
@@ -121,6 +123,7 @@ fn run_app<V: Render>(
             })
             .detach();
             cx.activate(true);
+            spelling::preload(cx);
         });
 }
 

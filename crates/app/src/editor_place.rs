@@ -3,7 +3,7 @@ use desafinado_ai::editor::place::{
 };
 use gpui_kit::*;
 
-use crate::{comment_review::ReviewModeState, editor_pane::EditorPane};
+use crate::{comment_review::ReviewModeState, editor_pane::EditorPane, persist::PlaceSnapshot};
 
 fn highest_id(ids: impl Iterator<Item = String>, prefix: char) -> usize {
     ids.filter_map(|id| id.strip_prefix(prefix)?.parse().ok())
@@ -14,11 +14,19 @@ fn highest_id(ids: impl Iterator<Item = String>, prefix: char) -> usize {
 impl EditorPane {
     /// Where the writer is now: the selection, the scroll and the AI's open work.
     pub fn place(&self, cx: &App) -> SavedPlace {
+        let PlaceSnapshot { text, rest } = self.place_snapshot(cx);
+        SavedPlace {
+            text: text.to_string(),
+            ..rest
+        }
+    }
+
+    /// The place without copying the text: the text is a Rope, the rest is small.
+    pub(crate) fn place_snapshot(&self, cx: &App) -> PlaceSnapshot {
         let state = self.editor.read(cx);
         let range = state.selected_range();
-        let text = state.value().to_string();
-        take_place(&PlaceInput {
-            text: &text,
+        let rest = take_place(&PlaceInput {
+            text: "",
             selection: PlaceSelection {
                 start: range.start,
                 end: range.end,
@@ -32,7 +40,11 @@ impl EditorPane {
                 choice: mode.choice,
                 focus: mode.focus.clone(),
             }),
-        })
+        });
+        PlaceSnapshot {
+            text: state.text().clone(),
+            rest,
+        }
     }
 
     /// Puts back a place taken with [`Self::place`] over the text just set, without opening

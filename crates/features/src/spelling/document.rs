@@ -21,6 +21,61 @@ pub fn unchecked<'a>(blocks: &'a [(usize, String)], checked: &Checked) -> Vec<&'
         .collect()
 }
 
+/// The Blocks whose text has not been checked, each text once at its first place, in
+/// Document order. A Block on screen that repeats an earlier text waits for that earlier one.
+pub fn unchecked_at(blocks: &[(usize, String)], checked: &Checked) -> Vec<(usize, String)> {
+    let mut seen = HashSet::new();
+    blocks
+        .iter()
+        .filter(|(_, text)| !checked.contains_key(text) && seen.insert(text.as_str()))
+        .cloned()
+        .collect()
+}
+
+/// Takes up to `count` Blocks from `todo`, starting with the first one that holds `anchor` or comes after it
+/// (or the first of all when none is), and returns their texts. What the writer sees is
+/// checked first.
+pub fn take_chunk(todo: &mut Vec<(usize, String)>, anchor: usize, count: usize) -> Vec<String> {
+    let start = todo.partition_point(|(from, text)| from + text.len() <= anchor);
+    let start = if start < todo.len() { start } else { 0 };
+    let end = (start + count).min(todo.len());
+    todo.drain(start..end).map(|(_, text)| text).collect()
+}
+
+/// Where the Blocks that have no check yet sit in the Document, in Document order.
+pub fn pending_ranges(blocks: &[(usize, String)], checked: &Checked) -> Vec<Range<usize>> {
+    blocks
+        .iter()
+        .filter(|(_, text)| !checked.contains_key(text))
+        .map(|(from, text)| *from..*from + text.len())
+        .collect()
+}
+
+/// The marks to show while a check is under way: the ones found so far, plus the marks already
+/// shown inside Blocks still waiting for their check, so they do not blink out and back.
+pub fn merge_progress(
+    previous: &[Issue],
+    pending: &[Range<usize>],
+    mut found: Vec<Issue>,
+) -> Vec<Issue> {
+    if pending.is_empty() {
+        return found;
+    }
+    found.extend(
+        previous
+            .iter()
+            .filter(|issue| {
+                let at = pending.partition_point(|range| range.end < issue.range.start);
+                pending.get(at).is_some_and(|range| {
+                    range.start <= issue.range.start && issue.range.end <= range.end
+                })
+            })
+            .cloned(),
+    );
+    found.sort_by_key(|issue| (issue.range.start, issue.range.end));
+    found
+}
+
 /// The issues of every Block, placed at the Block's offset in the Document.
 pub fn place(blocks: &[(usize, String)], checked: &Checked) -> Vec<Issue> {
     blocks
@@ -211,6 +266,56 @@ mod tests {
         let mut checked = Checked::new();
         checked.insert("two".into(), vec![]);
         assert_eq!(unchecked(&blocks, &checked), vec!["one"]);
+    }
+
+    #[test]
+    fn chunks_start_at_the_anchor_and_wrap_to_the_beginning() {
+        let blocks = blocks(&[(0, "a"), (10, "b"), (20, "c"), (30, "b"), (40, "d")]);
+        let mut checked = Checked::new();
+        checked.insert("c".into(), vec![]);
+        let mut todo = unchecked_at(&blocks, &checked);
+        assert_eq!(todo.len(), 3);
+        assert_eq!(take_chunk(&mut todo, 5, 2), vec!["b", "d"]);
+        assert_eq!(take_chunk(&mut todo, 45, 2), vec!["a"]);
+        assert!(take_chunk(&mut todo, 0, 2).is_empty());
+    }
+
+    #[test]
+    fn the_block_holding_the_anchor_is_checked_first() {
+        let blocks = blocks(&[(0, "aaaa"), (10, "bbbbbbbb"), (30, "cccc")]);
+        let mut todo = unchecked_at(&blocks, &Checked::new());
+        assert_eq!(take_chunk(&mut todo, 14, 1), vec!["bbbbbbbb"]);
+        assert_eq!(take_chunk(&mut todo, 18, 1), vec!["cccc"]);
+    }
+
+    #[test]
+    fn pending_ranges_cover_the_blocks_without_a_check() {
+        let blocks = blocks(&[(0, "one"), (10, "two"), (20, "one")]);
+        let mut checked = Checked::new();
+        checked.insert("one".into(), vec![]);
+        assert_eq!(pending_ranges(&blocks, &checked), vec![10..13]);
+    }
+
+    #[test]
+    fn progress_keeps_shown_marks_inside_blocks_still_pending() {
+        let previous = vec![
+            issue(2..4, IssueKind::Spelling),
+            issue(12..14, IssueKind::Spelling),
+            issue(25..27, IssueKind::Spelling),
+        ];
+        let found = vec![issue(22..24, IssueKind::Grammar)];
+        let merged: Vec<_> = merge_progress(&previous, &[10..16, 20..30], found)
+            .into_iter()
+            .map(|i| i.range)
+            .collect();
+        assert_eq!(merged, vec![12..14, 22..24, 25..27]);
+    }
+
+    #[test]
+    fn progress_with_nothing_pending_is_what_was_found() {
+        let previous = vec![issue(2..4, IssueKind::Spelling)];
+        let found = vec![issue(8..9, IssueKind::Spelling)];
+        assert_eq!(merge_progress(&previous, &[], found.clone()), found);
     }
 
     #[test]
