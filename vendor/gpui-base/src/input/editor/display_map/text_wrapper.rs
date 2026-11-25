@@ -1,6 +1,8 @@
 use super::inline_line::InputLine;
 #[cfg(test)]
 mod fast_search_tests;
+#[cfg(test)]
+mod incremental_tests;
 mod measurements;
 #[cfg(test)]
 mod reference;
@@ -197,8 +199,31 @@ fn measured_wrap_hinted(
     width: Pixels,
     wrapping_indent: WrappingIndent,
     hint: &Cell<WrapHint>,
-    mut measure: impl FnMut(&str) -> Pixels,
+    measure: impl FnMut(&str) -> Pixels,
 ) -> MeasuredWrap {
+    measured_wrap_resumable(text, width, wrapping_indent, hint, None, measure).0
+}
+
+/// Where to restart wrapping a line after an edit, and which old breaks to compare against.
+struct Resume<'a> {
+    /// A row start the edit cannot have moved.
+    start: usize,
+    /// New breaks at or after this offset may meet an old break shifted by `delta`.
+    resync_from: usize,
+    delta: isize,
+    old: &'a [usize],
+}
+
+/// Like `measured_wrap_hinted`, from `resume.start`; stops at the first new break that lands on
+/// a shifted old break and returns that break's index in `resume.old`.
+fn measured_wrap_resumable(
+    text: &str,
+    width: Pixels,
+    wrapping_indent: WrappingIndent,
+    hint: &Cell<WrapHint>,
+    resume: Option<&Resume>,
+    mut measure: impl FnMut(&str) -> Pixels,
+) -> (MeasuredWrap, Option<usize>) {
     #[cfg(test)]
     wrap_width::MEASURED_LINES.with(|count| count.set(count.get() + 1));
     let mut valid_widths = WidthRange::all();
@@ -220,8 +245,9 @@ fn measured_wrap_hinted(
         .filter(|ix| ends.binary_search(ix).is_ok())
         .collect();
     let mut result = Vec::new();
-    let mut first = 0;
-    let mut start = 0;
+    let mut start = resume.map_or(0, |resume| resume.start);
+    let mut first = ends.partition_point(|&ix| ix <= start);
+    let mut synced = None;
     while first < ends.len() {
         let available = if start == 0 {
             width
@@ -286,12 +312,86 @@ fn measured_wrap_hinted(
             ix: end,
             next_indent: indent as u32,
         });
+        if let Some(resume) = resume
+            && end >= resume.resync_from
+            && let Some(old_end) = end.checked_add_signed(-resume.delta)
+            && let Ok(index) = resume.old.binary_search(&old_end)
+        {
+            synced = Some(index);
+            break;
+        }
         first = ends.partition_point(|&ix| ix <= end);
         start = end;
     }
+    (
+        MeasuredWrap {
+            boundaries: result,
+            valid_widths,
+        },
+        synced,
+    )
+}
+
+/// An edit inside one line, in offsets relative to that line, with the line's old breaks.
+pub(super) struct Prior<'a> {
+    old_breaks: &'a [usize],
+    edit_start: usize,
+    old_edit_end: usize,
+    new_edit_end: usize,
+    valid_widths: WidthRange,
+}
+
+/// Rows whose breaks end this far before the edit cannot have been affected by it (a break
+/// depends on the text up to the next word, and on line-break context a few bytes around).
+const UNTOUCHED_MARGIN: usize = 32;
+
+/// Wraps an edited line by redoing only the rows from the edit until the breaks meet the old
+/// ones again; the result equals wrapping the whole line.
+fn rewrap_edited(
+    text: &str,
+    width: Pixels,
+    wrapping_indent: WrappingIndent,
+    hint: &Cell<WrapHint>,
+    prior: &Prior,
+    measure: impl FnMut(&str) -> Pixels,
+) -> MeasuredWrap {
+    let old = prior.old_breaks;
+    let kept = old
+        .partition_point(|&ix| ix + UNTOUCHED_MARGIN <= prior.edit_start)
+        .saturating_sub(1);
+    let resume = Resume {
+        start: kept.checked_sub(1).map_or(0, |last| old[last]),
+        resync_from: prior.new_edit_end + UNTOUCHED_MARGIN,
+        delta: prior.new_edit_end as isize - prior.old_edit_end as isize,
+        old,
+    };
+    let (mut wrap, synced) =
+        measured_wrap_resumable(text, width, wrapping_indent, hint, Some(&resume), measure);
+    let indent = if wrapping_indent == WrappingIndent::Same {
+        text.chars()
+            .take_while(|&c| c == ' ')
+            .count()
+            .min(gpui::LineWrapper::MAX_INDENT as usize)
+    } else {
+        0
+    } as u32;
+    let boundary = |ix: usize| gpui::Boundary {
+        ix,
+        next_indent: indent,
+    };
+    let mut boundaries: Vec<gpui::Boundary> = old[..kept].iter().map(|&ix| boundary(ix)).collect();
+    boundaries.append(&mut wrap.boundaries);
+    if let Some(index) = synced {
+        boundaries.extend(
+            old[index + 1..]
+                .iter()
+                .map(|&ix| boundary(ix.saturating_add_signed(resume.delta))),
+        );
+    }
+    wrap.valid_widths.intersect(prior.valid_widths);
     MeasuredWrap {
-        boundaries: result,
-        valid_widths,
+        boundaries,
+        valid_widths: wrap.valid_widths,
     }
 }
 
@@ -666,7 +766,7 @@ impl TextWrapper {
             range,
             new_text,
             reuse_widths,
-            &mut |line_str, wrap_width, line_start| {
+            &mut |line_str, wrap_width, line_start, prior| {
                 let mut fragments = Vec::new();
                 let mut offset = 0;
                 let first = metrics.partition_point(|(r, _)| r.end <= line_start);
@@ -690,30 +790,41 @@ impl TextWrapper {
                     offset = range.end;
                 }
                 if fragments.is_empty() {
-                    return measured_wrap_hinted(
-                        line_str,
-                        wrap_width,
-                        wrapping_indent,
-                        &hint,
-                        |text| {
-                            measurements.borrow_mut().measure(text, || {
-                                let layout = text_system.layout_line(
-                                    text,
-                                    font_size,
-                                    &[gpui::TextRun {
-                                        len: text.len(),
-                                        font: font.clone(),
-                                        color: gpui::black(),
-                                        background_color: None,
-                                        underline: None,
-                                        strikethrough: None,
-                                    }],
-                                    None,
-                                );
-                                expanded_width(&layout, text, tab_stop)
-                            })
-                        },
-                    );
+                    let measure = |text: &str| {
+                        measurements.borrow_mut().measure(text, || {
+                            let layout = text_system.layout_line(
+                                text,
+                                font_size,
+                                &[gpui::TextRun {
+                                    len: text.len(),
+                                    font: font.clone(),
+                                    color: gpui::black(),
+                                    background_color: None,
+                                    underline: None,
+                                    strikethrough: None,
+                                }],
+                                None,
+                            );
+                            expanded_width(&layout, text, tab_stop)
+                        })
+                    };
+                    return match prior {
+                        Some(prior) => rewrap_edited(
+                            line_str,
+                            wrap_width,
+                            wrapping_indent,
+                            &hint,
+                            prior,
+                            measure,
+                        ),
+                        None => measured_wrap_hinted(
+                            line_str,
+                            wrap_width,
+                            wrapping_indent,
+                            &hint,
+                            measure,
+                        ),
+                    };
                 }
                 if offset < line_str.len() {
                     fragments.push(LineFragment::text(&line_str[offset..]));
@@ -883,7 +994,7 @@ impl TextWrapper {
             range,
             new_text,
             false,
-            &mut |text, width, start| MeasuredWrap::uncached(wrap_line(text, width, start)),
+            &mut |text, width, start, _| MeasuredWrap::uncached(wrap_line(text, width, start)),
         );
     }
 
@@ -896,7 +1007,7 @@ impl TextWrapper {
         reuse_widths: bool,
         wrap_line: &mut F,
     ) where
-        F: FnMut(&str, Pixels, usize) -> MeasuredWrap,
+        F: FnMut(&str, Pixels, usize, Option<&Prior>) -> MeasuredWrap,
     {
         // Remove the old changed lines.
         let buffer_line_count = self.lines_count();
@@ -911,6 +1022,28 @@ impl TextWrapper {
             .offset_to_point(range.start + new_text.len())
             .row;
 
+        // An edit inside one line keeps the old breaks that it cannot have moved.
+        let edited_line = (start_row == end_row
+            && new_start_row == new_end_row
+            && !reuse_widths
+            && self.wrapping_indent == WrappingIndent::Same
+            && !new_text.chars().any(|c| c == '\n'))
+        .then(|| self.line(start_row))
+        .flatten()
+        .map(|item| {
+            let line_start = self.text.line_start_offset(start_row);
+            let breaks: Vec<usize> = item
+                .wrapped_lines
+                .split_last()
+                .map(|(_, rest)| rest.iter().map(|row| row.end).collect())
+                .unwrap_or_default();
+            (
+                breaks,
+                range.start.saturating_sub(line_start),
+                range.end.saturating_sub(line_start),
+                item.valid_widths,
+            )
+        });
         let mut new_lines = Vec::with_capacity(new_end_row.saturating_sub(new_start_row) + 1);
         let wrap_width = self.wrap_width;
         let mut previous = self.lines.iter();
@@ -927,6 +1060,15 @@ impl TextWrapper {
                 }
             }
             let line = changed_text.slice_line(row);
+            let prior = edited_line
+                .as_ref()
+                .map(|(old_breaks, start, old_end, valid_widths)| Prior {
+                    old_breaks,
+                    edit_start: *start,
+                    old_edit_end: *old_end,
+                    new_edit_end: *start + new_text.len(),
+                    valid_widths: *valid_widths,
+                });
             let mut wrapped_lines = SmallVec::<[Range<usize>; 1]>::new();
             let mut prev_boundary_ix = 0;
             let mut indent_chars = 0;
@@ -940,8 +1082,12 @@ impl TextWrapper {
                     WrappingIndent::Same => {
                         // Here only have wrapped line, if there is no wrap meet, the `line_wraps`
                         // result will empty.
-                        let measured =
-                            wrap_line(&line_str, wrap_width, changed_text.line_start_offset(row));
+                        let measured = wrap_line(
+                            &line_str,
+                            wrap_width,
+                            changed_text.line_start_offset(row),
+                            prior.as_ref(),
+                        );
                         valid_widths.intersect(measured.valid_widths);
                         for boundary in measured.boundaries {
                             wrapped_lines.push(prev_boundary_ix..boundary.ix);
@@ -952,8 +1098,12 @@ impl TextWrapper {
                     WrappingIndent::None => {
                         // The first visual line keeps the line's leading indentation, so it is
                         // wrapped as is.
-                        let boundaries =
-                            wrap_line(&line_str, wrap_width, changed_text.line_start_offset(row));
+                        let boundaries = wrap_line(
+                            &line_str,
+                            wrap_width,
+                            changed_text.line_start_offset(row),
+                            None,
+                        );
                         valid_widths.intersect(boundaries.valid_widths);
                         if let Some(first_ix) = boundaries.boundaries.first().map(|b| b.ix) {
                             wrapped_lines.push(prev_boundary_ix..first_ix);
@@ -963,6 +1113,7 @@ impl TextWrapper {
                                 &line_str[first_ix..],
                                 wrap_width,
                                 changed_text.line_start_offset(row) + first_ix,
+                                None,
                             );
                             valid_widths.intersect(continuation.valid_widths);
                             for boundary in continuation.boundaries {
