@@ -139,6 +139,11 @@ impl<Reference> SwitchableHistory<Reference> {
         current
     }
 
+    /// Lists the current Document's versions again at the next settle.
+    pub fn relist(&mut self) {
+        self.current.relist();
+    }
+
     pub fn next_due(&self) -> Option<i64> {
         self.current.next_due()
     }

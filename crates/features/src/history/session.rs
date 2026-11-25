@@ -1,10 +1,13 @@
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use super::events::EventSink;
 use super::recorder::{AcceptedInput, HistoryRecorder, LazyEdit};
 use super::store::{HistoryKey, HistoryStore, HistoryWrite, RecordInput, StoreError, apply_write};
 use super::types::{VersionCause, VersionId, VersionList};
+
+static NEXT_OWNER: AtomicU64 = AtomicU64::new(1);
 
 pub const TEXT_CACHE_SIZE: usize = 200;
 
@@ -46,6 +49,8 @@ pub struct DocumentHistory {
     /// Deferred writes handed out so far, and how many of them the shown versions include.
     issued: u64,
     listed_through: u64,
+    /// Tells this History from an earlier one for the same key, whose results may still come.
+    owner: u64,
 }
 
 fn same_versions(left: &VersionList, right: &VersionList) -> bool {
@@ -60,6 +65,7 @@ fn same_versions(left: &VersionList, right: &VersionList) -> bool {
 pub struct DeferredWrites {
     store: Arc<dyn HistoryStore>,
     key: HistoryKey,
+    owner: u64,
     serial: u64,
     writes: Deferred,
 }
@@ -67,6 +73,7 @@ pub struct DeferredWrites {
 /// What [`DeferredWrites::apply`] did: the errors, and the timeline as the store lists it
 /// right after the writes, read where the writes were made so the UI thread need not.
 pub struct Applied {
+    owner: u64,
     serial: u64,
     errors: Vec<StoreError>,
     listed: Option<VersionList>,
@@ -108,6 +115,7 @@ impl DeferredWrites {
             }
         };
         Applied {
+            owner: self.owner,
             serial: self.serial,
             errors,
             listed,
@@ -139,6 +147,7 @@ impl DocumentHistory {
             on_written,
             issued: 0,
             listed_through: 0,
+            owner: NEXT_OWNER.fetch_add(1, Ordering::Relaxed),
         }
     }
 
@@ -233,6 +242,7 @@ impl DocumentHistory {
         DeferredWrites {
             store: Arc::clone(&self.store),
             key: self.key.clone(),
+            owner: self.owner,
             serial: self.issued,
             writes,
         }
@@ -270,13 +280,22 @@ impl DocumentHistory {
         self.defer(Deferred::Ready(writes))
     }
 
+    /// Lists the versions again at the next [`Self::settled`], for a write that never reported.
+    pub fn relist(&mut self) {
+        self.listing_wanted = true;
+    }
+
     /// Takes the result of [`DeferredWrites::apply`]. Its listing replaces the shown versions
     /// unless a newer one is already shown, so results arriving late do no harm.
     pub fn wrote(&mut self, applied: Applied) {
         for error in &applied.errors {
             (self.on_error)(error);
         }
+        if applied.owner != self.owner {
+            return;
+        }
         let Some(listed) = applied.listed else {
+            self.listing_wanted = true;
             return;
         };
         if applied.serial > self.listed_through {
@@ -780,5 +799,42 @@ mod tests {
         let words: Vec<_> = made.history.snapshot().iter().map(|v| v.words).collect();
         assert_eq!(words, vec![3]);
         assert_eq!(made.history.snapshot()[0].cause, VersionCause::Started);
+    }
+
+    #[test]
+    fn a_result_of_an_earlier_history_for_the_same_key_is_dropped() {
+        let mut old = create();
+        for at in 0..5 {
+            old.history.saving_deferred("one", at).apply();
+        }
+        let stale = old.history.saving_deferred("one", 9).apply();
+        let mut fresh = create();
+        fresh.history.opened("one two three", "a.md", 1000);
+        fresh.history.settled();
+        let shown = fresh.history.snapshot().clone();
+        fresh.history.wrote(stale);
+        assert_eq!(fresh.history.snapshot(), &shown);
+    }
+
+    #[test]
+    fn a_failed_listing_or_write_asks_for_another_listing() {
+        let mut spy = Spy::new();
+        spy.fail_list = true;
+        let mut made = create_with(spy, Some(Vec::new()), TEXT_CACHE_SIZE);
+        let applied = made
+            .history
+            .recorded_deferred("x", VersionCause::Edited, 1)
+            .apply();
+        made.history.wrote(applied);
+        made.history.settled();
+        assert_eq!(made.spy.lists.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn asking_to_list_again_lists_on_the_next_settle() {
+        let mut made = create();
+        made.history.relist();
+        made.history.settled();
+        assert_eq!(made.spy.lists.load(Ordering::SeqCst), 1);
     }
 }

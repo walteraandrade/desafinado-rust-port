@@ -101,6 +101,23 @@ pub struct ExternalFacts<'a> {
     pub noticed: Option<DiskState<&'a str>>,
 }
 
+/// Counts what can make a read of the file stale: a save starting or ending, and every newer
+/// read. A read taken before the count moved must not be judged.
+#[derive(Debug, Default)]
+pub struct DiskReads(u64);
+
+impl DiskReads {
+    /// Marks a change to the file or its session; returns the count a new read starts from.
+    pub fn bump(&mut self) -> u64 {
+        self.0 += 1;
+        self.0
+    }
+
+    pub fn is_current(&self, taken: u64) -> bool {
+        self.0 == taken
+    }
+}
+
 pub fn decide_external_change(facts: &ExternalFacts) -> ExternalVerdict {
     let ExternalFacts {
         disk,
@@ -220,6 +237,19 @@ mod tests {
             writing,
             noticed,
         })
+    }
+
+    #[test]
+    fn a_read_is_stale_after_a_save_starts_or_ends_or_a_newer_read_starts() {
+        let mut reads = DiskReads::default();
+        let first = reads.bump();
+        assert!(reads.is_current(first));
+        reads.bump();
+        assert!(!reads.is_current(first));
+        let second = reads.bump();
+        let third = reads.bump();
+        assert!(!reads.is_current(second));
+        assert!(reads.is_current(third));
     }
 
     #[test]

@@ -60,7 +60,7 @@ use crate::spelling::{NextIssue, PreviousIssue};
 use crate::{
     caret,
     document::{
-        Conflict, DiskState, ExternalFacts, ExternalVerdict, FileSession, SCRATCH_KEY,
+        Conflict, DiskReads, DiskState, ExternalFacts, ExternalVerdict, FileSession, SCRATCH_KEY,
         UNTITLED_NAME, decide_external_change, has_unsaved_changes, history_key, mark_edited,
         minimal_change, name_of, opened_session, suggested_file_name,
     },
@@ -70,7 +70,7 @@ use crate::{
     history_store::DbHistoryStore,
     history_view::EvalsButton,
     key_dialog::{KeyDialog, KeyEvent},
-    last_file::{LAST_FILE_JOB, clear_last_file, load_last_file, save_last_file},
+    last_file::{clear_last_file, load_last_file, save_last_file},
     library_panel::{self, LibraryEvent, LibraryPanel, Placement},
     menu_nav::{next_enabled, shifted},
     model_dialog::{ModelDialog, ModelEvent},
@@ -391,6 +391,7 @@ struct Saves {
     task: Option<Shared<Task<FileSaveResult>>>,
     queued: Option<SaveKind>,
     document: u64,
+    disk_reads: DiskReads,
 }
 
 /// The text a save writes, the name it reports, and the document it was started from.
@@ -944,13 +945,7 @@ impl Workspace {
             );
             if self.remembered.as_ref() != Some(path) {
                 self.remembered = Some(path.clone());
-                let dir = self.services.user_data.clone();
-                let path = path.clone();
-                self.write_later(
-                    LAST_FILE_JOB.to_string(),
-                    move || save_last_file(&dir, &path),
-                    cx,
-                );
+                save_last_file(&self.services.user_data, path);
             }
         }
         self.warn_if_unsaved_failed(cx);
@@ -1234,6 +1229,13 @@ impl Workspace {
         cx.spawn(async move |this, cx| {
             let Ok(applied) = receiver.await else {
                 log::error!("The History write for {written_key} did not finish");
+                this.update(cx, |this, cx| {
+                    if this.history.key() == written_key {
+                        this.history.relist();
+                        this.settle_history(cx);
+                    }
+                })
+                .log_warn();
                 return;
             };
             this.update(cx, |this, cx| {
@@ -1432,13 +1434,18 @@ impl Workspace {
         {
             return;
         }
+        let taken = self.saves.disk_reads.bump();
         cx.spawn_in(window, async move |this, cx| {
             let reading = path.clone();
             let read = cx
                 .background_spawn(async move { read_markdown(&reading) })
                 .await;
             this.update_in(cx, |this, window, cx| {
-                this.judge_external_change(path, read, window, cx);
+                if this.saves.disk_reads.is_current(taken) {
+                    this.judge_external_change(path, read, window, cx);
+                } else {
+                    this.external_changes(changes, window, cx);
+                }
             })
             .log_warn();
         })
@@ -2078,7 +2085,7 @@ impl Workspace {
         self.settle_before("", cx);
         self.saves.document += 1;
         self.session = None;
-        self.forget_last_file(cx);
+        self.forget_last_file();
         self.last_text = Rope::new();
         self.pane
             .update(cx, |pane, cx| pane.replace_text("", window, cx));
@@ -2092,14 +2099,12 @@ impl Workspace {
     }
 
     /// An Untitled Document comes back after a restart from its unsaved text, which a remembered
-    /// file would shadow. Goes through the writer under the same key as `save_last_file` in
-    /// `announce`: the newest of the two replaces the other while waiting, and one already
-    /// running finishes first, so a file opened right after cannot have its record removed by
-    /// a late clear.
-    fn forget_last_file(&mut self, cx: &mut Context<Self>) {
+    /// file would shadow. Synchronous like `save_last_file` in `announce`, so a file opened
+    /// right after cannot have its record removed by a late clear, and a crash cannot reopen
+    /// the closed file.
+    fn forget_last_file(&mut self) {
         self.remembered = None;
-        let dir = self.services.user_data.clone();
-        self.write_later(LAST_FILE_JOB.to_string(), move || clear_last_file(&dir), cx);
+        clear_last_file(&self.services.user_data);
     }
 
     fn open_document(&mut self, _: &OpenDocument, window: &mut Window, cx: &mut Context<Self>) {
@@ -2145,6 +2150,7 @@ impl Workspace {
         }
         let document = self.saves.document;
         let text = self.text(cx);
+        self.saves.disk_reads.bump();
         self.writing = Some(text.clone());
         {
             perf_span!("history.saving");
@@ -2234,6 +2240,7 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         perf_span!("workspace.finish_save");
+        self.saves.disk_reads.bump();
         self.writing = None;
         self.saves.task = None;
         let Saving {
