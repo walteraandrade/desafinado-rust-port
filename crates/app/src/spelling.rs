@@ -200,6 +200,11 @@ impl SpellState {
             _task: None,
         }
     }
+
+    /// Starts a new generation, which stops any check still running; returns its number.
+    fn supersede(&self) -> u64 {
+        self.generation.fetch_add(1, Ordering::SeqCst) + 1
+    }
 }
 
 fn choices(issue: &Issue) -> Vec<MenuChoice> {
@@ -266,7 +271,7 @@ impl EditorPane {
     /// Checks the Document again, at once or after a pause in typing. A check still running
     /// stops at its next chunk.
     pub(crate) fn check_spelling(&mut self, pause: bool, cx: &mut Context<Self>) {
-        let generation = self.spelling.generation.fetch_add(1, Ordering::SeqCst) + 1;
+        let generation = self.spelling.supersede();
         if !settings(cx).enabled {
             self.spelling._task = None;
             return;
@@ -466,7 +471,7 @@ impl EditorPane {
             self.check_spelling(false, cx);
         } else {
             self.clear_spelling();
-            self.spelling.generation.fetch_add(1, Ordering::SeqCst);
+            self.spelling.supersede();
             self.spelling._task = None;
         }
     }

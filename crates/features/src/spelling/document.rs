@@ -32,11 +32,11 @@ pub fn unchecked_at(blocks: &[(usize, String)], checked: &Checked) -> Vec<(usize
         .collect()
 }
 
-/// Takes up to `count` Blocks from `todo`, starting with the first one at or after `anchor`
+/// Takes up to `count` Blocks from `todo`, starting with the first one that holds `anchor` or comes after it
 /// (or the first of all when none is), and returns their texts. What the writer sees is
 /// checked first.
 pub fn take_chunk(todo: &mut Vec<(usize, String)>, anchor: usize, count: usize) -> Vec<String> {
-    let start = todo.partition_point(|(from, _)| *from < anchor);
+    let start = todo.partition_point(|(from, text)| from + text.len() <= anchor);
     let start = if start < todo.len() { start } else { 0 };
     let end = (start + count).min(todo.len());
     todo.drain(start..end).map(|(_, text)| text).collect()
@@ -278,6 +278,14 @@ mod tests {
         assert_eq!(take_chunk(&mut todo, 5, 2), vec!["b", "d"]);
         assert_eq!(take_chunk(&mut todo, 45, 2), vec!["a"]);
         assert!(take_chunk(&mut todo, 0, 2).is_empty());
+    }
+
+    #[test]
+    fn the_block_holding_the_anchor_is_checked_first() {
+        let blocks = blocks(&[(0, "aaaa"), (10, "bbbbbbbb"), (30, "cccc")]);
+        let mut todo = unchecked_at(&blocks, &Checked::new());
+        assert_eq!(take_chunk(&mut todo, 14, 1), vec!["bbbbbbbb"]);
+        assert_eq!(take_chunk(&mut todo, 18, 1), vec!["cccc"]);
     }
 
     #[test]

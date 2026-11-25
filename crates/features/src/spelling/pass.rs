@@ -25,7 +25,8 @@ pub struct Progress {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Outcome {
     Complete,
-    /// A newer check began; the Blocks checked so far are kept for it.
+    /// A newer check began; the Blocks checked so far are kept for it. Forgetting the Blocks
+    /// that left the Document (`keep_only`) waits for the next complete pass.
     Superseded,
 }
 
