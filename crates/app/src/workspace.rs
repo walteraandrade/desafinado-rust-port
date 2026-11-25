@@ -36,6 +36,7 @@ use desafinado_features::{
         line_changes::LineChange,
         memory_store::MemoryHistoryStore,
         recorder::AcceptedInput,
+        session::DeferredWrites,
         session::{DocumentHistory, DocumentHistoryOptions},
         store::{HistoryStore, RecordInput},
         types::{AcceptedChange, SuggestionOrigin, VersionCause, VersionId, VersionSummary},
@@ -59,9 +60,9 @@ use crate::spelling::{NextIssue, PreviousIssue};
 use crate::{
     caret,
     document::{
-        Conflict, DiskState, ExternalFacts, ExternalVerdict, FileSession, SCRATCH_KEY,
-        UNTITLED_NAME, decide_external_change, has_unsaved_changes, history_key, mark_edited,
-        minimal_change, name_of, opened_session, suggested_file_name,
+        Conflict, DiskReads, DiskState, ExternalFacts, ExternalVerdict, FileSession, ReadVerdict,
+        SCRATCH_KEY, UNTITLED_NAME, decide_external_change, has_unsaved_changes, history_key,
+        mark_edited, minimal_change, name_of, opened_session, suggested_file_name,
     },
     editor_pane::{EditorPane, PaneEvent, PaneToastAction},
     evals_view::{self, EvalSkill, EvalsEvent, EvalsView},
@@ -390,6 +391,7 @@ struct Saves {
     task: Option<Shared<Task<FileSaveResult>>>,
     queued: Option<SaveKind>,
     document: u64,
+    disk_reads: DiskReads,
 }
 
 /// The text a save writes, the name it reports, and the document it was started from.
@@ -507,10 +509,10 @@ impl Workspace {
             file: start,
             file_path: start_path,
             remembered,
-            first_initial,
+            first_record,
         } = open_start(launch, &user_data);
         let evals_service = evals_view::service(user_data.clone(), Arc::clone(&store));
-        let history = document_history(store, start_path, first_initial);
+        let history = document_history(store, start_path, Vec::new());
         let (pane, quick_actions) = Self::open_pane(&services, &initial, window, cx);
         let key_present = services.keys.status().present;
         let library = cx.new(|cx| LibraryPanel::new(user_data.clone(), window, cx));
@@ -584,8 +586,18 @@ impl Workspace {
             _dialog_subscriptions: Vec::new(),
             _subscriptions: subscriptions,
         };
+        workspace.record_first_version(first_record, cx);
         workspace.started(launches, notice, window, cx);
         workspace
+    }
+
+    /// The version the Document starts from is written on the writer, so opening the window
+    /// does not wait for it; the timeline lists it once it is written.
+    fn record_first_version(&mut self, first: RecordInput, cx: &mut Context<Self>) {
+        let deferred = self
+            .history
+            .recorded_deferred(first.text, first.cause, first.at);
+        self.write_history_later(deferred, cx);
     }
 
     fn open_frontmatter(
@@ -1059,6 +1071,7 @@ impl Workspace {
     }
 
     fn offered(&mut self, path: &Path) -> Option<arrival::Unsaved> {
+        perf_span!("workspace.offered");
         self.flush_unsaved();
         load_unsaved(self.db.as_deref(), &history_key(Some(path))).map(|unsaved| arrival::Unsaved {
             text: unsaved.text,
@@ -1194,6 +1207,12 @@ impl Workspace {
             self.settle_history(cx);
             return;
         };
+        self.write_history_later(deferred, cx);
+    }
+
+    /// Applies `deferred` on the writer, in submission order with the other writes, and lists
+    /// the timeline again once it is written.
+    fn write_history_later(&mut self, deferred: DeferredWrites, cx: &mut Context<Self>) {
         let written_key = deferred.key().to_string();
         let (sender, receiver) = futures::channel::oneshot::channel();
         let serial = HISTORY_WRITES.fetch_add(1, Ordering::Relaxed);
@@ -1208,12 +1227,20 @@ impl Workspace {
             cx,
         );
         cx.spawn(async move |this, cx| {
-            let errors = receiver.await.unwrap_or_else(|_| {
+            let Ok(applied) = receiver.await else {
                 log::error!("The History write for {written_key} did not finish");
-                Vec::new()
-            });
+                this.update(cx, |this, cx| {
+                    if this.history.key() == written_key {
+                        this.history.relist();
+                        this.settle_history(cx);
+                    }
+                })
+                .log_warn();
+                return;
+            };
             this.update(cx, |this, cx| {
-                if this.history.wrote(&written_key, &errors) {
+                let errors = applied.errors().to_vec();
+                if this.history.wrote(&written_key, applied) {
                     this.settle_history(cx);
                 } else {
                     for error in &errors {
@@ -1246,6 +1273,7 @@ impl Workspace {
     }
 
     fn arrived(&mut self) {
+        self.saves.disk_reads.bump_epoch();
         self.reading_feed.touch();
         self.conflict = None;
         self.noticed = None;
@@ -1324,6 +1352,7 @@ impl Workspace {
     }
 
     fn load(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+        perf_span!("workspace.load");
         match read_markdown(&path) {
             FileReadResult::Opened { path, name, text } => self.arrive(
                 Opened { name, path, text },
@@ -1341,6 +1370,7 @@ impl Workspace {
     }
 
     fn reload(&mut self, conflict: Conflict, window: &mut Window, cx: &mut Context<Self>) {
+        perf_span!("workspace.reload");
         match read_markdown(&conflict.path) {
             FileReadResult::Opened { path, name, text } => self.arrive(
                 Opened { name, path, text },
@@ -1389,6 +1419,7 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        perf_span!("workspace.external_changes");
         if changes.library {
             self.library
                 .update(cx, super::library_panel::LibraryPanel::refresh);
@@ -1404,7 +1435,37 @@ impl Workspace {
         {
             return;
         }
-        let read = read_markdown(&path);
+        let ticket = self.saves.disk_reads.start_read();
+        cx.spawn_in(window, async move |this, cx| {
+            let reading = path.clone();
+            let read = cx
+                .background_spawn(async move { read_markdown(&reading) })
+                .await;
+            this.update_in(cx, |this, window, cx| {
+                match this.saves.disk_reads.verdict(ticket) {
+                    ReadVerdict::Judge => this.judge_external_change(path, read, window, cx),
+                    ReadVerdict::Rerun => this.external_changes(changes, window, cx),
+                    ReadVerdict::Drop => {}
+                }
+            })
+            .log_warn();
+        })
+        .detach();
+    }
+
+    /// Decides what the file read after an external change means for the open Document. The
+    /// read ran apart from the UI thread, so the Document may have changed since.
+    fn judge_external_change(
+        &mut self,
+        path: PathBuf,
+        read: FileReadResult,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        perf_span!("workspace.judge_external_change");
+        if self.session_path() != Some(path.as_path()) {
+            return;
+        }
         let disk = match &read {
             FileReadResult::Opened { text, .. } => Some(text.clone()),
             _ => None,
@@ -1684,6 +1745,7 @@ impl Workspace {
     }
 
     fn unsaved_skill_files(&mut self, skill: &EvalSkill, cx: &App) -> Vec<String> {
+        perf_span!("workspace.unsaved_skill_files");
         let markdown: Vec<_> = skill.files.iter().filter(|file| file.is_markdown).collect();
         let active = self.open_path_string();
         let is_open = |path: &str| active.as_deref() == Some(path);
@@ -1869,6 +1931,7 @@ impl Workspace {
     }
 
     fn open_path_string(&self) -> Option<String> {
+        perf_span!("workspace.open_path_string");
         self.session_path().map(|path| {
             std::fs::canonicalize(path)
                 .unwrap_or_else(|_| path.to_path_buf())
@@ -2038,7 +2101,8 @@ impl Workspace {
 
     /// An Untitled Document comes back after a restart from its unsaved text, which a remembered
     /// file would shadow. Synchronous like `save_last_file` in `announce`, so a file opened
-    /// right after cannot have its record removed by a late clear.
+    /// right after cannot have its record removed by a late clear, and a crash cannot reopen
+    /// the closed file.
     fn forget_last_file(&mut self) {
         self.remembered = None;
         clear_last_file(&self.services.user_data);
@@ -2087,12 +2151,14 @@ impl Workspace {
         }
         let document = self.saves.document;
         let text = self.text(cx);
+        self.saves.disk_reads.bump_epoch();
         self.writing = Some(text.clone());
         {
             perf_span!("history.saving");
-            self.history.saving(text.clone(), now_ms());
+            let deferred = self.history.saving_deferred(text.clone(), now_ms());
+            self.write_history_later(deferred, cx);
         }
-        self.settle_history(cx);
+        cx.notify();
         let name = self.session.as_ref().map_or_else(
             || suggested_file_name(&text),
             |session| session.name.clone(),
@@ -2175,6 +2241,7 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         perf_span!("workspace.finish_save");
+        self.saves.disk_reads.bump_epoch();
         self.writing = None;
         self.saves.task = None;
         let Saving {
@@ -2215,9 +2282,9 @@ impl Workspace {
                 self.arrived();
                 {
                     perf_span!("history.saved");
-                    self.history.saved(text, name.clone(), now_ms());
+                    let deferred = self.history.saved_deferred(text, name.clone(), now_ms());
+                    self.write_history_later(deferred, cx);
                 }
-                self.settle_history(cx);
                 self.announce(&current, cx);
                 self.notify_success(format!("Saved {name}"), cx);
                 self.watch();
@@ -3166,10 +3233,11 @@ struct Start {
     file: Option<StartFile>,
     file_path: Option<PathBuf>,
     remembered: Option<PathBuf>,
-    first_initial: Vec<VersionSummary>,
+    first_record: RecordInput,
 }
 
 fn open_start(launch: Option<PathBuf>, user_data: &Path) -> Start {
+    perf_span!("workspace.open_start");
     let db = HistoryDb::open(&user_data.join(HISTORY_FILE))
         .map_err(|error| log::error!("History could not open: {error}"))
         .ok()
@@ -3179,11 +3247,15 @@ fn open_start(launch: Option<PathBuf>, user_data: &Path) -> Start {
         Some(db) => Arc::new(DbHistoryStore::new(Arc::clone(db), now_ms, writer.clone())),
         None => Arc::new(MemoryHistoryStore::new()),
     };
-    let from_launch = launch
-        .map(|path| reopen(db.as_deref(), &path, "Could not open"))
-        .unwrap_or_default();
+    let from_launch = {
+        perf_span!("open_start.reopen");
+        launch
+            .map(|path| reopen(db.as_deref(), &path, "Could not open"))
+            .unwrap_or_default()
+    };
     let launched = from_launch.start.as_ref().map(|start| start.path.clone());
     if let Some(path) = &launched {
+        perf_span!("open_start.last_file");
         save_last_file(user_data, path);
     }
     let last_file = launched.clone().or_else(|| load_last_file(user_data));
@@ -3211,18 +3283,11 @@ fn open_start(launch: Option<PathBuf>, user_data: &Path) -> Start {
     }
     let start = reopened.start.clone();
     let start_path = start.as_ref().map(|start| start.path.clone());
-    let start_key = history_key(start_path.as_deref());
-    store
-        .record(
-            &start_key,
-            RecordInput {
-                at: now_ms(),
-                cause: VersionCause::Edited,
-                text: initial.clone(),
-            },
-        )
-        .log_err();
-    let first_initial = store.list(&start_key).unwrap_or_default();
+    let first_record = RecordInput {
+        at: now_ms(),
+        cause: VersionCause::Edited,
+        text: initial.clone(),
+    };
     let remembered = if reopened.gone {
         None
     } else {
@@ -3237,7 +3302,7 @@ fn open_start(launch: Option<PathBuf>, user_data: &Path) -> Start {
         file: start,
         file_path: start_path,
         remembered,
-        first_initial,
+        first_record,
     }
 }
 
