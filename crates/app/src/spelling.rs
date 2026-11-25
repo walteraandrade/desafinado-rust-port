@@ -22,9 +22,11 @@ use desafinado_core::{
 use desafinado_features::spelling::{
     Issue, IssueKind, Speller,
     document::{self, Checked, WORDBOOK_FILE_NAME, Wordbook},
+    pass::{self, Outcome, Plan, Progress},
     settings::{MenuKey, Press, SPELLING_FILE_NAME, SpellSettings},
 };
 use desafinado_platform::files::write_atomic_unconditionally;
+use futures::StreamExt as _;
 use gpui_kit::{prelude::FluentBuilder as _, *};
 
 use crate::{
@@ -49,6 +51,8 @@ actions!(
 
 /// How long typing must pause before the changed Blocks are checked.
 const PAUSE: Duration = Duration::from_millis(400);
+/// The least time between two redraws of the marks while a long check goes on.
+const PUBLISH_EVERY: Duration = Duration::from_millis(100);
 const MENU_KEY: &str = "\u{0}spell";
 
 static SPELLER: LazyLock<Option<Mutex<Speller>>> =
@@ -137,6 +141,8 @@ fn wordbook(cx: &App) -> &Wordbook {
 /// The spell checker's state in one editor.
 pub struct SpellState {
     checked: Arc<Mutex<Checked>>,
+    /// Counts the checks started; a check whose number is no longer the latest stops.
+    generation: Arc<AtomicU64>,
     issues: Vec<Issue>,
     ignored: HashSet<String>,
     hovered: Option<Range<usize>>,
@@ -169,6 +175,7 @@ impl SpellState {
     pub fn new(cx: &mut App) -> Self {
         Self {
             checked: Arc::new(Mutex::new(Checked::new())),
+            generation: Arc::new(AtomicU64::new(0)),
             issues: Vec::new(),
             ignored: HashSet::new(),
             hovered: None,
@@ -205,74 +212,116 @@ fn checkable(kind: BlockKind) -> bool {
     !matches!(kind, BlockKind::Code | BlockKind::Html | BlockKind::Rule)
 }
 
-/// Checks the Blocks of `text` that changed since the last check and returns every issue in
-/// the Document. Runs off the UI thread.
-fn check_document(text: &str, checked: &Mutex<Checked>) -> Option<Vec<Issue>> {
+/// Threads that check beside the one that asks, on a cold check of many Blocks.
+const HELPERS: usize = 3;
+
+enum Finished {
+    Complete,
+    Superseded,
+    NoSpeller,
+}
+
+/// Checks the Blocks of `text` that changed since the last check, a chunk at a time, and
+/// sends the issues found so far on `progress`. Runs off the UI thread.
+fn check_document(
+    text: &str,
+    checked: &Mutex<Checked>,
+    anchor: usize,
+    live: &(dyn Fn() -> bool + Sync),
+    publish: &(dyn Fn(Progress) + Sync),
+) -> Finished {
     perf_span!("spelling.check_document");
     let blocks: Vec<(usize, String)> = extract_blocks(text)
         .into_iter()
         .filter(|block| checkable(block.kind))
         .map(|block| (block.from, block.text))
         .collect();
-    let mut checked = checked
-        .lock()
-        .map_err(|error| error.to_string())
-        .log_err()?;
-    let fresh: Vec<String> = document::unchecked(&blocks, &checked)
-        .into_iter()
-        .map(str::to_string)
-        .collect();
-    if !fresh.is_empty() {
-        let mut speller = SPELLER
-            .as_ref()?
-            .lock()
-            .map_err(|error| error.to_string())
-            .log_err()?;
-        for text in fresh {
-            let issues = speller.check(&text);
-            checked.insert(text, issues);
-        }
+    let Some(speller) = SPELLER.as_ref() else {
+        return Finished::NoSpeller;
+    };
+    let cores = std::thread::available_parallelism().map_or(1, usize::from);
+    let plan = Plan {
+        anchor,
+        helpers: HELPERS.min(cores / 2),
+        throttle: PUBLISH_EVERY,
+        live,
+        publish,
+    };
+    match pass::run(&blocks, checked, speller, &plan) {
+        Outcome::Complete => Finished::Complete,
+        Outcome::Superseded => Finished::Superseded,
     }
-    document::keep_only(&mut checked, &blocks);
-    Some(document::place(&blocks, &checked))
 }
 
 impl EditorPane {
-    /// Checks the Document again, at once or after a pause in typing.
+    /// Checks the Document again, at once or after a pause in typing. A check still running
+    /// stops at its next chunk.
     pub(crate) fn check_spelling(&mut self, pause: bool, cx: &mut Context<Self>) {
+        let generation = self.spelling.generation.fetch_add(1, Ordering::SeqCst) + 1;
         if !settings(cx).enabled {
             self.spelling._task = None;
             return;
         }
         let checked = Arc::clone(&self.spelling.checked);
+        let latest = Arc::clone(&self.spelling.generation);
         self.spelling._task = Some(cx.spawn(async move |this, cx| {
             if pause {
                 cx.background_executor().timer(PAUSE).await;
             }
-            let Some(text) = this.update(cx, |this, cx| this.text(cx)).log_err() else {
+            let Some((text, anchor)) = this
+                .update(cx, |this, cx| {
+                    (this.text(cx), this.first_visible_offset(cx))
+                })
+                .log_err()
+            else {
                 return;
             };
-            let found = cx
-                .background_spawn(async move { check_document(&text, &checked) })
-                .await;
-            this.update(cx, |this, cx| match found {
-                Some(found) => {
-                    this.spelling.issues = found;
-                    cx.notify();
+            let (sender, mut receiver) = futures::channel::mpsc::unbounded::<Progress>();
+            let work = cx.background_spawn(async move {
+                let live = || latest.load(Ordering::SeqCst) == generation;
+                let publish = |progress| {
+                    sender.unbounded_send(progress).log_warn();
+                };
+                check_document(&text, &checked, anchor, &live, &publish)
+            });
+            while let Some(mut progress) = receiver.next().await {
+                while let Ok(newer) = receiver.try_recv() {
+                    progress = newer;
                 }
-                None if SPELLER.is_none()
-                    && !SPELLER_FAILURE_SHOWN.swap(true, Ordering::Relaxed) =>
-                {
-                    cx.emit(PaneEvent::Toast {
-                        text: "The spell checker could not load its dictionaries.".into(),
-                        tone: ToastTone::Danger,
-                        actions: Vec::new(),
-                    });
-                }
-                None => {}
-            })
-            .log_err();
+                this.update(cx, |this, cx| this.show_progress(progress, generation, cx))
+                    .log_err();
+            }
+            if matches!(work.await, Finished::NoSpeller) {
+                this.update(cx, |_, cx| {
+                    if !SPELLER_FAILURE_SHOWN.swap(true, Ordering::Relaxed) {
+                        cx.emit(PaneEvent::Toast {
+                            text: "The spell checker could not load its dictionaries.".into(),
+                            tone: ToastTone::Danger,
+                            actions: Vec::new(),
+                        });
+                    }
+                })
+                .log_err();
+            }
         }));
+    }
+
+    /// Shows what a check found so far, unless a newer check has begun since.
+    fn show_progress(&mut self, progress: Progress, generation: u64, cx: &mut Context<Self>) {
+        if self.spelling.generation.load(Ordering::SeqCst) != generation {
+            return;
+        }
+        self.spelling.issues =
+            document::merge_progress(&self.spelling.issues, &progress.pending, progress.issues);
+        cx.notify();
+    }
+
+    /// Where the first line on screen starts, or 0 before the first layout.
+    fn first_visible_offset(&self, cx: &App) -> usize {
+        let state = self.editor.read(cx);
+        state.visible_row_range().map_or(0, |rows| {
+            component::RopeExt::line_start_offset(state.text(), rows.start)
+        })
     }
 
     /// Moves the marks with an edit; the ones it touched wait for the next check.
@@ -391,6 +440,7 @@ impl EditorPane {
             self.check_spelling(false, cx);
         } else {
             self.clear_spelling();
+            self.spelling.generation.fetch_add(1, Ordering::SeqCst);
             self.spelling._task = None;
         }
     }
@@ -785,8 +835,8 @@ fn save_wordbook(save: u64, file: &Path, text: &str) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        BlockKind, Checked, Issue, IssueKind, MenuChoice, Mutex, check_document, checkable,
-        choice_label, choices, text_in,
+        BlockKind, Checked, Finished, Issue, IssueKind, MenuChoice, Mutex, Progress,
+        check_document, checkable, choice_label, choices, text_in,
     };
 
     #[test]
@@ -848,7 +898,11 @@ mod tests {
     fn checks_only_prose_blocks_and_places_issues_in_the_document() {
         let text = "# Title\n\nI belive it.\n\n```\nbelive\n```\n";
         let checked = Mutex::new(Checked::new());
-        let issues = check_document(text, &checked).expect("speller loads");
+        let last = Mutex::new(None::<Progress>);
+        let publish = |progress| *last.lock().expect("lock") = Some(progress);
+        let finished = check_document(text, &checked, 0, &|| true, &publish);
+        assert!(matches!(finished, Finished::Complete));
+        let issues = last.lock().expect("lock").take().expect("published").issues;
         let ranges: Vec<&str> = issues
             .iter()
             .map(|issue| &text[issue.range.clone()])
