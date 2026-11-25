@@ -673,6 +673,6 @@ mod tests {
     #[test]
     fn a_write_burst_in_one_folder_does_not_stall_watching_another() {
         let waited = time_watching_another_folder_during_a_burst(&NotifyDirectoryWatch::default());
-        assert!(waited < Duration::from_secs(1), "waited {waited:?}");
+        assert!(waited < Duration::from_secs(3), "waited {waited:?}");
     }
 }

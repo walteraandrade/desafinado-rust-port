@@ -176,12 +176,14 @@ impl Worker {
         let commands = self.commands.clone();
         let owned = dir.to_owned();
         let sink = Box::new(move |message: RawWatchMessage| {
-            // A late event after the worker closed has nobody to hear it.
-            drop(commands.send(Command::Raw {
+            let sent = commands.send(Command::Raw {
                 dir: owned.clone(),
                 id,
                 message,
-            }));
+            });
+            if sent.is_err() {
+                log::trace!("A watch event came after the watcher closed: {owned}");
+            }
         });
         match self.config.watch.watch(Path::new(dir), sink) {
             Ok(handle) => {
@@ -265,15 +267,17 @@ impl Worker {
         self.own_writes.iter().any(|(own, _)| *own == path)
     }
 
-    fn add_event(&mut self, event: WatchEvent) {
+    /// Queues `event` unless it is the app's own write; says whether it was queued.
+    fn add_event(&mut self, event: WatchEvent) -> bool {
         if self.is_own_write(&event) {
-            return;
+            return false;
         }
         let now = Instant::now();
         let started = *self.batch_started.get_or_insert(now);
         self.batch.push(event);
         let waited_left = (started + self.config.max_wait).saturating_duration_since(now);
         self.deadline = Some(now + self.config.delay.min(waited_left));
+        true
     }
 
     fn flush(&mut self) {
@@ -327,12 +331,14 @@ impl Worker {
                 }
                 match message {
                     RawWatchMessage::Event(event) => {
-                        self.mark_renamed_child(&dir, &event);
-                        self.add_event(WatchEvent {
-                            dir,
+                        let queued = self.add_event(WatchEvent {
+                            dir: dir.clone(),
                             kind: event.kind,
-                            filename: event.filename,
+                            filename: event.filename.clone(),
                         });
+                        if queued {
+                            self.mark_renamed_child(&dir, &event);
+                        }
                     }
                     RawWatchMessage::Failed(error) => {
                         self.shut(&dir);
