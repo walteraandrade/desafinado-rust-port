@@ -1,0 +1,11 @@
+focus
+move 800 500
+sleep 300
+click 800 500
+sleep 500
+key ctrl+a
+sleep 500
+type 60 x
+sleep 3000
+key ctrl+z
+sleep 3000

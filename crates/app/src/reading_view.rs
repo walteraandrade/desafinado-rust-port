@@ -14,6 +14,7 @@ use crate::{
 };
 
 pub fn render_reading(text: &str, roles: Roles, code: Arc<CodeHighlighter>) -> AnyElement {
+    perf_span!("reading.render");
     div()
         .id("reading-view")
         .size_full()

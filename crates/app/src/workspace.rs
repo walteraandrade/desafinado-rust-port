@@ -495,6 +495,7 @@ pub struct Workspace {
 
 impl Workspace {
     pub fn new(startup: Startup, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        perf_span!("workspace.new");
         let Startup {
             launch,
             services,
@@ -847,6 +848,7 @@ impl Workspace {
     fn on_pane_event(&mut self, event: &PaneEvent, cx: &mut Context<Self>) {
         match event {
             PaneEvent::Changed => {
+                perf_span!("workspace.changed");
                 let text = self.text(cx);
                 if text != self.last_text {
                     self.last_text.clone_from(&text);
@@ -906,6 +908,7 @@ impl Workspace {
     }
 
     fn announce(&mut self, text: &str, cx: &mut Context<Self>) {
+        perf_span!("workspace.announce");
         self.unsaved.insert(
             SCRATCH_KEY.to_string(),
             Unsaved {
@@ -935,6 +938,7 @@ impl Workspace {
     }
 
     fn flush_unsaved(&mut self) {
+        perf_span!("workspace.flush_unsaved");
         self.unsaved_task = None;
         let pending = std::mem::take(&mut self.unsaved);
         let Some(db) = &self.db else {
@@ -1017,6 +1021,7 @@ impl Workspace {
     }
 
     fn write_moved_place(&mut self, cx: &mut Context<Self>) {
+        perf_span!("workspace.write_moved_place");
         let Some(db) = self.db.clone() else {
             return;
         };
@@ -3168,6 +3173,7 @@ impl Focusable for Workspace {
 
 impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        perf_span!("workspace.render");
         let roles = theme::roles(cx);
         self.viewport_width = window.viewport_size().width;
         let active = self.open_path_string();

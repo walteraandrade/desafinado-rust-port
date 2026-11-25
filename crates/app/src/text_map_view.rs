@@ -100,6 +100,7 @@ impl EditorPane {
     /// The Document's lines in display rows, measured again only when the text or the wrapping
     /// changed.
     fn measured_lines(&self, cx: &App) -> Rc<[MapLine]> {
+        perf_span!("text_map.measured_lines");
         let state = self.editor.read(cx);
         let display = state.display_map();
         let key = LinesKey {

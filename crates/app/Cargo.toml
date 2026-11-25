@@ -18,6 +18,10 @@ desafinado-features = { path = "../features" }
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 rustix.workspace = true
 
+[features]
+# Writes GPUI's foreground journal to DESAFINADO_PERF_OUT, for performance runs.
+perf-probe = ["gpui-kit/profiler"]
+
 [dev-dependencies]
 tempfile = "3.27.0"
 

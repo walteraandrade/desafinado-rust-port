@@ -208,6 +208,7 @@ fn checkable(kind: BlockKind) -> bool {
 /// Checks the Blocks of `text` that changed since the last check and returns every issue in
 /// the Document. Runs off the UI thread.
 fn check_document(text: &str, checked: &Mutex<Checked>) -> Option<Vec<Issue>> {
+    perf_span!("spelling.check_document");
     let blocks: Vec<(usize, String)> = extract_blocks(text)
         .into_iter()
         .filter(|block| checkable(block.kind))

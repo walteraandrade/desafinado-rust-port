@@ -1,0 +1,13 @@
+focus
+move 800 500
+sleep 300
+click 800 500
+sleep 500
+resize 1200 860
+sleep 400
+resize 1100 860
+sleep 400
+resize 1000 860
+sleep 400
+resize 1280 860
+sleep 1500
