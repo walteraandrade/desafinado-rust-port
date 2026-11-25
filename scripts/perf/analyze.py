@@ -16,7 +16,7 @@ def threads(d):
 def bgs(run):
     out = collections.defaultdict(list)
     for e in run:
-        if e['k']=='bg': out[e['name'].split('/src/')[-1]].append(e['us'])
+        if e['k']=='bg' and 'perf_probe' not in e['name']: out[e['name'].split('/src/')[-1]].append(e['us'])
     return out
 def spanmap(run):
     out = collections.defaultdict(list)
@@ -52,7 +52,7 @@ def summarize(d):
         if e['k']=='view': views[(e['name'].split('::')[-1], e['x']['phase'])].append(e['x']['self_us'])
     tasks = collections.defaultdict(list)
     for e in run:
-        if e['k']=='task': tasks[e['name'].split('/src/')[-1] if '/src/' in e['name'] else e['name']].append(e['us'])
+        if e['k']=='task' and 'perf_probe' not in e['name']: tasks[e['name'].split('/src/')[-1] if '/src/' in e['name'] else e['name']].append(e['us'])
     busy = sum(e['us'] for e in run if e['k'] in ('input','draw','task','action','present')) + sum(e['x'].get('busy_us',0) for e in run if e['k']=='small_polls')
     times = [e['t'] for e in run if 't' in e]
     span = (max(times)-min(times)) if times else 1
@@ -73,6 +73,8 @@ def summarize(d):
     }
     return r
 for d in sys.argv[1:]:
+    if not os.path.exists(d+'/cpu'):
+        print('==', os.path.basename(d), 'skipped: the run did not finish'); continue
     print('==', os.path.basename(d)); r=summarize(d)
     if r['lost_events']: print(f" WARNING: the journal lost {r['lost_events']} events; numbers undercount")
     [print(f' {k}: {v}') for k,v in r.items()]

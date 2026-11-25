@@ -22,11 +22,17 @@ unset WAYLAND_DISPLAY
 t0=$(date +%s%N)
 "$bin" "$out/doc.md" > "$out/log" 2>&1 &
 pid=$!
+finish() {
+  kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+  [ -e "$ud/crash.log" ] && cp "$ud/crash.log" "$out/"
+  rm -rf "$ud"
+}
+trap finish EXIT
 for _ in $(seq 400); do
   grep -q presented "$out/perf.jsonl" 2>/dev/null && break
   if ! kill -0 "$pid" 2>/dev/null; then
-    echo "$name: the app exited before its first frame; see $out/log" >&2
-    rm -rf "$ud"; exit 1
+    echo "$name failed: the app exited before its first frame; see $out/log"
+    exit 1
   fi
   sleep 0.05
 done
@@ -41,6 +47,4 @@ sleep 1
 c1=$(read_cpu); w1=$(date +%s%N); threads > "$out/threads1"; echo "$(((w0-t0)/1000000))" > "$out/drive_start_ms"
 grep -E "VmHWM|VmRSS" "/proc/$pid/status" > "$out/mem"
 echo "cpu_ticks=$((c1-c0)) wall_ms=$(((w1-w0)/1000000))" > "$out/cpu"
-kill "$pid"; wait "$pid" 2>/dev/null
-rm -rf "$ud"
 echo "$name done: $(cat "$out/cpu") $(tr '\n' ' ' < "$out/mem")"

@@ -31,6 +31,10 @@ const DRAIN_EVERY: Duration = Duration::from_millis(250);
 /// Marks the process start; call first thing in `main`.
 pub fn mark_start() {
     LazyLock::force(&STARTED);
+    ENABLED.store(
+        std::env::var_os("DESAFINADO_PERF_OUT").is_some(),
+        Ordering::Relaxed,
+    );
 }
 
 fn micros(at: Instant) -> u128 {
@@ -176,7 +180,6 @@ pub fn start(cx: &mut App) {
     let Some(path) = std::env::var_os("DESAFINADO_PERF_OUT").map(PathBuf::from) else {
         return;
     };
-    ENABLED.store(true, Ordering::Relaxed);
     gpui_kit::profiler::set_trace_enabled(true);
     let mut collector = cx.foreground_journal().collector();
     let foreground = std::thread::current().id();
