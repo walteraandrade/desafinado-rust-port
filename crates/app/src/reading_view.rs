@@ -8,7 +8,10 @@ use gpui_kit::{
 
 use crate::{
     theme::{CodeHighlighter, Roles},
-    ui::{Type as _, code_block_scroll_anchor, markdown_style},
+    ui::{
+        COLUMN_INSET, READING_PAD_BOTTOM, READING_PAD_TOP, Type as _, code_block_scroll_anchor,
+        column_text_width, markdown_style,
+    },
 };
 
 #[derive(Debug, Default)]
@@ -60,9 +63,8 @@ impl ReadingView {
                 TextView::new(&self.state)
                     .scrollable(true)
                     .lazy_measure(true)
-                    .content_max_width(px(720.))
-                    .px(px(24.))
-                    .scroll_padding(px(16.), px(60.))
+                    .content_column(column_text_width(), COLUMN_INSET)
+                    .scroll_padding(READING_PAD_TOP, READING_PAD_BOTTOM)
                     .style(markdown_style(roles))
                     .selectable(true)
                     .shared_code_block_highlighter(code)

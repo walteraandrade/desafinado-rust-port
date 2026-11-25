@@ -121,7 +121,7 @@ pub struct TextViewState {
     pub(super) selection_format: SelectionFormat,
     pub(super) scrollable: bool,
     pub(super) max_lines: Option<usize>,
-    pub(super) content_max_width: Option<Pixels>,
+    pub(super) content_column: Option<(Pixels, Pixels)>,
     pub(super) lazy_measure: bool,
     pub(super) scroll_padding: (Pixels, Pixels),
     /// Line spans reported by `Inline` during prepaint (collected only while
@@ -232,7 +232,7 @@ impl TextViewState {
             selection_format: SelectionFormat::default(),
             scrollable: false,
             max_lines: None,
-            content_max_width: None,
+            content_column: None,
             lazy_measure: false,
             scroll_padding: (Pixels::ZERO, Pixels::ZERO),
             line_spans: Arc::default(),
@@ -1248,11 +1248,12 @@ impl Render for TextViewState {
         if let Some(block_ix) = reveal_block {
             self.list_state.scroll_to_reveal_item(block_ix);
         }
-        match self.content_max_width {
-            Some(width) => div()
+        match self.content_column {
+            Some((width, inset)) => div()
                 .size_full()
                 .flex()
                 .justify_center()
+                .px(inset)
                 .child(content.max_w(width))
                 .into_any_element(),
             None => content.into_any_element(),
@@ -3233,6 +3234,8 @@ mod tests {
             Scrollable,
             /// A scrollable view that measures only the blocks it shows.
             LazyScrollable,
+            /// A scrollable view with space above and below its blocks.
+            PaddedScrollable,
             /// A fit-content view, second row of an application list.
             List(ListState),
             /// A fit-content view in a scrolling `div`, which follows reveals
@@ -3266,6 +3269,13 @@ mod tests {
                 match &self.container {
                     Container::Scrollable => frame
                         .child(TextView::new(&state).scrollable(true))
+                        .into_any_element(),
+                    Container::PaddedScrollable => frame
+                        .child(
+                            TextView::new(&state)
+                                .scrollable(true)
+                                .scroll_padding(px(16.), px(60.)),
+                        )
                         .into_any_element(),
                     Container::LazyScrollable => frame
                         .child(TextView::new(&state).scrollable(true).lazy_measure(true))
@@ -3399,6 +3409,28 @@ mod tests {
             assert!(!is_pending(&state, cx));
             let top = scroll_top(&state, cx);
             assert!((440..=450).contains(&top.item_ix), "{top:?}");
+        }
+
+        #[gpui::test]
+        fn the_scrollbar_end_leaves_the_bottom_padding_below_the_last_block(
+            cx: &mut TestAppContext,
+        ) {
+            let (state, cx) = window(&paragraphs(300), Container::PaddedScrollable, cx);
+            state.read_with(cx, |state, _| {
+                let max = state.list_state.max_offset_for_scrollbar().y;
+                state
+                    .list_state
+                    .set_offset_from_scrollbar(gpui::point(px(0.), -max));
+            });
+            draw(cx);
+            draw(cx);
+            state.read_with(cx, |state, _| {
+                let last = state.list_state.bounds_for_item(299).unwrap();
+                // The last item holds the block and its padding, so the block
+                // ends 60px above the viewport bottom.
+                assert_eq!(last.bottom(), px(100.), "{last:?}");
+                assert!(last.size.height > px(60.), "{last:?}");
+            });
         }
 
         #[gpui::test]

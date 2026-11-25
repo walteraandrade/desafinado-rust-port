@@ -14,9 +14,9 @@ Three features. The first is in `src/text`:
 
 - **Reading view options** on `TextView` (`text/text_view.rs`, `text/state.rs`, `text/document.rs`), used by `crates/app/src/reading_view.rs`:
   - `lazy_measure(true)`: a scrollable view measures only the blocks it shows. The list is built without `measure_all` and `render_root` gives every block an estimated height (`estimated_block_height`), so the scrollbar thumb settles as blocks are measured instead of being exact from the first frame. Without it the first frame lays out the whole document.
-  - `content_max_width(w)`: the content is a centered column at most `w` wide, while the view, its wheel handling and its scrollbar keep the full width of the container.
-  - `scroll_padding(top, bottom)`: space above the first and below the last block that scrolls with the content (padding of the list).
-  - Tests: `a_lazy_view_measures_only_the_blocks_it_shows` and `an_eager_view_measures_every_block` in `text/state.rs`, and the estimate in `text/document.rs`.
+  - `content_column(w, inset)`: the content is a centered column at most `w` wide with `inset` on both sides, while the view, its wheel handling and its scrollbar keep the full width of the container.
+  - `scroll_padding(top, bottom)`: space above the first and below the last block that scrolls with the content (carried by the first and last block items, because the list's own padding is ignored by its scrollbar math).
+  - Tests: `a_lazy_view_measures_only_the_blocks_it_shows`, `the_scrollbar_end_leaves_the_bottom_padding_below_the_last_block` and `an_eager_view_measures_every_block` in `text/state.rs`, and the estimate in `text/document.rs`.
 
 The other two are in `src/input`:
 

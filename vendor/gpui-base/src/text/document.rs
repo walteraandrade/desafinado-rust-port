@@ -1,5 +1,6 @@
 use gpui::{
     App, IntoElement, ListState, ParentElement as _, SharedString, Styled as _, Window, div,
+    prelude::FluentBuilder as _,
 };
 
 use std::{
@@ -292,25 +293,28 @@ impl ParsedDocument {
                 move |ix, window, cx| {
                     let is_last = ix + 1 == blocks.len();
                     let (is_first, prev) = flow_position(&blocks, ix);
-                    blocks[ix]
-                        .render_block(
-                            NodeRenderOptions {
-                                ix,
-                                is_last,
-                                is_first,
-                                prev,
-                                ..options
-                            },
-                            &node_cx,
-                            window,
-                            cx,
-                        )
+                    let block = blocks[ix].render_block(
+                        NodeRenderOptions {
+                            ix,
+                            is_last,
+                            is_first,
+                            prev,
+                            ..options
+                        },
+                        &node_cx,
+                        window,
+                        cx,
+                    );
+                    // The list's own padding is ignored by its scrollbar
+                    // math, so the first and last items carry the space.
+                    div()
+                        .when(ix == 0, |this| this.pt(scroll_padding.0))
+                        .when(is_last, |this| this.pb(scroll_padding.1))
+                        .child(block)
                         .into_any_element()
                 }
             })
-            .size_full()
-            .pt(scroll_padding.0)
-            .pb(scroll_padding.1),
+            .size_full(),
         )
     }
 }

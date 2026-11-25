@@ -216,7 +216,7 @@ pub struct TextView {
     reveal_handler: Option<Rc<RevealHandlerFn>>,
     markdown_extensions: Arc<MarkdownExtensions>,
     motion: Option<TextViewMotion>,
-    content_max_width: Option<Pixels>,
+    content_column: Option<(Pixels, Pixels)>,
     lazy_measure: bool,
     scroll_padding: (Pixels, Pixels),
 }
@@ -271,7 +271,7 @@ impl TextView {
             reveal_handler: None,
             markdown_extensions: Arc::default(),
             motion: None,
-            content_max_width: None,
+            content_column: None,
             lazy_measure: false,
             scroll_padding: (Pixels::ZERO, Pixels::ZERO),
         }
@@ -303,7 +303,7 @@ impl TextView {
             reveal_handler: None,
             markdown_extensions: Arc::default(),
             motion: None,
-            content_max_width: None,
+            content_column: None,
             lazy_measure: false,
             scroll_padding: (Pixels::ZERO, Pixels::ZERO),
         }
@@ -335,7 +335,7 @@ impl TextView {
             reveal_handler: None,
             markdown_extensions: Arc::default(),
             motion: None,
-            content_max_width: None,
+            content_column: None,
             lazy_measure: false,
             scroll_padding: (Pixels::ZERO, Pixels::ZERO),
         }
@@ -432,10 +432,11 @@ impl TextView {
         self
     }
 
-    /// Centers the content in a column at most `width` wide, while the view,
-    /// its hitbox and its scrollbar keep the full width of the container.
-    pub fn content_max_width(mut self, width: Pixels) -> Self {
-        self.content_max_width = Some(width);
+    /// Centers the content in a column at most `max_width` wide with `inset`
+    /// on both sides, while the view, its hitbox and its scrollbar keep the
+    /// full width of the container.
+    pub fn content_column(mut self, max_width: Pixels, inset: Pixels) -> Self {
+        self.content_column = Some((max_width, inset));
         self
     }
 
@@ -878,7 +879,7 @@ impl Element for TextView {
             state.selection_format = self.selection_format;
             state.scrollable = self.scrollable;
             state.max_lines = max_lines;
-            state.content_max_width = self.content_max_width;
+            state.content_column = self.content_column;
             state.scroll_padding = self.scroll_padding;
             if self.lazy_measure {
                 state.set_lazy_measure();

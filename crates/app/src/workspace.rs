@@ -3170,10 +3170,10 @@ fn preferences_motion(panel: Entity<PreferencesPanel>, open: bool) -> AnyElement
 pub(crate) fn column_row(content: impl IntoElement) -> Div {
     div().w_full().flex().justify_center().child(
         div()
-            .w(px(768.))
+            .w(crate::ui::COLUMN_WIDTH)
             .max_w_full()
-            .px(px(24.))
-            .pb(px(12.))
+            .px(crate::ui::COLUMN_INSET)
+            .pb(crate::ui::COLUMN_PAD_BOTTOM)
             .child(content),
     )
 }
