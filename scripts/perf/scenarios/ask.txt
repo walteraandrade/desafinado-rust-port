@@ -1,0 +1,14 @@
+focus
+move 800 500
+sleep 300
+click 800 500
+sleep 500
+key ctrl+k
+sleep 800
+type 40 make it shorter
+key enter
+sleep 4000
+key ctrl+enter
+sleep 2000
+key ctrl+z
+sleep 1500

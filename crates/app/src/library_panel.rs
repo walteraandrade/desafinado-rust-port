@@ -943,6 +943,7 @@ impl Focusable for LibraryPanel {
 
 impl Render for LibraryPanel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        perf_span!("library.render");
         let roles = theme::roles(cx);
         self.search_focused = self.search.read(cx).focus_handle(cx).is_focused(window);
         let items = self.items();

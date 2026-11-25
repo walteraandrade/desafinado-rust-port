@@ -428,6 +428,7 @@ impl EditorPane {
         event: &InputEditsEvent,
         cx: &mut Context<Self>,
     ) {
+        perf_span!("pane.on_edits");
         self.text_map.edited();
         self.caret.restart(editor, cx);
         let frontmatter = find_frontmatter(&editor.read(cx).value());
@@ -496,6 +497,7 @@ impl EditorPane {
     }
 
     pub(crate) fn set_suggestions(&mut self, next: SuggestionsState, cx: &mut Context<Self>) {
+        perf_span!("pane.set_suggestions");
         let notice = next.notice.filter(|notice| {
             self.suggestions.notice.map(|before| before.serial) != Some(notice.serial)
         });
@@ -715,6 +717,7 @@ impl EditorPane {
     }
 
     pub fn refresh_decorations(&mut self, cx: &mut Context<Self>) {
+        perf_span!("pane.refresh_decorations");
         let roles = theme::roles(cx);
         let active_id = self.active(cx).map(|item| item.id.clone());
         let strikes: Vec<TextDecoration> = self
@@ -3044,6 +3047,7 @@ impl EditorPane {
 
 impl Render for EditorPane {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        perf_span!("pane.render");
         let roles = theme::roles(cx);
         if std::mem::take(&mut self.reveal_pending) {
             self.reveal_first_review_suggestion(window, cx);

@@ -1,4 +1,14 @@
 use desafinado_core::log_err::LogErr;
+#[cfg(feature = "perf-probe")]
+macro_rules! perf_span {
+    ($name:expr) => {
+        let _perf_span = crate::perf_probe::Span::new($name);
+    };
+}
+#[cfg(not(feature = "perf-probe"))]
+macro_rules! perf_span {
+    ($name:expr) => {};
+}
 mod caret;
 mod comment_review;
 mod crash_log;
@@ -18,6 +28,8 @@ mod logger;
 mod menu_nav;
 mod model_dialog;
 mod new_skill_dialog;
+#[cfg(feature = "perf-probe")]
+mod perf_probe;
 mod preferences_view;
 mod reading_view;
 mod single_instance;
@@ -89,12 +101,18 @@ fn run_app<V: Render>(
     gpui_kit::application()
         .with_assets(gpui_kit::assets::Assets::new(""))
         .run(move |cx| {
-            gpui_kit::init(cx);
+            {
+                perf_span!("main.gpui_kit_init");
+                gpui_kit::init(cx);
+            }
+            #[cfg(feature = "perf-probe")]
+            perf_probe::start(cx);
             cx.text_system()
                 .add_fonts(FONTS.iter().map(|font| Cow::Borrowed(*font)).collect())
                 .log_err();
             setup(cx);
             let options = window_options(cx);
+            perf_span!("main.open_window");
             gpui_kit::open_window(options, cx, build).expect("failed to open the window");
             cx.on_window_closed(|cx, _| {
                 if cx.windows().is_empty() {
@@ -113,6 +131,8 @@ fn show_start_error(message: String) {
 }
 
 fn main() {
+    #[cfg(feature = "perf-probe")]
+    perf_probe::mark_start();
     logger::init();
     if let Some(message) = start_failure() {
         log::error!("Failed to start: {message}");
@@ -139,11 +159,15 @@ fn main() {
     };
     let launch =
         launch_file_of(&argv, &cwd).map(|path| std::fs::canonicalize(&path).unwrap_or(path));
-    let services = desafinado_runtime::services::Services::load();
+    let services = {
+        perf_span!("main.services_load");
+        desafinado_runtime::services::Services::load()
+    };
     let _held = instance;
     let user_data = services.user_data.clone();
     run_app(
         move |cx| {
+            perf_span!("main.setup");
             caret::init(&user_data, cx);
             spelling::init(&user_data, cx);
             theme::init(&user_data, cx);

@@ -3784,6 +3784,85 @@ dependencies = [
 ]
 
 [[package]]
+name = "gpui-fast"
+version = "0.1.17"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4481f1c7729d23de02a516384278293a4f95a3bdd4b735fc474076675fed9634"
+dependencies = [
+ "accesskit",
+ "anyhow",
+ "async-channel",
+ "async-task",
+ "backtrace",
+ "bitflags 2.13.2",
+ "chrono",
+ "derive_more 2.1.1",
+ "embed-resource",
+ "etagere",
+ "futures",
+ "getrandom 0.3.4",
+ "gpui-fast-macros",
+ "gpui-pre-collections",
+ "gpui-pre-http-client",
+ "gpui-pre-refineable",
+ "gpui-pre-scheduler",
+ "gpui-pre-shared-string",
+ "gpui-pre-sum-tree",
+ "gpui-pre-util",
+ "hdrhistogram",
+ "heapless",
+ "icu_segmenter",
+ "image",
+ "inventory",
+ "itertools 0.14.0",
+ "libc",
+ "log",
+ "lyon",
+ "num_cpus",
+ "objc2-core-foundation",
+ "objc2-core-video",
+ "parking",
+ "parking_lot",
+ "pin-project",
+ "pollster 0.4.0",
+ "profiling",
+ "rand 0.9.5",
+ "raw-window-handle",
+ "regex",
+ "resvg 0.46.0",
+ "schemars",
+ "seahash",
+ "serde",
+ "serde_json",
+ "slotmap",
+ "smallvec",
+ "spin 0.10.1",
+ "strum",
+ "taffy",
+ "thiserror 2.0.21",
+ "ttf-parser",
+ "unicode-segmentation",
+ "url",
+ "usvg 0.46.0",
+ "uuid",
+ "waker-fn",
+ "windows 0.62.2",
+ "zed-scap",
+]
+
+[[package]]
+name = "gpui-fast-macros"
+version = "0.1.19"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "16cfa16e2c6ccbd380a63404fb13c121e6251e5de66b53917c02b295394725e2"
+dependencies = [
+ "heck 0.5.0",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
+]
+
+[[package]]
 name = "gpui-kit"
 version = "0.9.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3791,6 +3870,7 @@ checksum = "aca1dedfea73645b60b5893c9c16de0b1396f2cf4251d19e5f03a295c1b61879"
 dependencies = [
  "gpui-base",
  "gpui-component",
+ "gpui-fast",
  "gpui-kit-assets",
  "gpui-pre",
  "gpui-pre-macros",
@@ -3839,6 +3919,7 @@ dependencies = [
  "gpui-pre-shared-string",
  "gpui-pre-sum-tree",
  "gpui-pre-util",
+ "hdrhistogram",
  "heapless",
  "icu_segmenter",
  "image",
@@ -4511,6 +4592,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a596f1b20ed2cc5ecac41a164aaebc7258057060f06c0cf7a2ba3991ee7990fb"
 dependencies = [
  "hashbrown 0.17.1",
+]
+
+[[package]]
+name = "hdrhistogram"
+version = "7.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f49d1053f4708f0af3cf9fc5bffc7e68a914a3c45becb231c80068c9c3f78bea"
+dependencies = [
+ "byteorder",
+ "num-traits",
 ]
 
 [[package]]

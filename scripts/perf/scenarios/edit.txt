@@ -1,0 +1,10 @@
+focus
+move 800 500
+sleep 300
+click 800 500
+sleep 500
+key end
+type 60 the quick brown fox jumps over the lazy dog while the writer keeps typing more words here
+key backspace 40 40
+key enter 10 60
+sleep 2500
