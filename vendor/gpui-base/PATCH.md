@@ -10,7 +10,7 @@ diff -ru ~/.cargo/registry/src/*/gpui-base-0.9.1/src vendor/gpui-base/src
 
 ## What changed
 
-Two features, both in `src/input`:
+Three changes, all in `src/input`:
 
 - **Inlays**: text drawn inside a line that is not in the buffer. `InputState::set_inlays(Vec<Inlay>)` takes an offset, the text and a `HighlightStyle`.
   - `display_map/inlays.rs` (new): `Inlay`, `BlockZone`, `shift_offset`.
@@ -23,7 +23,12 @@ Two features, both in `src/input`:
   - `base/movement.rs`: up and down skip the zone rows, counting in display rows so folds are honored.
   - `base/element.rs`, `base/state.rs`, `editor/indent.rs`: selection, folds, line numbers, clicks and indent guides use the text height where they used the line height.
 
-Tests for both are in `inlays.rs`, `text_wrapper.rs`, `inline_line.rs` and at the end of `base/element.rs` (through `InputState` in a test window). The `gpui-base` CI job runs the crate's whole library suite and checks its format. From this folder:
+- **Estimate-then-verify soft wrap**: `display_map/text_wrapper.rs`: `measured_wrap` still wraps by exact shaped widths and picks the same breaks, but finds each row's end by starting at an estimate and checking it, instead of galloping from one grapheme.
+  - `largest_fitting` starts at a guess and gallops away from it, so a right guess costs two shapings (`k` fits, `k + 1` does not) and the answer is always bracketed by two measured prefixes. The guess is the previous row's width per byte, carried across lines in `update_wrapped` (`measured_wrap_hinted`); a wrong hint changes which prefixes are shaped, never the breaks. The guess is capped at twice the last row (at most 1 KB) plus 16 bytes, so a hint from zero-width text costs a bounded number of shapings, not a line's length.
+  - It looks at word breaks inside a 256-grapheme window first and falls back to graphemes when every word in the window fits or the first word does not, as before. For a measure that grows with the prefix it returns what the old search returned; `text_wrapper/reference.rs` keeps the old search and `text_wrapper/fast_search_tests.rs` compares them, counts shapings per row and checks `valid_widths`, bounds the cost of bad hints and compares on the real text system (prose with tabs, no `fi`/`ff`/`fl` ligatures).
+  - Shapings per row of prose go from about 15 to 2 or 3. A measure that is not monotone in the prefix (a ligature that shrinks a width) may pick a different, equally fitting break than before.
+
+Tests for inlays and zones are in `inlays.rs`, `text_wrapper.rs`, `inline_line.rs` and at the end of `base/element.rs` (through `InputState` in a test window). The `gpui-base` CI job runs the crate's whole library suite and checks its format. From this folder:
 
 ```sh
 cargo fmt --check
