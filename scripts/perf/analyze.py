@@ -1,3 +1,4 @@
+"""Summarizes performance runs: python3 analyze.py RUN_DIR [RUN_DIR ...]"""
 import json, sys, collections, os
 def pct(xs, p):
     if not xs: return 0
@@ -24,18 +25,25 @@ def spanmap(run):
     return out
 def summarize(d):
     ev = [json.loads(l) for l in open(d+'/perf.jsonl')]
-    first = next((e['t'] for e in ev if e['k']=='presented'), None)
+    first = min((e['t'] for e in ev if e['k']=='presented'), default=None)
     cpu = open(d+'/cpu').read().strip(); mem = open(d+'/mem').read().split()
     start_drive = None
     try: start_drive = int(open(d+'/drive_start_ms').read())*1000
     except Exception: pass
-    run = [e for e in ev if start_drive is None or e['t'] >= start_drive - 50_000]
-    pres = [e['t'] for e in run if e['k']=='presented']
+    lost = sum(e['n'] for e in ev if e['k']=='lost')
+    run = [e for e in ev if 't' in e and (start_drive is None or e['t'] >= start_drive - 50_000)]
+    pres = sorted(e['t'] for e in run if e['k']=='presented')
     keys = [e for e in run if e['k']=='input' and e['name']=='key_down']
+    # A key's frame: the first draw that starts after its handler ends, shown at the first
+    # presentation after that draw ends.
+    draws_by_start = sorted((e['t'], e['t'] + e['us']) for e in run if e['k']=='draw')
+    draw_starts = [d[0] for d in draws_by_start]
     lat = []
     import bisect
     for k in keys:
-        i = bisect.bisect_left(pres, k['t'] + k['us'])
+        j = bisect.bisect_left(draw_starts, k['t'] + k['us'])
+        if j == len(draw_starts): continue
+        i = bisect.bisect_left(pres, draws_by_start[j][1])
         if i < len(pres): lat.append(pres[i]-k['t'])
     draws = [e for e in run if e['k']=='draw']
     inputs = [e['us'] for e in run if e['k']=='input' and e['name']=='key_down']
@@ -46,8 +54,10 @@ def summarize(d):
     for e in run:
         if e['k']=='task': tasks[e['name'].split('/src/')[-1] if '/src/' in e['name'] else e['name']].append(e['us'])
     busy = sum(e['us'] for e in run if e['k'] in ('input','draw','task','action','present')) + sum(e['x'].get('busy_us',0) for e in run if e['k']=='small_polls')
-    span = (run[-1]['t']-run[0]['t']) if run else 1
+    times = [e['t'] for e in run if 't' in e]
+    span = (max(times)-min(times)) if times else 1
     r = {
+      'lost_events': lost,
       'first_frame_ms': ms(first) if first else None, 'cpu': cpu, 'rss_kb': mem[1] if len(mem)>1 else None,
       'frames': len(draws), 'keys': len(keys),
       'key_to_present_ms': {'p50': ms(pct(lat,50)), 'p95': ms(pct(lat,95)), 'max': ms(max(lat) if lat else 0)},
@@ -63,4 +73,6 @@ def summarize(d):
     }
     return r
 for d in sys.argv[1:]:
-    print('==', os.path.basename(d)); r=summarize(d); [print(f' {k}: {v}') for k,v in r.items()]
+    print('==', os.path.basename(d)); r=summarize(d)
+    if r['lost_events']: print(f" WARNING: the journal lost {r['lost_events']} events; numbers undercount")
+    [print(f' {k}: {v}') for k,v in r.items()]

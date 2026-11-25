@@ -495,7 +495,6 @@ pub struct Workspace {
 
 impl Workspace {
     pub fn new(startup: Startup, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        perf_span!("workspace.new");
         let Startup {
             launch,
             services,

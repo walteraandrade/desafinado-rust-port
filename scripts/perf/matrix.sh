@@ -7,7 +7,7 @@ p=${PREFIX:-run}
 mkdir -p "$work/docs" "$work/ud-nospell"
 [ -e "$work/docs/huge.md" ] || python3 "$here/gen_docs.py" "$work/docs"
 echo '{"enabled": false}' > "$work/ud-nospell/spelling.json"
-r() { "$here/run.sh" "$p-$1" "$work/docs/$2.md" "$here/scenarios/$3.txt" ${BIN:+"$BIN"} 2>&1 | grep done; }
+r() { "$here/run.sh" "$p/$1" "$work/docs/$2.md" "$here/scenarios/$3.txt" ${BIN:+"$BIN"} 2>&1 | grep done; }
 for s in small medium large huge; do r "startup-$s" "$s" startup; done
 r idle-medium medium idle
 for s in small medium large huge; do r "type-$s" "$s" type; done
@@ -27,5 +27,5 @@ r review_notes-medium medium review_notes
 r replace_all-large large replace_all
 r save-large large save
 r resize-large large resize
-python3 "$here/analyze.py" "$work/runs/$p"-* > "$work/summary-$p.txt"
+python3 "$here/analyze.py" "$work/runs/$p"/* > "$work/summary-$p.txt"
 echo "summary in $work/summary-$p.txt"

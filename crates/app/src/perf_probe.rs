@@ -3,9 +3,14 @@
 //! Built only with the `perf-probe` feature.
 
 use std::{
+    collections::HashMap,
     io::Write as _,
     path::PathBuf,
-    sync::LazyLock,
+    sync::{
+        LazyLock,
+        atomic::{AtomicBool, Ordering},
+    },
+    thread::ThreadId,
     time::{Duration, Instant},
 };
 
@@ -17,6 +22,9 @@ use gpui_kit::{
 use serde_json::json;
 
 static STARTED: LazyLock<Instant> = LazyLock::new(Instant::now);
+
+/// Set once the probe writes somewhere, so spans are not kept when nothing drains them.
+static ENABLED: AtomicBool = AtomicBool::new(false);
 
 const DRAIN_EVERY: Duration = Duration::from_millis(250);
 
@@ -38,6 +46,9 @@ fn line(entry: &ForegroundJournalEntry) -> Option<serde_json::Value> {
                 "t": micros(frame.presentation.present_end),
                 "dirty_to_present_us": frame.dirty_to_present_duration().map(|d| d.as_micros()),
             }));
+        }
+        ForegroundJournalEntry::Discontinuity { lost } => {
+            return Some(json!({ "k": "lost", "n": lost }));
         }
         _ => return None,
     };
@@ -98,38 +109,38 @@ impl Span {
 
 impl Drop for Span {
     fn drop(&mut self) {
+        if !ENABLED.load(Ordering::Relaxed) {
+            return;
+        }
         if let Ok(mut spans) = SPANS.lock() {
             spans.push((self.0, self.1, self.1.elapsed()));
         }
     }
 }
 
-fn span_lines() -> Vec<serde_json::Value> {
-    let taken = SPANS
-        .lock()
-        .map(|mut spans| std::mem::take(&mut *spans))
-        .unwrap_or_default();
-    taken
-        .into_iter()
-        .map(|(name, start, took)| {
-            json!({ "k": "span", "name": name, "t": micros(start), "us": took.as_micros() })
-        })
-        .collect()
+fn span_line((name, start, took): (&'static str, Instant, Duration)) -> serde_json::Value {
+    json!({ "k": "span", "name": name, "t": micros(start), "us": took.as_micros() })
 }
 
-/// Background task polls that ended since `seen`.
+/// Background task polls each thread finished since the last call, per thread so a thread
+/// that publishes late does not lose polls behind another thread's newer ones.
 fn background_lines(
-    foreground: std::thread::ThreadId,
-    seen: &mut Instant,
+    foreground: ThreadId,
+    seen: &mut HashMap<ThreadId, Instant>,
 ) -> Vec<serde_json::Value> {
-    let since = *seen;
     let mut lines = Vec::new();
     for thread in gpui_kit::profiler::get_all_timings(gpui_kit::TasksIncluded::OnlyCompleted) {
         if thread.thread_id == foreground {
             continue;
         }
-        for task in thread.timings.iter().filter(|task| task.end.0 > since) {
-            *seen = (*seen).max(task.end.0);
+        let since = seen.get(&thread.thread_id).copied();
+        for task in thread
+            .timings
+            .iter()
+            .filter(|task| since.is_none_or(|since| task.end.0 > since))
+        {
+            let latest = seen.entry(thread.thread_id).or_insert(task.end.0);
+            *latest = (*latest).max(task.end.0);
             lines.push(json!({
                 "k": "bg",
                 "name": format!("{}:{}", task.location.file(), task.location.line()),
@@ -141,45 +152,57 @@ fn background_lines(
     lines
 }
 
-/// Starts draining the journal into `DESAFINADO_PERF_OUT`, when it is set.
+fn write_lines(path: &PathBuf, values: &[serde_json::Value]) {
+    if values.is_empty() {
+        return;
+    }
+    let text = values.iter().fold(String::new(), |mut text, value| {
+        text.push_str(&value.to_string());
+        text.push('\n');
+        text
+    });
+    std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .and_then(|mut file| file.write_all(text.as_bytes()))
+        .log_err();
+}
+
+/// Starts draining into `DESAFINADO_PERF_OUT`, when it is set. Only the journal drain and
+/// the span swap run on the UI thread; reading other threads' timings, JSON and the write
+/// run in the background.
 pub fn start(cx: &mut App) {
     let Some(path) = std::env::var_os("DESAFINADO_PERF_OUT").map(PathBuf::from) else {
         return;
     };
+    ENABLED.store(true, Ordering::Relaxed);
     gpui_kit::profiler::set_trace_enabled(true);
     let mut collector = cx.foreground_journal().collector();
     let foreground = std::thread::current().id();
-    let mut seen = Instant::now();
     let executor = cx.background_executor().clone();
     cx.spawn(async move |cx| {
+        let mut seen = HashMap::new();
         loop {
             executor.timer(DRAIN_EVERY).await;
-            let drained = collector.collect_unseen();
-            let values: Vec<serde_json::Value> = drained
-                .entries
-                .iter()
-                .filter_map(line)
-                .chain(background_lines(foreground, &mut seen))
-                .chain(span_lines())
-                .collect();
-            if values.is_empty() {
-                continue;
-            }
-            let text = values.iter().fold(String::new(), |mut text, value| {
-                text.push_str(&value.to_string());
-                text.push('\n');
-                text
-            });
+            let entries = collector.collect_unseen().entries;
+            let spans = SPANS
+                .lock()
+                .map(|mut spans| std::mem::take(&mut *spans))
+                .unwrap_or_default();
             let path = path.clone();
-            cx.background_spawn(async move {
-                std::fs::OpenOptions::new()
-                    .create(true)
-                    .append(true)
-                    .open(&path)
-                    .and_then(|mut file| file.write_all(text.as_bytes()))
-                    .log_err();
-            })
-            .await;
+            seen = cx
+                .background_spawn(async move {
+                    let values: Vec<serde_json::Value> = entries
+                        .iter()
+                        .filter_map(line)
+                        .chain(background_lines(foreground, &mut seen))
+                        .chain(spans.into_iter().map(span_line))
+                        .collect();
+                    write_lines(&path, &values);
+                    seen
+                })
+                .await;
         }
     })
     .detach();
