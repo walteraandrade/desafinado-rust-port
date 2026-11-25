@@ -20,6 +20,12 @@ pub const UI_FAMILY: &str = "Inter";
 pub const MONO_FAMILY: &str = "Noto Sans Mono";
 const WORDMARK_FAMILY: &str = "League Spartan";
 
+pub fn body_line_height(window: &Window) -> Pixels {
+    let mut style = window.text_style();
+    style.font_size = TEXT_BODY.into();
+    style.line_height_in_pixels(window.rem_size())
+}
+
 pub trait Type: Styled + Sized {
     fn type_body(self) -> Self {
         self.text_size(TEXT_BODY)

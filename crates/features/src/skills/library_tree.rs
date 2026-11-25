@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::ops::Range;
 
 use serde::{Deserialize, Serialize};
 
@@ -294,6 +295,29 @@ pub fn derive_tree_view(
         active_id,
         holding,
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ItemsChange {
+    pub old: Range<usize>,
+    pub new_len: usize,
+}
+
+pub fn items_change(old: &[TreeItem], new: &[TreeItem]) -> Option<ItemsChange> {
+    let prefix = old.iter().zip(new).take_while(|(a, b)| a == b).count();
+    if prefix == old.len() && prefix == new.len() {
+        return None;
+    }
+    let suffix = old[prefix..]
+        .iter()
+        .rev()
+        .zip(new[prefix..].iter().rev())
+        .take_while(|(a, b)| a == b)
+        .count();
+    Some(ItemsChange {
+        old: prefix..old.len() - suffix,
+        new_len: new.len() - prefix - suffix,
+    })
 }
 
 #[cfg(test)]
@@ -687,6 +711,54 @@ mod tests {
         choices.insert("skill:/skills/git".to_string(), false);
         let view = derive_tree_view(&roots, &choices, Some("/skills/git/SKILL.md"));
         assert_eq!(view.items.len(), 2);
+    }
+
+    fn items_of(roots: &[LibraryRoot], choices: &HashMap<String, bool>) -> Vec<TreeItem> {
+        derive_tree_view(roots, choices, None).items
+    }
+
+    #[test]
+    fn items_change_is_none_for_equal_lists() {
+        let roots = [root(vec![skill("git", &["SKILL.md"])])];
+        let items = items_of(&roots, &HashMap::new());
+        assert_eq!(items_change(&items, &items.clone()), None);
+    }
+
+    #[test]
+    fn items_change_covers_only_the_toggled_row_and_the_rows_it_added() {
+        let roots = [root(vec![
+            skill("a", &["SKILL.md", "x.md"]),
+            skill("b", &["SKILL.md"]),
+            skill("c", &["SKILL.md"]),
+        ])];
+        let folded = items_of(&roots, &HashMap::new());
+        let mut choices = HashMap::new();
+        choices.insert("skill:/skills/b".to_string(), true);
+        let open = items_of(&roots, &choices);
+        assert_eq!(folded.len(), 4);
+        assert_eq!(open.len(), 5);
+        let change = items_change(&folded, &open);
+        assert_eq!(
+            change,
+            Some(ItemsChange {
+                old: 2..3,
+                new_len: 2
+            })
+        );
+        assert_eq!(items_change(&open, &folded).map(|c| c.old), Some(2..4));
+    }
+
+    #[test]
+    fn items_change_marks_the_whole_list_when_everything_differs() {
+        let roots = [root(vec![skill("a", &["SKILL.md"])])];
+        let items = items_of(&roots, &HashMap::new());
+        assert_eq!(
+            items_change(&[], &items),
+            Some(ItemsChange {
+                old: 0..0,
+                new_len: 2
+            })
+        );
     }
 
     #[test]
