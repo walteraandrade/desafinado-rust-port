@@ -43,6 +43,7 @@ fn resize(wrapper: &mut TextWrapper, text: &Rope, width: Pixels, reuse: bool) ->
         &(0..text.len()),
         text,
         reuse,
+        None,
         &mut |line, width, _, _| {
             calls += 1;
             measured_wrap(line, width, indent, measure)

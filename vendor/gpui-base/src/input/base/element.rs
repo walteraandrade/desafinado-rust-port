@@ -1386,6 +1386,35 @@ impl<M: InputModeKind> TextElement<M> {
     /// - visible_range: The visible range is based on unwrapped lines (Zero based).
     /// - visible_buffer_lines: Indices of non-hidden buffer lines within the visible range.
     /// - visible_top: The top position of the first visible line in the scroll viewport.
+    /// While a large document still has estimated wrap rows: wraps exactly the lines near the
+    /// screen and the caret, and has the rest wrapped between frames.
+    fn settle_wrap(&self, line_height: Pixels, height: Pixels, cx: &mut App) {
+        if !self.state.read(cx).display_map.has_estimated_rows() {
+            return;
+        }
+        self.state.update(cx, |state, cx| {
+            let visible = |state: &InputBaseState<M>| {
+                self.calculate_visible_range(state, line_height, height).0
+            };
+            let margin = visible(state).len().max(1);
+            let caret = state.text.offset_to_point(state.cursor()).row;
+            state.refine_wrap(
+                caret.saturating_sub(margin)..caret + margin,
+                None,
+                line_height,
+                cx,
+            );
+            for _ in 0..2 {
+                let screen = visible(state);
+                let near = screen.start.saturating_sub(margin)..screen.end + margin;
+                if state.refine_wrap(near, None, line_height, cx).is_none() {
+                    break;
+                }
+            }
+            state.start_wrap_refinement(cx);
+        });
+    }
+
     fn calculate_visible_range(
         &self,
         state: &InputBaseState<M>,
@@ -3408,6 +3437,8 @@ impl<M: InputModeKind> Element for TextElement<M> {
 
         if wrap_width_changed || wrapping_indent_changed {
             self.state.update(cx, |state, cx| {
+                let focus = state.wrap_focus(window.line_height(), bounds.size.height);
+                state.display_map.set_wrap_focus(focus);
                 state.display_map.on_layout_changed(wrap_width, cx);
                 state.display_map.set_wrapping_indent(wrapping_indent, cx);
             });
@@ -3422,6 +3453,7 @@ impl<M: InputModeKind> Element for TextElement<M> {
             window,
             cx,
         );
+        self.settle_wrap(line_height, bounds.size.height, cx);
         let state = self.state.read(cx);
 
         let (visible_range, visible_buffer_lines, visible_top) =
@@ -7020,5 +7052,158 @@ mod tests {
             .map(|(at, inlay)| (at, inlay.text().as_ref()))
             .collect();
         assert_eq!(local, [(0, "y"), (3, "z")]);
+    }
+
+    /// Lines that wrap into several rows at the width of the test window, over the size from
+    /// which a document opens with estimated rows.
+    fn large_document() -> String {
+        (0..2600)
+            .map(|n| match n % 4 {
+                0 => format!(
+                    "line {n} {}",
+                    "lorem ipsum dolor sit amet ".repeat(1 + n % 5)
+                ),
+                1 => String::new(),
+                2 => format!("{n} short"),
+                _ => "word ".repeat(30 + n % 40),
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    fn draw_until_exact(
+        cx: &mut VisualTestContext,
+        editor: &Entity<EditorState>,
+        mut each: impl FnMut(&EditorState),
+    ) -> usize {
+        let mut draws = 0;
+        while cx.update(|_, cx| editor.read(cx).display_map().has_estimated_rows()) {
+            cx.executor()
+                .advance_clock(std::time::Duration::from_millis(2));
+            cx.run_until_parked();
+            cx.update(|window, cx| window.draw(cx).clear(cx));
+            cx.update(|_, cx| each(editor.read(cx)));
+            draws += 1;
+            assert!(draws < 20_000, "the rows never became exact");
+        }
+        draws
+    }
+
+    fn row_signature(state: &EditorState) -> Vec<(usize, Vec<std::ops::Range<usize>>)> {
+        let map = state.display_map();
+        (0..map.buffer_line_count())
+            .map(|row| {
+                let line = map.line(row).unwrap();
+                (line.len(), line.wrapped_lines.to_vec())
+            })
+            .collect()
+    }
+
+    #[gpui::test]
+    fn a_large_document_opens_estimated_and_ends_with_the_rows_of_a_full_wrap(
+        cx: &mut TestAppContext,
+    ) {
+        let text = large_document();
+        assert!(text.len() > crate::input::display_map::PROGRESSIVE_MIN_BYTES);
+        cx.update(crate::init);
+        let mut reference = None;
+        let reference_window = cx.open_window(size(px(240.), px(140.)), |window, cx| {
+            let state = cx.new(|cx| {
+                let mut state = EditorState::new(window, cx)
+                    .soft_wrap(true)
+                    .folding(true)
+                    .default_value(&text);
+                state.display_map.set_progressive_min_bytes(usize::MAX);
+                state
+            });
+            reference = Some(state.clone());
+            DecorationHarness(state)
+        });
+        let reference = reference.unwrap();
+        let mut reference_cx = VisualTestContext::from_window(reference_window.into(), cx);
+        reference_cx.update(|window, cx| window.draw(cx).clear(cx));
+        reference_cx.update(|_, cx| {
+            assert!(!reference.read(cx).display_map().has_estimated_rows());
+        });
+
+        let (editor, window) = decoration_editor(cx, &text, true);
+        let mut cx = VisualTestContext::from_window(window.into(), cx);
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        cx.update(|_, cx| {
+            let state = editor.read(cx);
+            assert!(state.display_map().has_estimated_rows());
+            let layout = state.last_layout.as_ref().unwrap();
+            for line in layout.visible_range.clone() {
+                assert!(!state.display_map().line(line).unwrap().is_estimated());
+            }
+        });
+        draw_until_exact(&mut cx, &editor, |_| {});
+        cx.update(|_, cx| {
+            let (state, truth) = (editor.read(cx), reference.read(cx));
+            assert_eq!(
+                state.display_map().wrap_row_count(),
+                truth.display_map().wrap_row_count()
+            );
+            assert_eq!(row_signature(state), row_signature(truth));
+        });
+    }
+
+    #[gpui::test]
+    fn the_text_on_screen_stays_put_while_estimated_rows_become_exact(cx: &mut TestAppContext) {
+        let text = large_document();
+        let (editor, window) = decoration_editor(cx, &text, true);
+        let mut cx = VisualTestContext::from_window(window.into(), cx);
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        let top = cx.update(|_, cx| {
+            let state = editor.read(cx);
+            let row = state.display_map().buffer_line_to_display_row(1800);
+            (state.line_height().unwrap() * row, 1800)
+        });
+        editor.update(&mut cx, |state, cx| {
+            state.set_scroll_offset(point(px(0.), -top.0), cx)
+        });
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        let place = |state: &EditorState| {
+            let layout = state.last_layout.as_ref().unwrap();
+            (
+                layout.visible_range.start,
+                layout.visible_top + state.scroll_offset().y,
+            )
+        };
+        let first = cx.update(|_, cx| place(editor.read(cx)));
+        assert_eq!(first.0, top.1);
+        draw_until_exact(&mut cx, &editor, |state| {
+            let now = place(state);
+            assert_eq!(now.0, first.0, "another line is at the top");
+            assert!(
+                (now.1 - first.1).abs() < px(0.01),
+                "the text moved by {:?}",
+                now.1 - first.1
+            );
+        });
+    }
+
+    #[gpui::test]
+    fn jumping_to_the_end_of_a_large_document_shows_the_caret(cx: &mut TestAppContext) {
+        let text = large_document();
+        let (editor, window) = decoration_editor(cx, &text, true);
+        let mut cx = VisualTestContext::from_window(window.into(), cx);
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        editor.update(&mut cx, |state, cx| {
+            state.set_selected_range(text.len()..text.len(), cx);
+            state.scroll_to(text.len(), None, cx);
+        });
+        for _ in 0..3 {
+            cx.update(|window, cx| window.draw(cx).clear(cx));
+        }
+        cx.update(|_, cx| {
+            let state = editor.read(cx);
+            let layout = state.last_layout.as_ref().unwrap();
+            let last = state.display_map().buffer_line_count() - 1;
+            assert!(layout.visible_buffer_lines.contains(&last));
+            assert!(!state.display_map().line(last).unwrap().is_estimated());
+            assert!(layout.cursor_bounds.is_some());
+        });
+        draw_until_exact(&mut cx, &editor, |_| {});
     }
 }

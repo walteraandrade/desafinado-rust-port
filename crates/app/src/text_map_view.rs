@@ -82,6 +82,18 @@ struct LinesKey {
     width: Pixels,
 }
 
+impl LinesKey {
+    /// Whether lines measured for `self` can be drawn for `key`. While the writer types, or
+    /// while the editor still estimates the rows of a large Document, a frame that only draws
+    /// keeps the lines measured before, as long as the text and the width stay the same.
+    fn fits(&self, key: &LinesKey, kind: Lines, typing: bool, estimating: bool) -> bool {
+        self == key
+            || (kind == Lines::Drawn
+                && self.width == key.width
+                && (typing || (estimating && self.revision == key.revision && self.len == key.len)))
+    }
+}
+
 /// What the map and the chips read from the editor on one frame.
 struct MapFrame {
     lines: Rc<[MapLine]>,
@@ -161,11 +173,9 @@ impl EditorPane {
             width: self.pane_bounds().size.width,
         };
         let mut cache = self.text_map.lines.borrow_mut();
+        let typing = self.text_map.typing(Instant::now());
         if let Some((cached, lines)) = cache.as_ref()
-            && (*cached == key
-                || (kind == Lines::Drawn
-                    && cached.width == key.width
-                    && self.text_map.typing(Instant::now())))
+            && cached.fits(&key, kind, typing, display.has_estimated_rows())
         {
             return Rc::clone(lines);
         }
@@ -486,4 +496,53 @@ fn chip_label(count: usize, below: bool) -> String {
     };
     let side = if below { "below" } else { "above" };
     format!("{arrow} {count} {noun} {side}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Lines, LinesKey};
+    use crate::gpui::px;
+
+    fn key(wrap_rows: usize) -> LinesKey {
+        LinesKey {
+            revision: 1,
+            len: 100,
+            wrap_rows,
+            width: px(800.),
+        }
+    }
+
+    #[test]
+    fn a_frame_that_only_draws_keeps_the_lines_while_the_rows_are_estimated() {
+        assert!(key(10).fits(&key(12), Lines::Drawn, false, true));
+    }
+
+    #[test]
+    fn the_rows_changing_means_new_lines_once_they_are_exact() {
+        assert!(!key(10).fits(&key(12), Lines::Drawn, false, false));
+    }
+
+    #[test]
+    fn an_exact_request_measures_again_even_while_the_rows_are_estimated() {
+        assert!(!key(10).fits(&key(12), Lines::Exact, false, true));
+    }
+
+    #[test]
+    fn an_edit_or_a_new_width_measures_again_while_the_rows_are_estimated() {
+        let edited = LinesKey {
+            len: 101,
+            ..key(12)
+        };
+        let narrower = LinesKey {
+            width: px(700.),
+            ..key(12)
+        };
+        assert!(!key(10).fits(&edited, Lines::Drawn, false, true));
+        assert!(!key(10).fits(&narrower, Lines::Drawn, false, true));
+    }
+
+    #[test]
+    fn the_same_key_always_fits() {
+        assert!(key(10).fits(&key(10), Lines::Exact, false, false));
+    }
 }

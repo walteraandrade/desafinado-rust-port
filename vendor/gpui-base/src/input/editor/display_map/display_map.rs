@@ -317,6 +317,39 @@ impl DisplayMap {
         }
     }
 
+    /// Whether some lines still have estimated wrap rows, which `refine_lines` replaces with
+    /// the exact ones. A large Document opens that way.
+    pub fn has_estimated_rows(&self) -> bool {
+        self.wrap_map.has_estimated()
+    }
+
+    /// Makes every full wrapping pass exact for documents shorter than `bytes`.
+    #[cfg(test)]
+    pub(crate) fn set_progressive_min_bytes(&mut self, bytes: usize) {
+        self.wrap_map.set_progressive_min_bytes(bytes);
+    }
+
+    /// Sets the buffer lines that the next full wrapping pass wraps exactly.
+    pub fn set_wrap_focus(&mut self, focus: Vec<Range<usize>>) {
+        self.wrap_map.set_focus(focus);
+    }
+
+    /// Wraps the estimated lines in `lines` exactly, until `deadline` when given. Returns the
+    /// buffer lines it wrapped; their rows and the rows after them changed.
+    pub fn refine_lines(
+        &mut self,
+        lines: Range<usize>,
+        deadline: Option<std::time::Instant>,
+        cx: &mut App,
+    ) -> Option<Range<usize>> {
+        let refined = self.wrap_map.refine_lines(lines, deadline, cx);
+        if refined.is_some() {
+            self.fold_map.mark_dirty();
+            self.rebuild_fold_projection();
+        }
+        refined
+    }
+
     /// Initialize with text
     pub fn set_text(&mut self, text: &Rope, cx: &mut App) {
         self.wrap_map.set_text(text, cx);

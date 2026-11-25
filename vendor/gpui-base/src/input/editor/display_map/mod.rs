@@ -20,6 +20,8 @@ mod wrap_map;
 // Re-export public API
 pub use self::display_map::{DisplayMap, WrappingIndent};
 pub(crate) use self::text_wrapper::LineLayout;
+#[cfg(test)]
+pub(crate) use self::text_wrapper::PROGRESSIVE_MIN_BYTES;
 
 // Re-export FoldRange and extract_fold_ranges
 pub use folding::FoldRange;

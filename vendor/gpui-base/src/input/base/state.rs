@@ -484,6 +484,10 @@ pub struct InputBaseState<M: InputModeKind> {
     /// Text before an unannounced IME composition, until the next change.
     ime_original_text: Option<Rope>,
     pub(super) last_layout: Option<LastLayout>,
+    /// Wraps the estimated lines of a large document between frames, while there are any.
+    wrap_refinement: Option<gpui::Task<()>>,
+    /// When a slice of that last asked for a frame.
+    last_wrap_notify: std::time::Instant,
     /// Fresh caret geometry stashed during prepaint for caret-anchored popups.
     ///
     /// Popups are positioned in their deferred prepaint, which runs after the
@@ -747,7 +751,110 @@ impl InputPresentation {
 impl<M: InputModeKind> EventEmitter<InputEvent> for InputBaseState<M> {}
 impl<M: InputModeKind> EventEmitter<InputEditsEvent> for InputBaseState<M> {}
 
+/// How long one slice of the wrapping of a large document's estimated lines takes, between
+/// frames and input.
+const WRAP_SLICE: std::time::Duration = std::time::Duration::from_millis(5);
+
 impl<M: InputModeKind> InputBaseState<M> {
+    /// The buffer line at the top of the viewport.
+    fn viewport_top_line(&self, line_height: Pixels) -> usize {
+        let display_count = self.display_map.display_row_count().max(1);
+        let scroll_top = self
+            .deferred_scroll_offset
+            .map_or_else(|| self.scroll_handle.offset().y, |offset| offset.y);
+        let first = (f32::from((-scroll_top).max(px(0.))) / f32::from(line_height)) as usize;
+        self.display_map
+            .display_row_to_buffer_line(first.min(display_count - 1))
+    }
+
+    /// The buffer lines a wrapping pass of a large document does exactly: the screen with a
+    /// margin of screens around it, and around the caret.
+    pub(super) fn wrap_focus(&self, line_height: Pixels, height: Pixels) -> Vec<Range<usize>> {
+        let rows = (f32::from(height) / f32::from(line_height)).ceil() as usize + 1;
+        let top = self.viewport_top_line(line_height);
+        let caret = self.text.offset_to_point(self.cursor()).row;
+        vec![
+            top.saturating_sub(rows)..top + 2 * rows,
+            caret.saturating_sub(rows)..caret + rows,
+        ]
+    }
+
+    /// Wraps the estimated lines in `lines` exactly (see `DisplayMap::refine_lines`), and moves
+    /// the scroll offset by the rows that lines above the viewport gained or lost, so the text
+    /// on screen stays where it is.
+    pub(super) fn refine_wrap(
+        &mut self,
+        lines: Range<usize>,
+        deadline: Option<std::time::Instant>,
+        line_height: Pixels,
+        cx: &mut Context<Self>,
+    ) -> Option<Range<usize>> {
+        if !self.display_map.has_estimated_rows() {
+            return None;
+        }
+        let anchor = self.viewport_top_line(line_height);
+        let before = self.display_map.buffer_line_to_display_row(anchor);
+        let refined = self.display_map.refine_lines(lines, deadline, cx)?;
+        let after = self.display_map.buffer_line_to_display_row(anchor);
+        if after != before {
+            let shift = line_height * (after as f32 - before as f32);
+            let offset = self.scroll_handle.offset();
+            self.scroll_handle
+                .set_offset(point(offset.x, offset.y - shift));
+            if let Some(deferred) = self.deferred_scroll_offset.as_mut() {
+                deferred.y -= shift;
+            }
+            cx.notify();
+        }
+        Some(refined)
+    }
+
+    /// Starts wrapping the rest of the estimated lines in slices between frames, if that is not
+    /// going on already.
+    pub(super) fn start_wrap_refinement(&mut self, cx: &mut Context<Self>) {
+        if self.wrap_refinement.is_some() || !self.display_map.has_estimated_rows() {
+            return;
+        }
+        self.wrap_refinement = Some(cx.spawn(async move |this, cx| {
+            loop {
+                let more = this
+                    .update(cx, |state, cx| state.refine_wrap_slice(cx))
+                    .unwrap_or(false);
+                if !more {
+                    break;
+                }
+                cx.background_executor()
+                    .timer(std::time::Duration::from_millis(1))
+                    .await;
+            }
+            this.update(cx, |state, _| state.wrap_refinement = None)
+                .ok();
+        }));
+    }
+
+    /// One slice of `start_wrap_refinement`: the lines after the viewport first, then the ones
+    /// before. Whether estimated lines remain.
+    fn refine_wrap_slice(&mut self, cx: &mut Context<Self>) -> bool {
+        let Some(line_height) = self.last_layout.as_ref().map(|layout| layout.line_height) else {
+            return true;
+        };
+        let lines = self.display_map.buffer_line_count();
+        let top = self.viewport_top_line(line_height);
+        let deadline = std::time::Instant::now() + WRAP_SLICE;
+        if self
+            .refine_wrap(top..lines, Some(deadline), line_height, cx)
+            .is_none()
+        {
+            self.refine_wrap(0..top, Some(deadline), line_height, cx);
+        }
+        let more = self.display_map.has_estimated_rows();
+        if !more || self.last_wrap_notify.elapsed() > std::time::Duration::from_millis(200) {
+            self.last_wrap_notify = std::time::Instant::now();
+            cx.notify();
+        }
+        more
+    }
+
     #[doc(hidden)]
     pub fn cursor_layout(&self) -> Option<(Bounds<Pixels>, Pixels)> {
         let layout = self.last_layout.as_ref()?;
@@ -1022,6 +1129,8 @@ impl<M: InputModeKind> InputBaseState<M> {
             number_max: None,
             mode: LayoutMode::default(),
             last_layout: None,
+            wrap_refinement: None,
+            last_wrap_notify: std::time::Instant::now(),
             prepaint_caret_geometry: None,
             last_bounds: None,
             revealed_viewport: None,
@@ -3109,6 +3218,11 @@ impl<M: InputModeKind> InputBaseState<M> {
         padding: ScrollPadding,
         cx: &mut Context<Self>,
     ) {
+        // The rows of a line of a large document are estimates until it is wrapped.
+        let row = self.text.offset_to_point(offset).row;
+        if let Some(line_height) = self.last_layout.as_ref().map(|layout| layout.line_height) {
+            self.refine_wrap(row.saturating_sub(30)..row + 30, None, line_height, cx);
+        }
         let Some(last_layout) = self.last_layout.as_ref() else {
             return;
         };

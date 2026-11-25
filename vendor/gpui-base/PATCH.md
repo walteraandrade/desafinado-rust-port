@@ -10,7 +10,7 @@ diff -ru ~/.cargo/registry/src/*/gpui-base-0.9.1/src vendor/gpui-base/src
 
 ## What changed
 
-Five changes. The first is in `src/text`:
+Six changes. The first is in `src/text`:
 
 - **Reading view options** on `TextView` (`text/text_view.rs`, `text/state.rs`, `text/document.rs`), used by `crates/app/src/reading_view.rs`:
   - `lazy_measure(true)`: a scrollable view measures only the blocks it shows. The list is built without `measure_all` and `render_root` gives every block an estimated height (`estimated_block_height`), so the scrollbar thumb settles as blocks are measured instead of being exact from the first frame. Without it the first frame lays out the whole document.
@@ -37,6 +37,12 @@ The other three are in `src/input`:
   - Shapings per row of prose go from about 15 to 2 or 3. A measure that is not monotone in the prefix (a ligature that shrinks a width) may pick a different, equally fitting break than before.
 
 - **Rewrap only from the edit**: `display_map/text_wrapper.rs`: `rewrap_edited` and `measured_wrap_resumable`. An edit inside one line keeps the old breaks that end at least 32 bytes before it, restarts at the last of them, and stops at the first new break that lands on an old break (shifted by the edit's length change), reusing the old breaks after it. The result equals wrapping the whole line; typing in a 55 KB paragraph shaped about 400 rows per key before and now shapes a few. Lines with inline metrics, `WrappingIndent::None` and multi-line edits take the full path. Tests: `text_wrapper/incremental_tests.rs`.
+
+- **Open a large Document with estimated rows**: `display_map/text_wrapper.rs`, `base/state.rs`, `base/element.rs`. A full wrapping pass (first layout, width, font, tab or indent change, replacing the whole text) of a Document of at least `PROGRESSIVE_MIN_BYTES` (128 KiB) shapes only the lines in `TextWrapper::focus` (three screens around the top of the viewport, a screen around the caret) and gives every other line `LineItem::estimated` rows: its length over the bytes per row seen in the focus, split evenly at character boundaries, with an empty `valid_widths` so no reuse trusts them. `LineSummary::estimated_lines` counts them.
+  - Exact before use: each prepaint (`TextElement::settle_wrap`) wraps the lines near the viewport and the caret before laying out, and `scroll_to` wraps around its target. An edit wraps the lines it touches (an estimated line is never a `Prior`). Everything else that reads a line's rows (the scrollbar, the text map, the rows of a far offset) sees the estimate.
+  - Convergence: `InputBaseState::start_wrap_refinement` runs `refine_wrap_slice` in 5 ms slices between frames and input (`TextWrapper::refine_lines` replaces estimated lines with the production wrap, lines after the viewport first). The result equals a full wrap: `text_wrapper/progressive_tests.rs` compares them with a fake and the native text system, and `a_large_document_opens_estimated_and_ends_with_the_rows_of_a_full_wrap` through the editor.
+  - The view does not move: `InputBaseState::refine_wrap` moves the scroll offset by the rows that lines above the viewport gained or lost (`the_text_on_screen_stays_put_while_estimated_rows_become_exact`).
+  - `DisplayMap::has_estimated_rows` tells a consumer that the row count is still changing; the app's text map keeps the lines it measured until the rows are exact.
 
 Tests for inlays and zones are in `inlays.rs`, `text_wrapper.rs`, `inline_line.rs` and at the end of `base/element.rs` (through `InputState` in a test window). The `gpui-base` CI job runs the crate's whole library suite and checks its format. From this folder:
 
