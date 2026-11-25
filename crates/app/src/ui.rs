@@ -824,7 +824,6 @@ pub fn ai_flag(roles: Roles) -> Div {
     badge("AI", Tone::Ai, roles)
 }
 
-/// The widest the AI caret's flag grows; a longer instruction ends in an ellipsis.
 /// The centered text column of every page (`workspace::column_row`) and the Reading view that mirrors it.
 pub const COLUMN_WIDTH: Pixels = px(768.);
 pub const COLUMN_INSET: Pixels = px(24.);
@@ -837,6 +836,7 @@ pub fn column_text_width() -> Pixels {
     COLUMN_WIDTH - COLUMN_INSET * 2.
 }
 
+/// The widest the AI caret's flag grows; a longer instruction ends in an ellipsis.
 pub const AI_CARET_FLAG_MAX_WIDTH: Pixels = px(240.);
 
 /// The flag over the AI caret: "AI", the instruction on one line, and the working dots.
