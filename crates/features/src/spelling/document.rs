@@ -76,6 +76,58 @@ pub fn merge_progress(
     found
 }
 
+/// What a chunk of a check added to the marks: the Blocks it finished and the issues found in
+/// them.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Delta {
+    /// Where the finished Blocks sit, in Document order, each text at every place it occurs.
+    pub blocks: Vec<Range<usize>>,
+    /// The issues found in them, in Document order.
+    pub issues: Vec<Issue>,
+}
+
+/// Applies `delta` to the marks shown, which are in Document order: the marks inside the
+/// finished Blocks give way to the issues found there, every other mark stays. Each Block is
+/// handled on its own, so the cost is a search and a small window per Block plus the move of
+/// the marks after it, however far apart the Blocks sit. Returns the span of the Document
+/// whose marks changed, `None` when nothing did.
+pub fn apply_delta(shown: &mut Vec<Issue>, delta: Delta) -> Option<Range<usize>> {
+    let mut touched: Option<Range<usize>> = None;
+    let mut cover = |range: &Range<usize>| {
+        touched = Some(match touched.take() {
+            Some(hull) => hull.start.min(range.start)..hull.end.max(range.end),
+            None => range.clone(),
+        });
+    };
+    for block in &delta.blocks {
+        let from = shown.partition_point(|issue| issue.range.start < block.start);
+        let to = shown.partition_point(|issue| issue.range.start < block.end);
+        let (stale, mut window): (Vec<Issue>, Vec<Issue>) = shown[from..to]
+            .iter()
+            .cloned()
+            .partition(|issue| issue.range.end <= block.end);
+        let first = delta
+            .issues
+            .partition_point(|issue| issue.range.start < block.start);
+        let last = delta
+            .issues
+            .partition_point(|issue| issue.range.start < block.end);
+        let found = &delta.issues[first..last];
+        if stale.is_empty() && found.is_empty() {
+            continue;
+        }
+        stale
+            .iter()
+            .map(|issue| &issue.range)
+            .chain(found.iter().map(|issue| &issue.range))
+            .for_each(&mut cover);
+        window.extend(found.iter().cloned());
+        window.sort_by_key(|issue| (issue.range.start, issue.range.end));
+        shown.splice(from..to, window);
+    }
+    touched
+}
+
 /// The issues of every Block, placed at the Block's offset in the Document.
 pub fn place(blocks: &[(usize, String)], checked: &Checked) -> Vec<Issue> {
     blocks
@@ -316,6 +368,63 @@ mod tests {
         let previous = vec![issue(2..4, IssueKind::Spelling)];
         let found = vec![issue(8..9, IssueKind::Spelling)];
         assert_eq!(merge_progress(&previous, &[], found.clone()), found);
+    }
+
+    #[test]
+    fn a_delta_replaces_the_marks_inside_finished_blocks_and_keeps_the_rest() {
+        let mut shown = vec![
+            issue(2..4, IssueKind::Spelling),
+            issue(12..14, IssueKind::Spelling),
+            issue(25..27, IssueKind::Spelling),
+            issue(40..44, IssueKind::Spelling),
+        ];
+        let delta = Delta {
+            blocks: vec![10..16, 20..30],
+            issues: vec![issue(22..24, IssueKind::Grammar)],
+        };
+        let touched = apply_delta(&mut shown, delta);
+        let ranges: Vec<_> = shown.iter().map(|i| i.range.clone()).collect();
+        assert_eq!(ranges, vec![2..4, 22..24, 40..44]);
+        assert_eq!(touched, Some(12..27));
+    }
+
+    #[test]
+    fn a_delta_that_changes_nothing_reports_nothing() {
+        let mut shown = vec![issue(2..4, IssueKind::Spelling)];
+        let delta = Delta {
+            blocks: std::iter::once(10..16).collect(),
+            issues: vec![],
+        };
+        assert_eq!(apply_delta(&mut shown, delta), None);
+        assert_eq!(shown.len(), 1);
+        assert_eq!(apply_delta(&mut shown, Delta::default()), None);
+    }
+
+    #[test]
+    fn blocks_far_apart_leave_the_marks_between_them_alone() {
+        let mut shown: Vec<Issue> = (0..10)
+            .map(|index| issue(index * 100..index * 100 + 3, IssueKind::Spelling))
+            .collect();
+        let delta = Delta {
+            blocks: vec![0..50, 900..950],
+            issues: vec![issue(10..12, IssueKind::Grammar)],
+        };
+        let touched = apply_delta(&mut shown, delta);
+        let starts: Vec<_> = shown.iter().map(|i| i.range.start).collect();
+        assert_eq!(starts, vec![10, 100, 200, 300, 400, 500, 600, 700, 800]);
+        assert_eq!(touched, Some(0..903));
+    }
+
+    #[test]
+    fn a_mark_straddling_a_finished_block_is_kept() {
+        let mut shown = vec![issue(8..14, IssueKind::Grammar)];
+        let delta = Delta {
+            blocks: std::iter::once(10..16).collect(),
+            issues: vec![issue(11..13, IssueKind::Spelling)],
+        };
+        apply_delta(&mut shown, delta);
+        let ranges: Vec<_> = shown.iter().map(|i| i.range.clone()).collect();
+        assert_eq!(ranges, vec![8..14, 11..13]);
     }
 
     #[test]
