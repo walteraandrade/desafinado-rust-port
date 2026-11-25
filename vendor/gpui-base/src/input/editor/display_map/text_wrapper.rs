@@ -157,9 +157,31 @@ fn largest_fitting(n: usize, guess: usize, mut fits: impl FnMut(usize) -> bool) 
     low
 }
 
+/// The last row measured, which starts the search for the next one near its answer.
+#[derive(Clone, Copy, Default)]
+struct WrapHint {
+    pixels_per_byte: f32,
+    row_bytes: usize,
+}
+
+impl WrapHint {
+    /// A row longer than this is rare; a guess past twice the last row (bounded) is a bad hint,
+    /// such as one taken from zero-width text, and must not make a probe as long as the line.
+    const MAX_ROW_BYTES: usize = 1024;
+
+    /// Byte offset where a row starting at `start` is expected to end, or `start` without a hint.
+    fn reach(self, start: usize, available: Pixels) -> usize {
+        if self.pixels_per_byte <= 0. {
+            return start;
+        }
+        let estimate = (f32::from(available) / self.pixels_per_byte) as usize;
+        let cap = 2 * self.row_bytes.min(Self::MAX_ROW_BYTES) + 16;
+        start.saturating_add(estimate.min(cap))
+    }
+}
+
 /// Wrap by exact shaped widths, preserving the measured comparisons that make these breaks valid
-/// at nearby widths. `pixels_per_byte` carries the width of the last row measured, to start the
-/// next search near its answer; it only changes which prefixes are measured, never the result.
+/// at nearby widths. `hint` only changes which prefixes are measured, never the result.
 #[cfg(test)]
 fn measured_wrap(
     text: &str,
@@ -167,14 +189,14 @@ fn measured_wrap(
     wrapping_indent: WrappingIndent,
     measure: impl FnMut(&str) -> Pixels,
 ) -> MeasuredWrap {
-    measured_wrap_hinted(text, width, wrapping_indent, &Cell::new(0.), measure)
+    measured_wrap_hinted(text, width, wrapping_indent, &Cell::default(), measure)
 }
 
 fn measured_wrap_hinted(
     text: &str,
     width: Pixels,
     wrapping_indent: WrappingIndent,
-    pixels_per_byte: &Cell<f32>,
+    hint: &Cell<WrapHint>,
     mut measure: impl FnMut(&str) -> Pixels,
 ) -> MeasuredWrap {
     #[cfg(test)]
@@ -216,14 +238,7 @@ fn measured_wrap_hinted(
             }
             fits
         };
-        let reach = {
-            let per_byte = pixels_per_byte.get();
-            if per_byte > 0. {
-                start + (f32::from(available) / per_byte) as usize
-            } else {
-                start
-            }
-        };
+        let reach = hint.get().reach(start, available);
         let first_word =
             opportunities.partition_point(|&ix| ix <= start || (start == 0 && ix <= indent));
         let words = &opportunities[first_word..];
@@ -259,7 +274,10 @@ fn measured_wrap_hinted(
                 .unwrap_or(fitting_end)
         };
         if widest_fit.0 > start && widest_fit.1 > px(0.) {
-            pixels_per_byte.set(f32::from(widest_fit.1) / (widest_fit.0 - start) as f32);
+            hint.set(WrapHint {
+                pixels_per_byte: f32::from(widest_fit.1) / (widest_fit.0 - start) as f32,
+                row_bytes: widest_fit.0 - start,
+            });
         }
         if end == text.len() {
             break;
@@ -642,7 +660,7 @@ impl TextWrapper {
         let font_size = self.font_size;
         let wrapping_indent = self.wrapping_indent;
         let tab_stop = tab_stop_width(&text_system, &font, font_size, self.tab_size);
-        let pixels_per_byte = Cell::new(0.);
+        let hint = Cell::new(WrapHint::default());
         self.update_lines(
             changed_text,
             range,
@@ -676,7 +694,7 @@ impl TextWrapper {
                         line_str,
                         wrap_width,
                         wrapping_indent,
-                        &pixels_per_byte,
+                        &hint,
                         |text| {
                             measurements.borrow_mut().measure(text, || {
                                 let layout = text_system.layout_line(
@@ -1499,7 +1517,7 @@ mod tests {
     use gpui::{Boundary, FontFeatures, FontStyle, FontWeight, px};
 
     #[cfg(target_os = "linux")]
-    fn shaped_width(text: &str, font: &Font, font_size: Pixels, cx: &App) -> Pixels {
+    pub(super) fn shaped_width(text: &str, font: &Font, font_size: Pixels, cx: &App) -> Pixels {
         gpui::WindowTextSystem::new(cx.text_system().clone())
             .layout_line(
                 text,
@@ -1521,7 +1539,7 @@ mod tests {
     // macOS platform creation requires the main thread, and Windows headless
     // mode uses NoopTextSystem rather than native shaping.
     #[cfg(target_os = "linux")]
-    fn shaping_test_context() -> TestAppContext {
+    pub(super) fn shaping_test_context() -> TestAppContext {
         let platform = gpui_platform::current_platform(true);
         TestAppContext::build_with_text_system(
             gpui::TestDispatcher::new(0),
@@ -1930,7 +1948,7 @@ mod tests {
         assert_eq!(wrapper.lines_count(), 2);
     }
 
-    fn test_font() -> gpui::Font {
+    pub(super) fn test_font() -> gpui::Font {
         gpui::Font {
             family: "Arial".into(),
             weight: FontWeight::default(),
