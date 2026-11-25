@@ -1,6 +1,7 @@
 use desafinado_core::log_err::LogErr;
 use std::{
     collections::HashMap,
+    panic::{AssertUnwindSafe, catch_unwind},
     path::{Path, PathBuf},
     rc::Rc,
     sync::{
@@ -116,6 +117,7 @@ struct KeptPlaces {
 }
 
 static HISTORY_WRITES: AtomicU64 = AtomicU64::new(0);
+static UNSAVED_WRITES: AtomicU64 = AtomicU64::new(0);
 
 const HISTORY_IDLE_MS: i64 = 30_000;
 /// How often the open Document's place is written, so a crash does not lose it.
@@ -921,13 +923,7 @@ impl Workspace {
                 save_last_file(&self.services.user_data, path);
             }
         }
-        if self.unsaved.failed.swap(false, Ordering::Relaxed) && !self.unsaved.warned {
-            self.unsaved.warned = true;
-            self.notify_failure(
-                "Could not keep your unsaved changes; save the file to be safe",
-                cx,
-            );
-        }
+        self.warn_if_unsaved_failed(cx);
         let now = Instant::now();
         let first = *self.unsaved.first_unwritten.get_or_insert(now);
         if unsaved_due(first, now, now) {
@@ -977,7 +973,9 @@ impl Workspace {
                 let failed = Arc::clone(&self.unsaved.failed);
                 let job_key = unsaved_job_key(&key);
                 let job: Box<dyn FnOnce() + Send> = Box::new(move || {
-                    if !write_unsaved(&db, &key, &snapshot, at) {
+                    let written =
+                        catch_unwind(AssertUnwindSafe(|| write_unsaved(&db, &key, &snapshot, at)));
+                    if !written.unwrap_or(false) {
                         failed.store(true, Ordering::Relaxed);
                     }
                 });
@@ -986,10 +984,45 @@ impl Workspace {
             .collect()
     }
 
+    /// Tells the writer, once per session, that the unsaved text could not be written.
+    fn warn_if_unsaved_failed(&mut self, cx: &mut Context<Self>) {
+        if self.unsaved.failed.swap(false, Ordering::Relaxed) && !self.unsaved.warned {
+            self.unsaved.warned = true;
+            self.notify_failure(
+                "Could not keep your unsaved changes; save the file to be safe",
+                cx,
+            );
+        }
+    }
+
+    /// Hands the unsaved text to the writer. Once it is written, the failure flag is read, so
+    /// the toast comes without another keystroke.
     fn flush_unsaved_later(&mut self, cx: &mut Context<Self>) {
-        for (key, job) in self.queue_unsaved() {
+        let jobs = self.queue_unsaved();
+        if jobs.is_empty() {
+            return;
+        }
+        for (key, job) in jobs {
             self.write_later(key, job, cx);
         }
+        let (sender, receiver) = futures::channel::oneshot::channel();
+        let serial = UNSAVED_WRITES.fetch_add(1, Ordering::Relaxed);
+        self.write_later(
+            format!("unsaved-done:{serial}"),
+            move || {
+                if sender.send(()).is_err() {
+                    log::warn!("The unsaved text write finished after its listener went away");
+                }
+            },
+            cx,
+        );
+        cx.spawn(async move |this, cx| {
+            if receiver.await.is_ok() {
+                this.update(cx, Workspace::warn_if_unsaved_failed)
+                    .log_warn();
+            }
+        })
+        .detach();
     }
 
     /// Writes the unsaved text now, on this thread, and what was handed to the writer before.
