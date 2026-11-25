@@ -1,6 +1,6 @@
 # Patched gpui-base 0.9.1
 
-This is the published `gpui-base` 0.9.1 (Apache-2.0, [longbridge/gpui-component](https://github.com/longbridge/gpui-component)), patched so the code editor can show a Suggestion's Replacement in the text ([ADR 0003](../../docs/adr/0003-inline-suggestions-on-patched-gpui-base.md)). The root `Cargo.toml` swaps it in with `[patch.crates-io]`, so `gpui-kit` builds against it.
+This is the published `gpui-base` 0.9.1 (Apache-2.0, [longbridge/gpui-component](https://github.com/longbridge/gpui-component)), patched so the code editor can show a Suggestion's Replacement in the text ([ADR 0003](../../docs/adr/0003-inline-suggestions-on-patched-gpui-base.md)) and so a large document opens fast in the Reading view. The root `Cargo.toml` swaps it in with `[patch.crates-io]`, so `gpui-kit` builds against it.
 
 To see the patch, diff this folder against the pristine crate:
 
@@ -10,7 +10,15 @@ diff -ru ~/.cargo/registry/src/*/gpui-base-0.9.1/src vendor/gpui-base/src
 
 ## What changed
 
-Three changes, all in `src/input`:
+Four changes. The first is in `src/text`:
+
+- **Reading view options** on `TextView` (`text/text_view.rs`, `text/state.rs`, `text/document.rs`), used by `crates/app/src/reading_view.rs`:
+  - `lazy_measure(true)`: a scrollable view measures only the blocks it shows. The list is built without `measure_all` and `render_root` gives every block an estimated height (`estimated_block_height`), so the scrollbar thumb settles as blocks are measured instead of being exact from the first frame. Without it the first frame lays out the whole document.
+  - `content_column(w, inset)`: the content is a centered column at most `w` wide with `inset` on both sides, while the view, its wheel handling and its scrollbar keep the full width of the container.
+  - `scroll_padding(top, bottom)`: space above the first and below the last block that scrolls with the content (carried by the first and last block items, because the list's own padding is ignored by its scrollbar math).
+  - Tests: `a_lazy_view_measures_only_the_blocks_it_shows`, `the_scrollbar_end_leaves_the_bottom_padding_below_the_last_block` and `an_eager_view_measures_every_block` in `text/state.rs`, and the estimate in `text/document.rs`.
+
+The other three are in `src/input`:
 
 - **Inlays**: text drawn inside a line that is not in the buffer. `InputState::set_inlays(Vec<Inlay>)` takes an offset, the text and a `HighlightStyle`.
   - `display_map/inlays.rs` (new): `Inlay`, `BlockZone`, `shift_offset`.

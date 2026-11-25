@@ -105,7 +105,6 @@ actions!(
     ]
 );
 
-const COLUMN_WIDTH: f32 = 768.;
 const COLUMN_PADDING: f32 = 24.;
 const BUBBLE_WIDTH: f32 = 360.;
 const BUBBLE_KEY: &str = "\u{0}bubble";
@@ -1963,13 +1962,13 @@ impl EditorPane {
 
     pub(crate) fn content_left(&self) -> Pixels {
         let pane = self.bounds.get();
-        let column = px(COLUMN_WIDTH).min(pane.size.width);
+        let column = crate::ui::COLUMN_WIDTH.min(pane.size.width);
         pane.origin.x + (pane.size.width - column) / 2. + px(COLUMN_PADDING)
     }
 
     pub(crate) fn content_right(&self) -> Pixels {
         let pane = self.bounds.get();
-        let column = px(COLUMN_WIDTH).min(pane.size.width);
+        let column = crate::ui::COLUMN_WIDTH.min(pane.size.width);
         pane.origin.x + (pane.size.width + column) / 2. - px(COLUMN_PADDING)
     }
 
@@ -2563,7 +2562,7 @@ impl EditorPane {
         let left = line_start.left();
         let pane = self.bounds.get();
         let column_left = pane.origin.x
-            + (pane.size.width - px(COLUMN_WIDTH).min(pane.size.width)) / 2.
+            + (pane.size.width - crate::ui::COLUMN_WIDTH.min(pane.size.width)) / 2.
             + px(COLUMN_PADDING);
         let inset = (left - column_left).max(px(0.));
         let width = (self.content_right() - left - inset).max(px(0.));
@@ -3096,7 +3095,7 @@ impl Render for EditorPane {
                 div().size_full().flex().justify_center().child(
                     div()
                         .id("editor-column")
-                        .w(px(COLUMN_WIDTH))
+                        .w(crate::ui::COLUMN_WIDTH)
                         .max_w_full()
                         .h_full()
                         .px(px(COLUMN_PADDING))

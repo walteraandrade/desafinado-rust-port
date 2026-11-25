@@ -14,7 +14,7 @@ use web_time::Instant;
 use gpui::{
     App, AppContext as _, Bounds, Context, EntityId, FocusHandle, IntoElement, KeyBinding,
     ListState, ParentElement as _, Pixels, Point, Render, SharedString, Styled as _, Task, Window,
-    prelude::FluentBuilder as _, px,
+    div, prelude::FluentBuilder as _, px,
 };
 
 use crate::{
@@ -121,6 +121,9 @@ pub struct TextViewState {
     pub(super) selection_format: SelectionFormat,
     pub(super) scrollable: bool,
     pub(super) max_lines: Option<usize>,
+    pub(super) content_column: Option<(Pixels, Pixels)>,
+    pub(super) lazy_measure: bool,
+    pub(super) scroll_padding: (Pixels, Pixels),
     /// Line spans reported by `Inline` during prepaint (collected only while
     /// [`Self::max_lines`] is set); cleared by `TextView` at each frame start.
     pub(super) line_spans: Arc<Mutex<Vec<LineSpan>>>,
@@ -229,6 +232,9 @@ impl TextViewState {
             selection_format: SelectionFormat::default(),
             scrollable: false,
             max_lines: None,
+            content_column: None,
+            lazy_measure: false,
+            scroll_padding: (Pixels::ZERO, Pixels::ZERO),
             line_spans: Arc::default(),
             clamped: false,
             // Measure all blocks (not just visible ones) so the scrollbar
@@ -327,6 +333,17 @@ impl TextViewState {
     /// [`TextView::max_lines`](crate::text::TextView::max_lines).
     pub fn is_clamped(&self) -> bool {
         self.clamped
+    }
+
+    /// Measure only the blocks that are shown, and estimate the others, so a
+    /// large scrollable document opens without laying out all of it. The
+    /// scrollbar thumb settles as blocks are measured. Takes effect before the
+    /// first block is rendered.
+    pub(super) fn set_lazy_measure(&mut self) {
+        if !self.lazy_measure && self.list_state.item_count() == 0 {
+            self.lazy_measure = true;
+            self.list_state = ListState::new(0, gpui::ListAlignment::Top, px(1000.));
+        }
     }
 
     /// Set the text content.
@@ -1166,6 +1183,8 @@ impl Render for TextViewState {
                     } else {
                         None
                     },
+                    self.lazy_measure,
+                    self.scroll_padding,
                     &node_cx,
                     window,
                     cx,
@@ -1229,7 +1248,16 @@ impl Render for TextViewState {
         if let Some(block_ix) = reveal_block {
             self.list_state.scroll_to_reveal_item(block_ix);
         }
-        content
+        match self.content_column {
+            Some((width, inset)) => div()
+                .size_full()
+                .flex()
+                .justify_center()
+                .px(inset)
+                .child(content.max_w(width))
+                .into_any_element(),
+            None => content.into_any_element(),
+        }
     }
 }
 
@@ -3204,6 +3232,10 @@ mod tests {
         enum Container {
             /// A scrollable view.
             Scrollable,
+            /// A scrollable view that measures only the blocks it shows.
+            LazyScrollable,
+            /// A scrollable view with space above and below its blocks.
+            PaddedScrollable,
             /// A fit-content view, second row of an application list.
             List(ListState),
             /// A fit-content view in a scrolling `div`, which follows reveals
@@ -3237,6 +3269,16 @@ mod tests {
                 match &self.container {
                     Container::Scrollable => frame
                         .child(TextView::new(&state).scrollable(true))
+                        .into_any_element(),
+                    Container::PaddedScrollable => frame
+                        .child(
+                            TextView::new(&state)
+                                .scrollable(true)
+                                .scroll_padding(px(16.), px(60.)),
+                        )
+                        .into_any_element(),
+                    Container::LazyScrollable => frame
+                        .child(TextView::new(&state).scrollable(true).lazy_measure(true))
                         .into_any_element(),
                     Container::List(list_state) => {
                         frame.child(row(list_state, false)).into_any_element()
@@ -3351,6 +3393,52 @@ mod tests {
             reveal(&state, "paragraph 3", cx);
             assert!(!is_pending(&state, cx));
             assert!(scroll_top(&state, cx).item_ix <= 3);
+        }
+
+        #[gpui::test]
+        fn a_lazy_view_measures_only_the_blocks_it_shows(cx: &mut TestAppContext) {
+            let (state, cx) = window(&paragraphs(600), Container::LazyScrollable, cx);
+            state.read_with(cx, |state, _| {
+                assert_eq!(state.list_state.item_count(), 600);
+                assert!(state.list_state.bounds_for_item(0).is_some());
+                assert!(state.list_state.bounds_for_item(300).is_none());
+                assert!(state.list_state.max_offset_for_scrollbar().y > px(1000.));
+            });
+
+            reveal(&state, "paragraph 450", cx);
+            assert!(!is_pending(&state, cx));
+            let top = scroll_top(&state, cx);
+            assert!((440..=450).contains(&top.item_ix), "{top:?}");
+        }
+
+        #[gpui::test]
+        fn the_scrollbar_end_leaves_the_bottom_padding_below_the_last_block(
+            cx: &mut TestAppContext,
+        ) {
+            let (state, cx) = window(&paragraphs(300), Container::PaddedScrollable, cx);
+            state.read_with(cx, |state, _| {
+                let max = state.list_state.max_offset_for_scrollbar().y;
+                state
+                    .list_state
+                    .set_offset_from_scrollbar(gpui::point(px(0.), -max));
+            });
+            draw(cx);
+            draw(cx);
+            state.read_with(cx, |state, _| {
+                let last = state.list_state.bounds_for_item(299).unwrap();
+                // The last item holds the block and its padding, so the block
+                // ends 60px above the viewport bottom.
+                assert_eq!(last.bottom(), px(100.), "{last:?}");
+                assert!(last.size.height > px(60.), "{last:?}");
+            });
+        }
+
+        #[gpui::test]
+        fn an_eager_view_measures_every_block(cx: &mut TestAppContext) {
+            let (state, cx) = window(&paragraphs(600), Container::Scrollable, cx);
+            state.read_with(cx, |state, _| {
+                assert!(state.list_state.bounds_for_item(300).is_some());
+            });
         }
 
         #[gpui::test]

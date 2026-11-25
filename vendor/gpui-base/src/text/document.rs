@@ -1,5 +1,6 @@
 use gpui::{
     App, IntoElement, ListState, ParentElement as _, SharedString, Styled as _, Window, div,
+    prelude::FluentBuilder as _,
 };
 
 use std::{
@@ -240,6 +241,8 @@ impl ParsedDocument {
     pub(super) fn render_root(
         &self,
         list_state: Option<ListState>,
+        lazy_measure: bool,
+        scroll_padding: (gpui::Pixels, gpui::Pixels),
         node_cx: &NodeContext,
         window: &mut Window,
         cx: &mut App,
@@ -271,7 +274,16 @@ impl ParsedDocument {
 
         let blocks = &self.blocks;
         if list_state.item_count() != blocks.len() {
-            list_state.reset(blocks.len());
+            if lazy_measure {
+                let height = estimated_block_height(
+                    self.source.len(),
+                    blocks.len(),
+                    window.text_style().line_height_in_pixels(window.rem_size()),
+                );
+                list_state.reset_with_uniform_height(blocks.len(), height);
+            } else {
+                list_state.reset(blocks.len());
+            }
         }
 
         div().size_full().child(
@@ -281,19 +293,24 @@ impl ParsedDocument {
                 move |ix, window, cx| {
                     let is_last = ix + 1 == blocks.len();
                     let (is_first, prev) = flow_position(&blocks, ix);
-                    blocks[ix]
-                        .render_block(
-                            NodeRenderOptions {
-                                ix,
-                                is_last,
-                                is_first,
-                                prev,
-                                ..options
-                            },
-                            &node_cx,
-                            window,
-                            cx,
-                        )
+                    let block = blocks[ix].render_block(
+                        NodeRenderOptions {
+                            ix,
+                            is_last,
+                            is_first,
+                            prev,
+                            ..options
+                        },
+                        &node_cx,
+                        window,
+                        cx,
+                    );
+                    // The list's own padding is ignored by its scrollbar
+                    // math, so the first and last items carry the space.
+                    div()
+                        .when(ix == 0, |this| this.pt(scroll_padding.0))
+                        .when(is_last, |this| this.pb(scroll_padding.1))
+                        .child(block)
                         .into_any_element()
                 }
             })
@@ -302,9 +319,34 @@ impl ParsedDocument {
     }
 }
 
+const ESTIMATED_CHARS_PER_LINE: usize = 80;
+
+/// The height an unmeasured block is assumed to have: the lines its share of
+/// the source takes at a typical width, and a gap.
+fn estimated_block_height(
+    source_len: usize,
+    block_count: usize,
+    line_height: gpui::Pixels,
+) -> gpui::Pixels {
+    let chars = source_len / block_count.max(1);
+    let lines = chars.div_ceil(ESTIMATED_CHARS_PER_LINE).max(1);
+    line_height * (lines as f32 + 0.5)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{PrevBlock, flow_position};
+    use super::{PrevBlock, estimated_block_height, flow_position};
+
+    #[test]
+    fn a_block_is_estimated_by_the_lines_of_its_share_of_the_source() {
+        let line = gpui::px(20.);
+        assert_eq!(estimated_block_height(0, 0, line), gpui::px(30.));
+        assert_eq!(estimated_block_height(800, 2, line), gpui::px(110.));
+        assert!(
+            estimated_block_height(80_000, 100, line) > estimated_block_height(8_000, 100, line)
+        );
+    }
+
     use crate::text::{format::markdown, node::NodeContext};
 
     fn positions(source: &str) -> Vec<(bool, PrevBlock)> {
