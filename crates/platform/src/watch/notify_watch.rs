@@ -1,4 +1,5 @@
 use std::collections::{BTreeSet, HashMap};
+use std::hash::{Hash, Hasher};
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -32,14 +33,29 @@ struct Shared {
     next_id: AtomicU64,
 }
 
-type SharedCell = Arc<Mutex<Option<Arc<Shared>>>>;
+type SharedCell = Mutex<Option<Arc<Shared>>>;
 
-/// One notify watcher (one thread, one inotify instance) serves every
-/// directory watched through clones of the same value. Directories are keyed
-/// by their canonical path, so two spellings of one folder share a watch.
-#[derive(Clone, Default)]
+/// Number of notify watchers (one thread and one inotify instance each).
+/// notify reads inotify events until the queue is empty before it serves a
+/// queued watch or unwatch request, so a write flood in one folder (a
+/// `git checkout`) delays every watch call on the same instance. Spreading
+/// folders over a few instances bounds that blast radius to the folders of the
+/// flooded instance while the thread and fd count stay small and constant,
+/// well under the inotify instance limit of 128.
+const SHARDS: usize = 8;
+
+/// Directories are spread over a fixed set of notify watchers by a hash of
+/// their canonical path, created lazily. Directories are keyed by canonical
+/// path, so two spellings of one folder share a watch.
+#[derive(Clone)]
 pub struct NotifyDirectoryWatch {
-    shared: SharedCell,
+    shards: Arc<Vec<SharedCell>>,
+}
+
+impl Default for NotifyDirectoryWatch {
+    fn default() -> Self {
+        Self::with_shards(SHARDS)
+    }
 }
 
 impl std::fmt::Debug for NotifyDirectoryWatch {
@@ -143,7 +159,11 @@ fn plan_event(routes: &Routes, event: &notify::Event) -> Vec<Delivery> {
         if event.paths.is_empty() {
             names.push(None);
         }
-        for path in &event.paths {
+        for path in event
+            .paths
+            .iter()
+            .filter(|p| *p == dir || p.parent() == Some(dir.as_path()))
+        {
             let name = if path == dir {
                 None
             } else {
@@ -202,8 +222,21 @@ fn start_shared() -> io::Result<Arc<Shared>> {
 }
 
 impl NotifyDirectoryWatch {
-    fn shared(&self) -> io::Result<Arc<Shared>> {
-        let mut cell = lock(&self.shared);
+    pub fn with_shards(count: usize) -> Self {
+        Self {
+            shards: Arc::new((0..count.max(1)).map(|_| Mutex::default()).collect()),
+        }
+    }
+
+    fn shard_of(&self, dir: &Path) -> usize {
+        let canonical = dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf());
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        canonical.hash(&mut hasher);
+        usize::try_from(hasher.finish() % self.shards.len() as u64).unwrap_or(0)
+    }
+
+    fn shared(&self, index: usize) -> io::Result<Arc<Shared>> {
+        let mut cell = lock(&self.shards[index]);
         if let Some(shared) = cell.as_ref() {
             return Ok(Arc::clone(shared));
         }
@@ -215,8 +248,8 @@ impl NotifyDirectoryWatch {
 
 impl DirectoryWatch for NotifyDirectoryWatch {
     fn watch(&self, dir: &Path, sink: WatchSink) -> io::Result<Box<dyn WatchHandle>> {
-        let shared = self.shared()?;
         let dir = dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf());
+        let shared = self.shared(self.shard_of(&dir))?;
         let id = shared.next_id.fetch_add(1, Ordering::Relaxed);
         let mut watcher = lock(&shared.watcher);
         lock(&shared.routes)
@@ -562,5 +595,84 @@ mod tests {
             names(&plan_event(&routes, &event)),
             vec![Some("SKILL.md".into())]
         );
+    }
+
+    #[test]
+    fn a_rename_across_two_watched_folders_names_each_folder_only_its_own_file() {
+        let routes = routes_for(&["/a", "/b"]);
+        let event = event_on(
+            EventKind::Modify(ModifyKind::Name(notify::event::RenameMode::Both)),
+            &["/a/x", "/b/y"],
+        );
+        let plan = plan_event(&routes, &event);
+        let mut per_dir: Vec<(bool, Option<String>)> = Vec::new();
+        for (sink, message) in &plan {
+            let for_a = Arc::ptr_eq(sink, &routes[Path::new("/a")][0].sink);
+            if let RawWatchMessage::Event(e) = message {
+                per_dir.push((for_a, e.filename.clone()));
+            }
+        }
+        per_dir.sort();
+        assert_eq!(
+            per_dir,
+            vec![(false, Some("y".into())), (true, Some("x".into()))]
+        );
+    }
+
+    fn burst(
+        dir: &Path,
+        stop: &Arc<std::sync::atomic::AtomicBool>,
+    ) -> Vec<std::thread::JoinHandle<()>> {
+        (0..4)
+            .map(|t| {
+                let (dir, stop) = (dir.to_path_buf(), Arc::clone(stop));
+                std::thread::spawn(move || {
+                    let mut i = 0;
+                    while !stop.load(Ordering::Relaxed) {
+                        std::fs::write(dir.join(format!("f{t}-{}", i % 500)), "x").log_warn();
+                        i += 1;
+                    }
+                })
+            })
+            .collect()
+    }
+
+    fn time_watching_another_folder_during_a_burst(watch: &NotifyDirectoryWatch) -> Duration {
+        let flooded = tempfile::tempdir().unwrap();
+        let (tx, _rx) = channel();
+        let _flooded_handle = watch.watch(flooded.path(), sink_to(tx)).unwrap();
+        let other = loop {
+            let candidate = tempfile::tempdir().unwrap();
+            if watch.shards.len() == 1
+                || watch.shard_of(candidate.path()) != watch.shard_of(flooded.path())
+            {
+                break candidate;
+            }
+        };
+        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let writers = burst(flooded.path(), &stop);
+        std::thread::sleep(Duration::from_millis(50));
+        let (done_tx, done_rx) = channel();
+        let other_path = other.path().to_path_buf();
+        let other_watch = watch.clone();
+        std::thread::spawn(move || {
+            let started = Instant::now();
+            let handle = other_watch.watch(&other_path, Box::new(|_| {})).unwrap();
+            done_tx.send((started.elapsed(), handle)).log_warn();
+        });
+        let waited = done_rx
+            .recv_timeout(Duration::from_secs(60))
+            .map_or(Duration::from_secs(60), |(elapsed, _handle)| elapsed);
+        stop.store(true, Ordering::Relaxed);
+        for writer in writers {
+            writer.join().unwrap();
+        }
+        waited
+    }
+
+    #[test]
+    fn a_write_burst_in_one_folder_does_not_stall_watching_another() {
+        let waited = time_watching_another_folder_during_a_burst(&NotifyDirectoryWatch::default());
+        assert!(waited < Duration::from_secs(1), "waited {waited:?}");
     }
 }
