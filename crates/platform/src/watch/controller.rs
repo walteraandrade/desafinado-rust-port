@@ -1,5 +1,5 @@
 use desafinado_core::log_err::LogErr;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, RecvError, RecvTimeoutError, Sender, channel};
 use std::thread::JoinHandle;
@@ -41,7 +41,7 @@ impl WatchConfig {
             list: Box::new(list),
             emit: Box::new(emit),
             on_problem: Box::new(|_| {}),
-            watch: Box::new(NotifyDirectoryWatch),
+            watch: Box::new(NotifyDirectoryWatch::default()),
             real_path: Box::new(|path| {
                 std::fs::canonicalize(path)
                     .ok()
@@ -90,6 +90,7 @@ struct Worker {
     batch_started: Option<Instant>,
     deadline: Option<Instant>,
     own_writes: Vec<(String, Instant)>,
+    stale: HashSet<String>,
 }
 
 fn dirname(path: &str) -> String {
@@ -175,13 +176,14 @@ impl Worker {
         let commands = self.commands.clone();
         let owned = dir.to_owned();
         let sink = Box::new(move |message: RawWatchMessage| {
-            commands
-                .send(Command::Raw {
-                    dir: owned.clone(),
-                    id,
-                    message,
-                })
-                .log_warn();
+            let sent = commands.send(Command::Raw {
+                dir: owned.clone(),
+                id,
+                message,
+            });
+            if sent.is_err() {
+                log::trace!("A watch event came after the watcher closed: {owned}");
+            }
         });
         match self.config.watch.watch(Path::new(dir), sink) {
             Ok(handle) => {
@@ -209,6 +211,11 @@ impl Worker {
     }
 
     fn sync(&mut self, wanted: &HashMap<String, String>) -> usize {
+        for dir in std::mem::take(&mut self.stale) {
+            if wanted.contains_key(&dir) {
+                self.shut(&dir);
+            }
+        }
         let identities: HashMap<String, String> = self
             .active
             .iter()
@@ -260,15 +267,17 @@ impl Worker {
         self.own_writes.iter().any(|(own, _)| *own == path)
     }
 
-    fn add_event(&mut self, event: WatchEvent) {
+    /// Queues `event` unless it is the app's own write; says whether it was queued.
+    fn add_event(&mut self, event: WatchEvent) -> bool {
         if self.is_own_write(&event) {
-            return;
+            return false;
         }
         let now = Instant::now();
         let started = *self.batch_started.get_or_insert(now);
         self.batch.push(event);
         let waited_left = (started + self.config.max_wait).saturating_duration_since(now);
         self.deadline = Some(now + self.config.delay.min(waited_left));
+        true
     }
 
     fn flush(&mut self) {
@@ -284,13 +293,33 @@ impl Worker {
             &self.awaited,
             MAX_REPORTED_PATHS,
         );
-        if changes.paths.is_empty() && !changes.library {
+        let rewatch = !self.stale.is_empty();
+        if changes.paths.is_empty() && !changes.library && !rewatch {
             return;
         }
         let library = changes.library;
-        (self.config.emit)(changes);
-        if library {
+        if library || !changes.paths.is_empty() {
+            (self.config.emit)(changes);
+        }
+        if library || rewatch {
             self.reconcile();
+        }
+    }
+
+    /// With a folder and its parent on one inotify instance, a rename or removal
+    /// seen on the parent makes notify drop the child's own watch, even when the
+    /// folder comes back with the same inode (which `diff_watches` cannot see).
+    /// Such a child is reopened on the next reconcile.
+    fn mark_renamed_child(&mut self, dir: &str, event: &super::RawWatchEvent) {
+        if event.kind != super::WatchEventKind::Rename {
+            return;
+        }
+        let Some(name) = &event.filename else {
+            return;
+        };
+        let child = Path::new(dir).join(name).to_string_lossy().into_owned();
+        if self.active.contains_key(&child) {
+            self.stale.insert(child);
         }
     }
 
@@ -301,11 +330,16 @@ impl Worker {
                     return true;
                 }
                 match message {
-                    RawWatchMessage::Event(event) => self.add_event(WatchEvent {
-                        dir,
-                        kind: event.kind,
-                        filename: event.filename,
-                    }),
+                    RawWatchMessage::Event(event) => {
+                        let queued = self.add_event(WatchEvent {
+                            dir: dir.clone(),
+                            kind: event.kind,
+                            filename: event.filename.clone(),
+                        });
+                        if queued {
+                            self.mark_renamed_child(&dir, &event);
+                        }
+                    }
                     RawWatchMessage::Failed(error) => {
                         self.shut(&dir);
                         (self.config.on_problem)(&format!("Could not watch {dir}: {error}"));
@@ -377,6 +411,7 @@ impl ExternalChangesController {
             batch_started: None,
             deadline: None,
             own_writes: Vec::new(),
+            stale: HashSet::new(),
         };
         let handle = std::thread::spawn(move || worker.run(receiver));
         Self {
@@ -482,6 +517,10 @@ mod tests {
     }
 
     fn rig(delay_ms: u64) -> Rig {
+        rig_with(delay_ms, false)
+    }
+
+    fn rig_with(delay_ms: u64, real_watch: bool) -> Rig {
         let dir = tempfile::tempdir().unwrap();
         let base = fs::canonicalize(dir.path()).unwrap();
         let home = base.join("home");
@@ -505,10 +544,14 @@ mod tests {
         let mut config = WatchConfig::new(list, move |changes| {
             sink_emitted.lock().unwrap().push(changes);
         });
-        config.watch = Box::new(FakeWatch {
-            sinks: Arc::clone(&sinks),
-            opened: Arc::clone(&opened),
-        });
+        config.watch = if real_watch {
+            Box::new(crate::watch::NotifyDirectoryWatch::with_shards(1))
+        } else {
+            Box::new(FakeWatch {
+                sinks: Arc::clone(&sinks),
+                opened: Arc::clone(&opened),
+            })
+        };
         config.delay = Duration::from_millis(delay_ms);
         config.max_wait = Duration::from_secs(1);
         let controller = ExternalChangesController::start(config);
@@ -646,6 +689,52 @@ mod tests {
         r.controller.settle();
         let home = r.base.join("home").to_string_lossy().into_owned();
         assert_eq!(r.watched(), [home, claude]);
+    }
+
+    #[test]
+    fn a_renamed_child_folder_that_is_watched_is_watched_again() {
+        let r = rig(40);
+        let claude = r.claude();
+        let skill_dir = format!("{claude}/pdf");
+        let before = r
+            .opened
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|d| **d == skill_dir)
+            .count();
+        r.send(&claude, WatchEventKind::Rename, Some("pdf"));
+        r.wait_for_emits(1);
+        r.controller.settle();
+        let after = r
+            .opened
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|d| **d == skill_dir)
+            .count();
+        assert_eq!(after, before + 1);
+        assert!(r.watched().contains(&skill_dir));
+    }
+
+    #[test]
+    fn a_skill_folder_moved_away_and_back_keeps_reporting_its_files() {
+        let r = rig_with(40, true);
+        let skills = PathBuf::from(r.claude());
+        let skill_dir = skills.join("pdf");
+        let away = skills.join("pdf.bak");
+        fs::rename(&skill_dir, &away).unwrap();
+        fs::rename(&away, &skill_dir).unwrap();
+        std::thread::sleep(Duration::from_millis(800));
+        r.controller.settle();
+        r.emitted.lock().unwrap().clear();
+        fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: s\ndescription: e\n---\n",
+        )
+        .unwrap();
+        r.wait_for_emits(1);
+        assert!(!r.emitted().is_empty());
     }
 
     #[test]
