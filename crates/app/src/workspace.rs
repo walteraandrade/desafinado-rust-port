@@ -1863,6 +1863,7 @@ impl Workspace {
         self.settle_before("", cx);
         self.saves.document += 1;
         self.session = None;
+        self.forget_last_file(cx);
         self.last_text = String::new();
         self.pane
             .update(cx, |pane, cx| pane.replace_text("", window, cx));
@@ -1873,6 +1874,15 @@ impl Workspace {
         self.announce("", cx);
         self.notify("New Document", cx);
         self.watch();
+    }
+
+    /// An Untitled Document comes back after a restart from its unsaved text, which a remembered
+    /// file would shadow.
+    fn forget_last_file(&mut self, cx: &mut Context<Self>) {
+        self.remembered = None;
+        let user_data = self.services.user_data.clone();
+        cx.background_spawn(async move { clear_last_file(&user_data) })
+            .detach();
     }
 
     fn open_document(&mut self, _: &OpenDocument, window: &mut Window, cx: &mut Context<Self>) {

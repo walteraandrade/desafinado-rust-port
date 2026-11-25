@@ -38,7 +38,8 @@ opt-level = 3
 [profile.release]
 lto = "thin"
 codegen-units = 1
-strip = "symbols"
+# Keep function names so a crash.log backtrace says where a panic happened.
+strip = "debuginfo"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

@@ -1558,11 +1558,7 @@ fn mark_rows(
     state: &gpui_kit::base::input::EditorState,
     range: &std::ops::Range<usize>,
 ) -> Vec<(Pixels, Pixels, Bounds<Pixels>)> {
-    let Ok(text) = state
-        .text()
-        .try_slice(range.clone())
-        .map(|slice| slice.to_string())
-    else {
+    let Some(text) = crate::spelling::text_in(state.text(), range) else {
         return Vec::new();
     };
     let mut rows: Vec<(Pixels, Pixels, Bounds<Pixels>)> = Vec::new();
