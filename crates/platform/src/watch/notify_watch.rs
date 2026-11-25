@@ -661,8 +661,8 @@ mod tests {
             done_tx.send((started.elapsed(), handle)).log_warn();
         });
         let waited = done_rx
-            .recv_timeout(Duration::from_secs(60))
-            .map_or(Duration::from_secs(60), |(elapsed, _handle)| elapsed);
+            .recv_timeout(Duration::from_mins(1))
+            .map_or(Duration::from_mins(1), |(elapsed, _handle)| elapsed);
         stop.store(true, Ordering::Relaxed);
         for writer in writers {
             writer.join().unwrap();
