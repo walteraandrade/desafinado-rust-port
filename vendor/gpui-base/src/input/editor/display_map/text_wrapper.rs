@@ -339,6 +339,16 @@ pub(super) struct Prior<'a> {
     old_edit_end: usize,
     new_edit_end: usize,
     valid_widths: WidthRange,
+    /// Leading spaces of the line before the edit, counted as `wrap_indent` does.
+    old_indent: usize,
+}
+
+/// Leading spaces that continuation rows are indented by, up to the wrapper's limit.
+fn wrap_indent(chars: impl Iterator<Item = char>) -> usize {
+    chars
+        .take_while(|&c| c == ' ')
+        .count()
+        .min(gpui::LineWrapper::MAX_INDENT as usize)
 }
 
 /// Rows whose breaks end this far before the edit cannot have been affected by it (a break
@@ -355,6 +365,10 @@ fn rewrap_edited(
     prior: &Prior,
     measure: impl FnMut(&str) -> Pixels,
 ) -> MeasuredWrap {
+    // A new indent changes the width every continuation row has, and so every old break.
+    if wrap_indent(text.chars()) != prior.old_indent {
+        return measured_wrap_hinted(text, width, wrapping_indent, hint, measure);
+    }
     let old = prior.old_breaks;
     let kept = old
         .partition_point(|&ix| ix + UNTOUCHED_MARGIN <= prior.edit_start)
@@ -368,10 +382,7 @@ fn rewrap_edited(
     let (mut wrap, synced) =
         measured_wrap_resumable(text, width, wrapping_indent, hint, Some(&resume), measure);
     let indent = if wrapping_indent == WrappingIndent::Same {
-        text.chars()
-            .take_while(|&c| c == ' ')
-            .count()
-            .min(gpui::LineWrapper::MAX_INDENT as usize)
+        wrap_indent(text.chars())
     } else {
         0
     } as u32;
@@ -1042,6 +1053,7 @@ impl TextWrapper {
                 range.start.saturating_sub(line_start),
                 range.end.saturating_sub(line_start),
                 item.valid_widths,
+                wrap_indent(self.text.slice_line(start_row).chars()),
             )
         });
         let mut new_lines = Vec::with_capacity(new_end_row.saturating_sub(new_start_row) + 1);
@@ -1060,15 +1072,16 @@ impl TextWrapper {
                 }
             }
             let line = changed_text.slice_line(row);
-            let prior = edited_line
-                .as_ref()
-                .map(|(old_breaks, start, old_end, valid_widths)| Prior {
+            let prior = edited_line.as_ref().map(
+                |(old_breaks, start, old_end, valid_widths, old_indent)| Prior {
                     old_breaks,
                     edit_start: *start,
                     old_edit_end: *old_end,
                     new_edit_end: *start + new_text.len(),
                     valid_widths: *valid_widths,
-                });
+                    old_indent: *old_indent,
+                },
+            );
             let mut wrapped_lines = SmallVec::<[Range<usize>; 1]>::new();
             let mut prev_boundary_ix = 0;
             let mut indent_chars = 0;
