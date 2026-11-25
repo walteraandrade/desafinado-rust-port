@@ -1,9 +1,8 @@
 //! A check of a whole Document in chunks: the Blocks to check are taken in a snapshot, checked
-//! a few at a time (on several threads when there are many) without holding the Document's
-//! results, and the marks found so far are published as the work goes.
+//! a few at a time without holding the Document's results, and the marks found so far are
+//! published as the work goes.
 
 use std::ops::Range;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
@@ -13,9 +12,6 @@ use super::{Issue, Speller};
 /// How many Blocks a worker takes at a time: small enough to stop soon when a newer check
 /// starts, large enough that taking the next chunk costs nothing.
 const CHUNK: usize = 4;
-
-/// Fewer Blocks than this are checked on one thread: a helper takes about 0.2 s to start.
-const PARALLEL_MIN: usize = 32;
 
 /// What a check knows so far.
 #[derive(Debug)]
@@ -35,10 +31,9 @@ pub enum Outcome {
 
 /// How a pass is run.
 pub struct Plan<'a> {
-    /// Byte offset the check starts from: Blocks from there on are checked first.
-    pub anchor: usize,
-    /// Threads that check beside the caller; each loads a speller of its own.
-    pub helpers: usize,
+    /// Byte offset to check from, read before each chunk: Blocks from there on are checked
+    /// first, so scrolling during a long check moves the work to what the writer sees.
+    pub anchor: &'a (dyn Fn() -> usize + Sync),
     /// The least time between two publishes; the first and the last are always sent.
     pub throttle: Duration,
     /// Whether this check is still the newest one.
@@ -58,48 +53,27 @@ pub fn run(
     primary: &Mutex<Speller>,
     plan: &Plan<'_>,
 ) -> Outcome {
-    let fresh: Vec<String> = {
-        let checked = lock(checked);
-        document::unchecked_from(blocks, &checked, plan.anchor)
-            .into_iter()
-            .map(str::to_string)
-            .collect()
-    };
-    let next = AtomicUsize::new(0);
-    let last_publish = Mutex::new(None::<Instant>);
-    let work = |speller: &Mutex<Speller>| {
-        while plan.live() {
-            let start = next.fetch_add(CHUNK, Ordering::SeqCst);
-            if start >= fresh.len() {
-                return;
-            }
-            let chunk = &fresh[start..(start + CHUNK).min(fresh.len())];
-            let found: Vec<(String, Vec<Issue>)> = {
-                let mut speller = lock(speller);
-                chunk
-                    .iter()
-                    .map(|text| (text.clone(), speller.check(text)))
-                    .collect()
-            };
-            let mut checked = lock(checked);
-            checked.extend(found);
-            publish_if_due(plan, blocks, &checked, &last_publish);
+    let mut todo = document::unchecked_at(blocks, &lock(checked));
+    let mut last_publish = None::<Instant>;
+    while plan.live() {
+        let chunk = document::take_chunk(&mut todo, (plan.anchor)(), CHUNK);
+        if chunk.is_empty() {
+            break;
         }
-    };
-    let helpers = if fresh.len() < PARALLEL_MIN {
-        0
-    } else {
-        plan.helpers
-    };
-    std::thread::scope(|scope| {
-        for _ in 0..helpers {
-            scope.spawn(|| match Speller::new() {
-                Ok(speller) => work(&Mutex::new(speller)),
-                Err(error) => log::warn!("A spell-check helper could not start: {error}"),
-            });
-        }
-        work(primary);
-    });
+        let found: Vec<(String, Vec<Issue>)> = {
+            let mut speller = lock(primary);
+            chunk
+                .into_iter()
+                .map(|text| {
+                    let issues = speller.check(&text);
+                    (text, issues)
+                })
+                .collect()
+        };
+        let mut checked = lock(checked);
+        checked.extend(found);
+        publish_if_due(plan, blocks, &checked, &mut last_publish);
+    }
     if !plan.live() {
         return Outcome::Superseded;
     }
@@ -122,28 +96,24 @@ fn progress(blocks: &[(usize, String)], checked: &Checked) -> Progress {
     }
 }
 
-/// Publishes while holding `checked`, so two workers' messages arrive in the order their
-/// results were added: a later message always holds everything an earlier one does.
+/// Publishes while holding `checked`, so a later message always holds everything an earlier
+/// one does.
 fn publish_if_due(
     plan: &Plan<'_>,
     blocks: &[(usize, String)],
     checked: &Checked,
-    last_publish: &Mutex<Option<Instant>>,
+    last_publish: &mut Option<Instant>,
 ) {
-    if !plan.live() {
+    if !plan.live() || last_publish.is_some_and(|at| at.elapsed() < plan.throttle) {
         return;
     }
-    let mut last = lock(last_publish);
-    if last.is_some_and(|at| at.elapsed() < plan.throttle) {
-        return;
-    }
-    *last = Some(Instant::now());
+    *last_publish = Some(Instant::now());
     (plan.publish)(progress(blocks, checked));
 }
 
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::AtomicBool;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
     use super::*;
 
@@ -180,13 +150,11 @@ mod tests {
     }
 
     fn plan<'a>(
-        helpers: usize,
         live: &'a (dyn Fn() -> bool + Sync),
         publish: &'a (dyn Fn(Progress) + Sync),
     ) -> Plan<'a> {
         Plan {
-            anchor: 0,
-            helpers,
+            anchor: &|| 0,
             throttle: Duration::ZERO,
             live,
             publish,
@@ -207,21 +175,14 @@ mod tests {
         let blocks = corpus(40);
         let expected = reference(&blocks);
         assert!(expected.len() > 30, "{}", expected.len());
-        for helpers in [0, 3] {
-            let checked = Mutex::new(Checked::new());
-            let last = Mutex::new(None);
-            let publish = |progress: Progress| *lock(&last) = Some(progress);
-            let outcome = run(
-                &blocks,
-                &checked,
-                &SPELLER,
-                &plan(helpers, &|| true, &publish),
-            );
-            assert_eq!(outcome, Outcome::Complete);
-            let last = lock(&last).take().expect("published");
-            assert!(last.pending.is_empty());
-            assert_eq!(last.issues, expected, "helpers {helpers}");
-        }
+        let checked = Mutex::new(Checked::new());
+        let last = Mutex::new(None);
+        let publish = |progress: Progress| *lock(&last) = Some(progress);
+        let outcome = run(&blocks, &checked, &SPELLER, &plan(&|| true, &publish));
+        assert_eq!(outcome, Outcome::Complete);
+        let last = lock(&last).take().expect("published");
+        assert!(last.pending.is_empty());
+        assert_eq!(last.issues, expected);
     }
 
     #[test]
@@ -230,7 +191,7 @@ mod tests {
         let steps = Mutex::new(Vec::<Progress>::new());
         let publish = |progress: Progress| lock(&steps).push(progress);
         let checked = Mutex::new(Checked::new());
-        run(&blocks, &checked, &SPELLER, &plan(2, &|| true, &publish));
+        run(&blocks, &checked, &SPELLER, &plan(&|| true, &publish));
         let steps = lock(&steps);
         assert!(steps.len() > 2, "{} steps", steps.len());
         assert!(!steps[0].pending.is_empty());
@@ -255,8 +216,9 @@ mod tests {
             lock(&first).get_or_insert(progress);
         };
         let checked = Mutex::new(Checked::new());
-        let mut plan = plan(0, &|| true, &publish);
-        plan.anchor = anchor;
+        let at = || anchor;
+        let mut plan = plan(&|| true, &publish);
+        plan.anchor = &at;
         run(&blocks, &checked, &SPELLER, &plan);
         let first = lock(&first).take().expect("published");
         assert!(first.issues.iter().all(|issue| issue.range.start >= anchor));
@@ -270,11 +232,11 @@ mod tests {
         let publish = |_: Progress| stale.store(true, Ordering::SeqCst);
         let live = || !stale.load(Ordering::SeqCst);
         let checked = Mutex::new(Checked::new());
-        let outcome = run(&blocks, &checked, &SPELLER, &plan(0, &live, &publish));
+        let outcome = run(&blocks, &checked, &SPELLER, &plan(&live, &publish));
         assert_eq!(outcome, Outcome::Superseded);
         let kept = lock(&checked).len();
         assert!(kept >= CHUNK && kept < blocks.len(), "{kept} kept");
-        let resumed = run(&blocks, &checked, &SPELLER, &plan(0, &|| true, &|_| {}));
+        let resumed = run(&blocks, &checked, &SPELLER, &plan(&|| true, &|_| {}));
         assert_eq!(resumed, Outcome::Complete);
         assert_eq!(
             document::place(&blocks, &lock(&checked)),
@@ -286,13 +248,46 @@ mod tests {
     fn a_check_with_nothing_new_still_publishes_the_issues_once() {
         let blocks = corpus(6);
         let checked = Mutex::new(Checked::new());
-        run(&blocks, &checked, &SPELLER, &plan(0, &|| true, &|_| {}));
+        run(&blocks, &checked, &SPELLER, &plan(&|| true, &|_| {}));
         let count = AtomicUsize::new(0);
         let publish = |progress: Progress| {
             assert!(progress.pending.is_empty());
             count.fetch_add(1, Ordering::SeqCst);
         };
-        run(&blocks, &checked, &SPELLER, &plan(2, &|| true, &publish));
+        run(&blocks, &checked, &SPELLER, &plan(&|| true, &publish));
         assert_eq!(count.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn scrolling_during_a_check_moves_the_work_to_what_is_on_screen() {
+        let blocks = corpus(40);
+        let anchor = AtomicUsize::new(0);
+        let steps = Mutex::new(Vec::<Progress>::new());
+        let publish = |progress: Progress| {
+            let mut steps = lock(&steps);
+            if steps.is_empty() {
+                anchor.store(blocks[30].0, Ordering::SeqCst);
+            }
+            steps.push(progress);
+        };
+        let checked = Mutex::new(Checked::new());
+        let load = || anchor.load(Ordering::SeqCst);
+        let mut plan = plan(&|| true, &publish);
+        plan.anchor = &load;
+        run(&blocks, &checked, &SPELLER, &plan);
+        let steps = lock(&steps);
+        let second = &steps[1];
+        assert!(
+            second
+                .issues
+                .iter()
+                .any(|issue| issue.range.start >= blocks[30].0)
+        );
+        assert!(
+            second
+                .pending
+                .iter()
+                .any(|range| range.start < blocks[30].0)
+        );
     }
 }

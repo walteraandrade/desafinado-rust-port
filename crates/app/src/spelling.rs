@@ -7,7 +7,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         Arc, LazyLock, Mutex,
-        atomic::{AtomicBool, AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
     },
     time::Duration,
 };
@@ -112,6 +112,17 @@ pub fn init(user_data: &Path, cx: &mut App) {
     ]);
 }
 
+/// Loads the dictionaries in the background so the first check does not wait for them.
+pub fn preload(cx: &App) {
+    if cx.try_global::<SpellChoice>().is_none() || !settings(cx).enabled {
+        return;
+    }
+    cx.background_spawn(async {
+        LazyLock::force(&SPELLER);
+    })
+    .detach();
+}
+
 pub fn settings(cx: &App) -> SpellSettings {
     cx.try_global::<SpellChoice>()
         .map(|choice| choice.settings)
@@ -143,6 +154,8 @@ pub struct SpellState {
     checked: Arc<Mutex<Checked>>,
     /// Counts the checks started; a check whose number is no longer the latest stops.
     generation: Arc<AtomicU64>,
+    /// Where a running check works first: the line on screen, kept up to date by each render.
+    anchor: Arc<AtomicUsize>,
     issues: Vec<Issue>,
     ignored: HashSet<String>,
     hovered: Option<Range<usize>>,
@@ -176,6 +189,7 @@ impl SpellState {
         Self {
             checked: Arc::new(Mutex::new(Checked::new())),
             generation: Arc::new(AtomicU64::new(0)),
+            anchor: Arc::new(AtomicUsize::new(0)),
             issues: Vec::new(),
             ignored: HashSet::new(),
             hovered: None,
@@ -212,9 +226,6 @@ fn checkable(kind: BlockKind) -> bool {
     !matches!(kind, BlockKind::Code | BlockKind::Html | BlockKind::Rule)
 }
 
-/// Threads that check beside the one that asks, on a cold check of many Blocks.
-const HELPERS: usize = 3;
-
 enum Finished {
     Complete,
     Superseded,
@@ -226,7 +237,7 @@ enum Finished {
 fn check_document(
     text: &str,
     checked: &Mutex<Checked>,
-    anchor: usize,
+    anchor: &(dyn Fn() -> usize + Sync),
     live: &(dyn Fn() -> bool + Sync),
     publish: &(dyn Fn(Progress) + Sync),
 ) -> Finished {
@@ -239,10 +250,8 @@ fn check_document(
     let Some(speller) = SPELLER.as_ref() else {
         return Finished::NoSpeller;
     };
-    let cores = std::thread::available_parallelism().map_or(1, usize::from);
     let plan = Plan {
         anchor,
-        helpers: HELPERS.min(cores / 2),
         throttle: PUBLISH_EVERY,
         live,
         publish,
@@ -264,13 +273,15 @@ impl EditorPane {
         }
         let checked = Arc::clone(&self.spelling.checked);
         let latest = Arc::clone(&self.spelling.generation);
+        let anchor = Arc::clone(&self.spelling.anchor);
         self.spelling._task = Some(cx.spawn(async move |this, cx| {
             if pause {
                 cx.background_executor().timer(PAUSE).await;
             }
-            let Some((text, anchor)) = this
+            let Some(text) = this
                 .update(cx, |this, cx| {
-                    (this.text(cx), this.first_visible_offset(cx))
+                    this.follow_view(cx);
+                    this.text(cx)
                 })
                 .log_err()
             else {
@@ -282,7 +293,13 @@ impl EditorPane {
                 let publish = |progress| {
                     sender.unbounded_send(progress).log_warn();
                 };
-                check_document(&text, &checked, anchor, &live, &publish)
+                check_document(
+                    &text,
+                    &checked,
+                    &|| anchor.load(Ordering::Relaxed),
+                    &live,
+                    &publish,
+                )
             });
             let mut next = {
                 perf_span!("spelling.first_marks");
@@ -321,12 +338,15 @@ impl EditorPane {
         cx.notify();
     }
 
-    /// Where the first line on screen starts, or 0 before the first layout.
-    fn first_visible_offset(&self, cx: &App) -> usize {
+    /// Points a running check at the first line on screen, or at the caret before the first
+    /// layout.
+    pub(crate) fn follow_view(&self, cx: &App) {
         let state = self.editor.read(cx);
-        state.visible_row_range().map_or(0, |rows| {
-            component::RopeExt::line_start_offset(state.text(), rows.start)
-        })
+        let offset = state.visible_row_range().map_or_else(
+            || state.selected_range().start,
+            |rows| component::RopeExt::line_start_offset(state.text(), rows.start),
+        );
+        self.spelling.anchor.store(offset, Ordering::Relaxed);
     }
 
     /// Moves the marks with an edit; the ones it touched wait for the next check.
@@ -423,6 +443,7 @@ impl EditorPane {
         cx: &mut Context<Self>,
     ) -> (AnyElement, Option<AnyElement>) {
         self.follow_spelling_switch(cx);
+        self.follow_view(cx);
         let layer = ui::spelling_layer(self.editor.clone(), self.spell_marks(roles, cx));
         let menu = self.render_spell_menu(roles, cx);
         if menu.is_none() {
@@ -905,7 +926,7 @@ mod tests {
         let checked = Mutex::new(Checked::new());
         let last = Mutex::new(None::<Progress>);
         let publish = |progress| *last.lock().expect("lock") = Some(progress);
-        let finished = check_document(text, &checked, 0, &|| true, &publish);
+        let finished = check_document(text, &checked, &|| 0, &|| true, &publish);
         assert!(matches!(finished, Finished::Complete));
         let issues = last.lock().expect("lock").take().expect("published").issues;
         let ranges: Vec<&str> = issues

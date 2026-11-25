@@ -21,21 +21,25 @@ pub fn unchecked<'a>(blocks: &'a [(usize, String)], checked: &Checked) -> Vec<&'
         .collect()
 }
 
-/// Like [`unchecked`], but the Blocks that start at or after `anchor` come first, then the ones
-/// before it, each group in Document order: what the writer sees is checked first.
-pub fn unchecked_from<'a>(
-    blocks: &'a [(usize, String)],
-    checked: &Checked,
-    anchor: usize,
-) -> Vec<&'a str> {
-    let split = blocks.partition_point(|(from, _)| *from < anchor);
+/// The Blocks whose text has not been checked, each text once at its first place, in
+/// Document order.
+pub fn unchecked_at(blocks: &[(usize, String)], checked: &Checked) -> Vec<(usize, String)> {
     let mut seen = HashSet::new();
-    blocks[split..]
+    blocks
         .iter()
-        .chain(&blocks[..split])
-        .map(|(_, text)| text.as_str())
-        .filter(|text| !checked.contains_key(*text) && seen.insert(*text))
+        .filter(|(_, text)| !checked.contains_key(text) && seen.insert(text.as_str()))
+        .cloned()
         .collect()
+}
+
+/// Takes up to `count` Blocks from `todo`, starting with the first one at or after `anchor`
+/// (or the first of all when none is), and returns their texts. What the writer sees is
+/// checked first.
+pub fn take_chunk(todo: &mut Vec<(usize, String)>, anchor: usize, count: usize) -> Vec<String> {
+    let start = todo.partition_point(|(from, _)| *from < anchor);
+    let start = if start < todo.len() { start } else { 0 };
+    let end = (start + count).min(todo.len());
+    todo.drain(start..end).map(|(_, text)| text).collect()
 }
 
 /// Where the Blocks that have no check yet sit in the Document, in Document order.
@@ -265,15 +269,15 @@ mod tests {
     }
 
     #[test]
-    fn unchecked_blocks_from_the_anchor_come_first_then_the_ones_before() {
+    fn chunks_start_at_the_anchor_and_wrap_to_the_beginning() {
         let blocks = blocks(&[(0, "a"), (10, "b"), (20, "c"), (30, "b"), (40, "d")]);
         let mut checked = Checked::new();
         checked.insert("c".into(), vec![]);
-        assert_eq!(unchecked_from(&blocks, &checked, 25), vec!["b", "d", "a"]);
-        assert_eq!(
-            unchecked_from(&blocks, &checked, 0),
-            unchecked(&blocks, &checked)
-        );
+        let mut todo = unchecked_at(&blocks, &checked);
+        assert_eq!(todo.len(), 3);
+        assert_eq!(take_chunk(&mut todo, 5, 2), vec!["b", "d"]);
+        assert_eq!(take_chunk(&mut todo, 45, 2), vec!["a"]);
+        assert!(take_chunk(&mut todo, 0, 2).is_empty());
     }
 
     #[test]
