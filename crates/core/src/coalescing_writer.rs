@@ -8,6 +8,7 @@
 use std::{
     cell::Cell,
     collections::BTreeMap,
+    panic::{AssertUnwindSafe, catch_unwind},
     sync::{Arc, Mutex, MutexGuard},
 };
 
@@ -36,21 +37,43 @@ fn locked<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
+/// Marks this thread as inside a write, and clears the mark when it ends or unwinds.
+struct Writing;
+
+impl Writing {
+    fn begin() -> Self {
+        WRITING.set(true);
+        Self
+    }
+}
+
+impl Drop for Writing {
+    fn drop(&mut self) {
+        WRITING.set(false);
+    }
+}
+
 impl Shared {
     fn run_batch(&self) {
         if WRITING.get() {
             return;
         }
         let _running = locked(&self.running);
-        WRITING.set(true);
+        let _writing = Writing::begin();
         let mut batch: Vec<(u64, Job)> = std::mem::take(&mut locked(&self.pending).jobs)
             .into_values()
             .collect();
         batch.sort_by_key(|(order, _)| *order);
         for (_, job) in batch {
-            job();
+            if let Err(panic) = catch_unwind(AssertUnwindSafe(job)) {
+                let reason = panic
+                    .downcast_ref::<&str>()
+                    .map(|reason| (*reason).to_string())
+                    .or_else(|| panic.downcast_ref::<String>().cloned())
+                    .unwrap_or_default();
+                log::error!("A background write panicked: {reason}");
+            }
         }
-        WRITING.set(false);
     }
 }
 
@@ -64,12 +87,18 @@ pub struct Drain {
     shared: Arc<Shared>,
 }
 
+impl Drop for Drain {
+    fn drop(&mut self) {
+        locked(&self.shared.pending).draining = false;
+    }
+}
+
 impl Drain {
     pub fn run(self) {
         loop {
             self.shared.run_batch();
             let mut pending = locked(&self.shared.pending);
-            if pending.jobs.is_empty() {
+            if pending.jobs.is_empty() || WRITING.get() {
                 pending.draining = false;
                 return;
             }
@@ -145,7 +174,8 @@ mod tests {
     fn a_second_submit_while_draining_starts_no_second_drain() {
         let writer = CoalescingWriter::default();
         let written = log();
-        assert!(writer.submit("a", push(&written, "a")).is_some());
+        let first = writer.submit("a", push(&written, "a"));
+        assert!(first.is_some());
         assert!(writer.submit("b", push(&written, "b")).is_none());
     }
 
@@ -210,5 +240,27 @@ mod tests {
         });
         drain.expect("drain").run();
         assert_eq!(*locked(&written), ["outer"]);
+    }
+
+    #[test]
+    fn a_panicking_job_does_not_stop_the_writes_after_it() {
+        let writer = CoalescingWriter::default();
+        let written = log();
+        let drain = writer.submit("a", || panic!("disk on fire"));
+        writer.submit("b", push(&written, "b"));
+        drain.expect("drain").run();
+        assert_eq!(*locked(&written), ["b"]);
+        let next = writer.submit("c", push(&written, "c"));
+        next.expect("a new drain starts after the panic").run();
+        assert_eq!(*locked(&written), ["b", "c"]);
+        writer.flush();
+    }
+
+    #[test]
+    fn a_drain_dropped_without_running_lets_the_next_submit_start_one() {
+        let writer = CoalescingWriter::default();
+        let written = log();
+        drop(writer.submit("a", push(&written, "a")));
+        assert!(writer.submit("a", push(&written, "a2")).is_some());
     }
 }

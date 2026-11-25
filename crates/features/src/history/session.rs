@@ -2,7 +2,7 @@ use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 
 use super::events::EventSink;
-use super::recorder::{AcceptedInput, HistoryRecorder};
+use super::recorder::{AcceptedInput, HistoryRecorder, LazyEdit};
 use super::store::{HistoryKey, HistoryStore, HistoryWrite, StoreError, apply_write};
 use super::types::{VersionId, VersionList};
 
@@ -57,15 +57,21 @@ fn same_versions(left: &VersionList, right: &VersionList) -> bool {
 pub struct DeferredWrites {
     store: Arc<dyn HistoryStore>,
     key: HistoryKey,
-    writes: Vec<HistoryWrite>,
+    edit: LazyEdit,
 }
 
 impl DeferredWrites {
-    /// Applies the writes in order; returns the errors of the ones that failed.
+    /// The History key the write is for.
+    pub fn key(&self) -> &str {
+        &self.key
+    }
+
+    /// Reads the text and writes the version; returns the error, if it failed. The text is
+    /// read here, so run this off the UI thread.
     pub fn apply(self) -> Vec<StoreError> {
-        self.writes
+        apply_write(self.store.as_ref(), &self.key, self.edit.into_write())
+            .err()
             .into_iter()
-            .filter_map(|write| apply_write(self.store.as_ref(), &self.key, write).err())
             .collect()
     }
 }
@@ -177,11 +183,10 @@ impl DocumentHistory {
     /// Like [`Self::poll`], but hands the writes that came due back instead of applying them,
     /// for the caller to apply off the UI thread and then report with [`Self::wrote`].
     pub fn poll_deferred(&mut self, now: i64) -> Option<DeferredWrites> {
-        let writes = self.recorder.poll(now);
-        (!writes.is_empty()).then(|| DeferredWrites {
+        self.recorder.poll_lazy(now).map(|edit| DeferredWrites {
             store: Arc::clone(&self.store),
             key: self.key.clone(),
-            writes,
+            edit,
         })
     }
 
@@ -594,5 +599,25 @@ mod tests {
         assert_eq!(*made.errors.lock().unwrap(), vec!["disk full"]);
         made.history.settled();
         assert_eq!(made.spy.lists.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn a_deferred_write_reads_the_text_only_when_it_is_applied() {
+        let reads = Arc::new(AtomicUsize::new(0));
+        let mut made = create();
+        let counter = Arc::clone(&reads);
+        made.history.edited_with(
+            move || {
+                counter.fetch_add(1, Ordering::SeqCst);
+                "lazy".to_string()
+            },
+            1000,
+        );
+        let deferred = made.history.poll_deferred(1000 + IDLE_MS).expect("due");
+        assert_eq!(reads.load(Ordering::SeqCst), 0);
+        assert_eq!(deferred.key(), KEY);
+        deferred.apply();
+        assert_eq!(reads.load(Ordering::SeqCst), 1);
+        assert_eq!(*made.spy.record_log.lock().unwrap(), vec!["lazy"]);
     }
 }

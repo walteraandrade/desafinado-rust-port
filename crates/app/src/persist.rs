@@ -2,7 +2,11 @@
 //! Both are snapshots taken on the UI thread, which cost a clone of a Rope or a few small
 //! values, and written by one serialized writer that keeps only the newest per key.
 
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    collections::HashMap,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use desafinado_ai::editor::place::{SavedPlace, place_to_json};
 use desafinado_core::{coalescing_writer::CoalescingWriter, log_err::LogErr};
@@ -21,6 +25,8 @@ pub(crate) struct UnsavedSnapshot {
 pub(crate) struct UnsavedQueue {
     pub snapshots: HashMap<String, UnsavedSnapshot>,
     pub task: Option<Task<()>>,
+    /// When the oldest edit not yet handed to the writer was made.
+    pub first_unwritten: Option<Instant>,
     pub writer: CoalescingWriter,
 }
 
@@ -29,9 +35,22 @@ impl UnsavedQueue {
         Self {
             snapshots: HashMap::new(),
             task: None,
+            first_unwritten: None,
             writer,
         }
     }
+}
+
+/// How long the writer pauses before the unsaved text is written.
+pub(crate) const UNSAVED_DELAY: Duration = Duration::from_millis(400);
+/// The longest an edit waits for that pause: continuous typing writes at least this often.
+pub(crate) const UNSAVED_MAX_WAIT: Duration = Duration::from_secs(2);
+
+/// Whether the unsaved text must be written now: the writer paused, or has been typing for
+/// longer than [`UNSAVED_MAX_WAIT`] since the oldest edit not yet written.
+pub(crate) fn unsaved_due(first_unwritten: Instant, last_edit: Instant, now: Instant) -> bool {
+    now.saturating_duration_since(last_edit) >= UNSAVED_DELAY
+        || now.saturating_duration_since(first_unwritten) >= UNSAVED_MAX_WAIT
 }
 
 pub(crate) fn unsaved_job_key(key: &str) -> String {
@@ -89,6 +108,17 @@ pub(crate) fn write_place(db: &HistoryDb, key: &str, snapshot: &PlaceSnapshot, a
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unsaved_text_is_due_after_a_pause_or_after_the_max_wait_of_continuous_typing() {
+        let start = Instant::now();
+        let at = |ms: u64| start + Duration::from_millis(ms);
+        assert!(!unsaved_due(at(0), at(100), at(200)));
+        assert!(unsaved_due(at(0), at(100), at(500)));
+        assert!(!unsaved_due(at(0), at(1_990), at(1_999)));
+        assert!(unsaved_due(at(0), at(1_990), at(2_000)));
+        assert!(!unsaved_due(at(5_000), at(5_000), at(5_000)));
+    }
     use desafinado_core::coalescing_writer::CoalescingWriter;
 
     fn db() -> (tempfile::TempDir, Arc<HistoryDb>) {

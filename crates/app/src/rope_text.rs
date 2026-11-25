@@ -6,8 +6,10 @@ use desafinado_core::{
 };
 use gpui_kit::base::input::Rope;
 
-/// How much of the start of the text is read to find a frontmatter before reading it all.
-const FRONTMATTER_PROBE: usize = 8 * 1024;
+/// How much of the start of the text is searched for a frontmatter. One that does not close
+/// within it is taken as none, so a long document that opens with a horizontal rule costs a
+/// read of this much per keystroke and never the whole text.
+const FRONTMATTER_PROBE: usize = 64 * 1024;
 
 /// The edit as a change set; `after` is the text once the edit was applied.
 pub(crate) fn edit_change(
@@ -35,26 +37,20 @@ fn floor_char_boundary(text: &Rope, at: usize) -> usize {
     at
 }
 
-/// The frontmatter at the start of the text. It reads the first few KB; the whole text only
-/// when it opens like a frontmatter that does not close within them.
+/// The frontmatter at the start of the text, found in its first [`FRONTMATTER_PROBE`] bytes.
 pub(crate) fn frontmatter_of(text: &Rope) -> Option<Frontmatter> {
-    let probe_end = floor_char_boundary(text, FRONTMATTER_PROBE);
-    let probe = text.slice(..probe_end).to_string();
-    if probe_end == text.len() {
-        return find_frontmatter(&probe);
-    }
-    if !probe.starts_with("---") {
+    if !text.bytes().take(3).eq("---".bytes()) {
         return None;
     }
-    match find_frontmatter(&probe) {
-        Some(found) if found.to < probe_end => Some(found),
-        _ => find_frontmatter(&text.to_string()),
-    }
+    let probe_end = floor_char_boundary(text, FRONTMATTER_PROBE);
+    let probe = text.slice(..probe_end).to_string();
+    find_frontmatter(&probe).filter(|found| probe_end == text.len() || found.to < probe_end)
 }
 
 /// The part of the text the frontmatter panel reads. A skill file is read whole (the panel
 /// also checks what its frontmatter would be); any other file only up to the end of its
-/// frontmatter, which is all that decides the report.
+/// frontmatter, or the probe when it opens like one and does not close, which is all that
+/// decides the report.
 pub(crate) fn frontmatter_source(text: &Rope, is_skill: bool) -> String {
     if is_skill {
         return text.to_string();
@@ -62,7 +58,9 @@ pub(crate) fn frontmatter_source(text: &Rope, is_skill: bool) -> String {
     match frontmatter_of(text) {
         Some(found) => text.slice(..found.to).to_string(),
         None if !text.bytes().take(3).eq("---".bytes()) => String::new(),
-        None => text.to_string(),
+        None => text
+            .slice(..floor_char_boundary(text, FRONTMATTER_PROBE))
+            .to_string(),
     }
 }
 
@@ -164,12 +162,28 @@ mod tests {
     }
 
     #[test]
-    fn a_frontmatter_that_closes_past_the_probe_is_still_found() {
+    fn a_frontmatter_longer_than_8_kb_is_still_found() {
         let yaml = "key: v\n".repeat(2_000);
-        let text = format!("---\n{yaml}---\n{}", "word ".repeat(10_000));
+        let text = format!("---\n{yaml}---\n{}", "word ".repeat(30_000));
         assert!(text.len() > FRONTMATTER_PROBE * 2);
         assert_eq!(frontmatter_of(&rope(&text)), find_frontmatter(&text));
         assert!(frontmatter_of(&rope(&text)).is_some());
+    }
+
+    #[test]
+    fn a_document_opening_with_a_rule_has_no_frontmatter_like_the_string_search() {
+        let text = format!("---\n\n{}", "A paragraph of prose.\n".repeat(20_000));
+        assert!(text.len() > FRONTMATTER_PROBE * 4);
+        assert_eq!(frontmatter_of(&rope(&text)), find_frontmatter(&text));
+        assert_eq!(frontmatter_of(&rope(&text)), None);
+    }
+
+    #[test]
+    fn a_frontmatter_closing_past_the_probe_is_taken_as_none() {
+        let yaml = "key: v\n".repeat(FRONTMATTER_PROBE / 4);
+        let text = format!("---\n{yaml}---\nbody");
+        assert!(find_frontmatter(&text).is_some());
+        assert_eq!(frontmatter_of(&rope(&text)), None);
     }
 
     #[test]

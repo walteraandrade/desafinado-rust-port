@@ -35,6 +35,19 @@ impl std::fmt::Debug for PendingText {
     }
 }
 
+/// An edit that came due, whose text is not read yet.
+pub struct LazyEdit {
+    text: PendingText,
+    at: i64,
+}
+
+impl LazyEdit {
+    /// Reads the text and makes the write.
+    pub fn into_write(self) -> HistoryWrite {
+        record(self.text.read(), VersionCause::Edited, self.at)
+    }
+}
+
 #[derive(Clone, Debug)]
 struct Pending {
     text: PendingText,
@@ -81,6 +94,18 @@ impl HistoryRecorder {
             text: PendingText::Lazy(Arc::new(read)),
             due: now + self.idle_ms,
         });
+    }
+
+    /// Like [`Self::poll`] for the pending edit, but without reading its text: the caller
+    /// turns the result into a write apart from the UI thread.
+    pub fn poll_lazy(&mut self, now: i64) -> Option<LazyEdit> {
+        match self.next_due() {
+            Some(due) if due <= now => self.pending.take().map(|pending| LazyEdit {
+                text: pending.text,
+                at: now,
+            }),
+            _ => None,
+        }
     }
 
     pub fn poll(&mut self, now: i64) -> Vec<HistoryWrite> {

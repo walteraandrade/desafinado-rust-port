@@ -7,7 +7,7 @@ use std::{
         Arc,
         atomic::{AtomicU64, Ordering},
     },
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use desafinado_core::sample::SAMPLE_DOCUMENT;
@@ -84,8 +84,8 @@ use desafinado_core::coalescing_writer::CoalescingWriter;
 use gpui_kit::base::input::Rope;
 
 use crate::persist::{
-    PlaceSnapshot, UnsavedQueue, UnsavedSnapshot, place_job_key, unsaved_job_key, write_place,
-    write_unsaved,
+    PlaceSnapshot, UNSAVED_DELAY, UnsavedQueue, UnsavedSnapshot, place_job_key, unsaved_due,
+    unsaved_job_key, write_place, write_unsaved,
 };
 use crate::rope_text::frontmatter_source;
 use desafinado_ai::quick_action_settings::{
@@ -118,7 +118,6 @@ struct KeptPlaces {
 static HISTORY_WRITES: AtomicU64 = AtomicU64::new(0);
 
 const HISTORY_IDLE_MS: i64 = 30_000;
-const UNSAVED_DELAY: Duration = Duration::from_millis(400);
 /// How often the open Document's place is written, so a crash does not lose it.
 const PLACE_INTERVAL: Duration = Duration::from_secs(3);
 const TOAST_DURATION: Duration = Duration::from_millis(4500);
@@ -922,6 +921,12 @@ impl Workspace {
                 save_last_file(&self.services.user_data, path);
             }
         }
+        let now = Instant::now();
+        let first = *self.unsaved.first_unwritten.get_or_insert(now);
+        if unsaved_due(first, now, now) {
+            self.flush_unsaved_later(cx);
+            return;
+        }
         self.unsaved.task = Some(cx.spawn(async move |this, cx| {
             cx.background_executor().timer(UNSAVED_DELAY).await;
             this.update(cx, Workspace::flush_unsaved_later).log_warn();
@@ -952,6 +957,7 @@ impl Workspace {
     fn queue_unsaved(&mut self) -> Vec<(String, Box<dyn FnOnce() + Send>)> {
         perf_span!("workspace.flush_unsaved");
         self.unsaved.task = None;
+        self.unsaved.first_unwritten = None;
         let pending = std::mem::take(&mut self.unsaved.snapshots);
         let Some(db) = self.db.clone() else {
             return Vec::new();
@@ -1131,6 +1137,7 @@ impl Workspace {
             self.settle_history(cx);
             return;
         };
+        let written_key = deferred.key().to_string();
         let (sender, receiver) = futures::channel::oneshot::channel();
         let serial = HISTORY_WRITES.fetch_add(1, Ordering::Relaxed);
         let key = format!("history:{serial}");
@@ -1146,8 +1153,13 @@ impl Workspace {
         cx.spawn(async move |this, cx| {
             if let Ok(errors) = receiver.await {
                 this.update(cx, |this, cx| {
-                    this.history.wrote(&errors);
-                    this.settle_history(cx);
+                    if this.history.wrote(&written_key, &errors) {
+                        this.settle_history(cx);
+                    } else {
+                        for error in &errors {
+                            log::error!("History write for {written_key} failed: {error}");
+                        }
+                    }
                 })
                 .log_warn();
             }
