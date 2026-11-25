@@ -216,6 +216,9 @@ pub struct TextView {
     reveal_handler: Option<Rc<RevealHandlerFn>>,
     markdown_extensions: Arc<MarkdownExtensions>,
     motion: Option<TextViewMotion>,
+    content_max_width: Option<Pixels>,
+    lazy_measure: bool,
+    scroll_padding: (Pixels, Pixels),
 }
 
 /// A plugin that can configure a [`TextView`].
@@ -268,6 +271,9 @@ impl TextView {
             reveal_handler: None,
             markdown_extensions: Arc::default(),
             motion: None,
+            content_max_width: None,
+            lazy_measure: false,
+            scroll_padding: (Pixels::ZERO, Pixels::ZERO),
         }
     }
 
@@ -297,6 +303,9 @@ impl TextView {
             reveal_handler: None,
             markdown_extensions: Arc::default(),
             motion: None,
+            content_max_width: None,
+            lazy_measure: false,
+            scroll_padding: (Pixels::ZERO, Pixels::ZERO),
         }
     }
 
@@ -326,6 +335,9 @@ impl TextView {
             reveal_handler: None,
             markdown_extensions: Arc::default(),
             motion: None,
+            content_max_width: None,
+            lazy_measure: false,
+            scroll_padding: (Pixels::ZERO, Pixels::ZERO),
         }
     }
 
@@ -401,6 +413,29 @@ impl TextView {
     /// This mode is suitable for small content, such as a few lines of text, a label, etc.
     pub fn scrollable(mut self, scrollable: bool) -> Self {
         self.scrollable = scrollable;
+        self
+    }
+
+    /// Measures only the blocks in view, estimating the rest, when the view is
+    /// [`scrollable`](Self::scrollable): a large document opens fast, and the
+    /// scrollbar thumb settles as blocks are measured. The default measures
+    /// every block up front, which keeps the thumb exact.
+    pub fn lazy_measure(mut self, lazy: bool) -> Self {
+        self.lazy_measure = lazy;
+        self
+    }
+
+    /// Space above the first block and below the last one of a
+    /// [`scrollable`](Self::scrollable) view. It scrolls with the content.
+    pub fn scroll_padding(mut self, top: Pixels, bottom: Pixels) -> Self {
+        self.scroll_padding = (top, bottom);
+        self
+    }
+
+    /// Centers the content in a column at most `width` wide, while the view,
+    /// its hitbox and its scrollbar keep the full width of the container.
+    pub fn content_max_width(mut self, width: Pixels) -> Self {
+        self.content_max_width = Some(width);
         self
     }
 
@@ -843,6 +878,11 @@ impl Element for TextView {
             state.selection_format = self.selection_format;
             state.scrollable = self.scrollable;
             state.max_lines = max_lines;
+            state.content_max_width = self.content_max_width;
+            state.scroll_padding = self.scroll_padding;
+            if self.lazy_measure {
+                state.set_lazy_measure();
+            }
             if let Some(text_view_style) = text_view_style {
                 state.text_view_style = text_view_style;
             }

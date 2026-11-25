@@ -474,6 +474,8 @@ pub struct Workspace {
     new_skill: Option<Entity<NewSkillDialog>>,
     frontmatter: Entity<FrontmatterView>,
     frontmatter_due: bool,
+    reading_view: Option<crate::reading_view::ReadingView>,
+    reading_feed: crate::reading_view::ReadingFeed,
     frontmatter_scrolled: std::rc::Rc<std::cell::Cell<Pixels>>,
     frontmatter_height: std::rc::Rc<std::cell::Cell<Pixels>>,
     evals: Entity<EvalsView>,
@@ -516,13 +518,7 @@ impl Workspace {
         let (pane, quick_actions) = Self::open_pane(&services, &initial, window, cx);
         let key_present = services.keys.status().present;
         let library = cx.new(|cx| LibraryPanel::new(user_data.clone(), window, cx));
-        let frontmatter = cx.new(|cx| {
-            FrontmatterView::new(
-                desafinado_runtime::ai_backend::backend(Arc::clone(&services)),
-                window,
-                cx,
-            )
-        });
+        let frontmatter = Self::open_frontmatter(&services, window, cx);
         let utc_offset = utc_offset_minutes();
         let evals = cx.new(|_| EvalsView::new(evals_service, utc_offset));
         let subscriptions = Self::subscribe(&pane, &library, &frontmatter, &evals, window, cx);
@@ -573,6 +569,8 @@ impl Workspace {
             new_skill: None,
             frontmatter,
             frontmatter_due: true,
+            reading_view: None,
+            reading_feed: crate::reading_view::ReadingFeed::default(),
             frontmatter_scrolled: std::rc::Rc::new(std::cell::Cell::new(px(0.))),
             frontmatter_height: std::rc::Rc::new(std::cell::Cell::new(px(0.))),
             evals,
@@ -593,6 +591,20 @@ impl Workspace {
         };
         workspace.started(launches, notice, window, cx);
         workspace
+    }
+
+    fn open_frontmatter(
+        services: &Arc<Services>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Entity<FrontmatterView> {
+        cx.new(|cx| {
+            FrontmatterView::new(
+                desafinado_runtime::ai_backend::backend(Arc::clone(services)),
+                window,
+                cx,
+            )
+        })
     }
 
     fn started(
@@ -845,6 +857,7 @@ impl Workspace {
     }
 
     fn on_pane_event(&mut self, event: &PaneEvent, cx: &mut Context<Self>) {
+        self.reading_feed.touch();
         match event {
             PaneEvent::Changed => {
                 perf_span!("workspace.changed");
@@ -1091,6 +1104,7 @@ impl Workspace {
     }
 
     fn arrived(&mut self) {
+        self.reading_feed.touch();
         self.conflict = None;
         self.noticed = None;
         self.frontmatter_due = true;
@@ -3507,6 +3521,7 @@ impl Workspace {
         self.spend = None;
         self.show_editing(window, cx);
         self.page = next;
+        self.reading_feed.touch();
         if next == Page::Reading {
             self.pane.update(cx, |pane, cx| pane.put_away(window, cx));
             self.focus.focus(window, cx);
@@ -3517,6 +3532,18 @@ impl Workspace {
         cx.notify();
     }
 
+    fn render_reading(&mut self, roles: Roles, cx: &mut Context<Self>) -> AnyElement {
+        let opened = self.reading_view.is_none();
+        let view = self
+            .reading_view
+            .get_or_insert_with(|| crate::reading_view::ReadingView::new(cx));
+        if self.reading_feed.due() || opened {
+            let text = self.pane.read(cx).text(cx);
+            view.feed(&text, cx);
+        }
+        view.render(roles, crate::theme::reading_code(cx))
+    }
+
     fn render_main(
         &mut self,
         mode: HistoryMode,
@@ -3525,6 +3552,9 @@ impl Workspace {
         roles: Roles,
         cx: &mut Context<Self>,
     ) -> Div {
+        if !self.reading() {
+            self.reading_view = None;
+        }
         let header = self.render_header(roles, cx);
         let conflict = self
             .conflict
@@ -3538,11 +3568,7 @@ impl Workspace {
                 gpui_kit::IntoElement::into_any_element,
             ),
             _ if evals_shown => self.evals.clone().into_any_element(),
-            HistoryMode::Editing if self.reading() => crate::reading_view::render_reading(
-                &self.text(cx),
-                roles,
-                crate::theme::reading_code(cx),
-            ),
+            HistoryMode::Editing if self.reading() => self.render_reading(roles, cx),
             HistoryMode::Editing => self.render_editing(cx),
             HistoryMode::Version { id } => self.render_compare(id, roles, cx).into_any_element(),
             HistoryMode::Full => self.render_full_history(roles, cx).into_any_element(),
