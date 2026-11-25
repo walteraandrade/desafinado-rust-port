@@ -36,10 +36,10 @@ use desafinado_ai::{
 };
 use desafinado_core::{
     blocks::{
-        Block, BlockKind, Selection, Target, extract_blocks, find_frontmatter, get_neighbors,
-        resolve_target, target_from_range,
+        Block, BlockKind, Selection, Target, extract_blocks, get_neighbors, resolve_target,
+        target_from_range,
     },
-    change_set::{ChangeSet, TextChange},
+    change_set::ChangeSet,
     diff::DiffHunk,
     suggestions::{
         ClientError, Direction, Instruction, PlaceReviewEditInput, ReadySuggestion, RefineState,
@@ -56,7 +56,9 @@ use desafinado_core::{
     },
 };
 use futures::{StreamExt as _, channel::mpsc};
-use gpui_kit::base::input::{BlockZone, Inlay};
+use gpui_kit::base::input::{BlockZone, Inlay, Rope};
+
+use crate::rope_text::{edit_change, frontmatter_of};
 use gpui_kit::{
     component::input::{
         Editor, EditorState, Input, InputEditsEvent, InputState, RangeDecoration,
@@ -291,18 +293,6 @@ pub struct ReviewRun {
     _task: Task<()>,
 }
 
-fn edit_change(edit_start: usize, old_end: usize, new_end: usize, after: &str) -> ChangeSet {
-    let inserted = after
-        .get(edit_start..new_end)
-        .unwrap_or_default()
-        .to_string();
-    let before_len = after.len() + (old_end - edit_start) - (new_end - edit_start);
-    ChangeSet::of(
-        &[TextChange::new(edit_start, old_end, inserted)],
-        before_len,
-    )
-}
-
 fn has_room_for_review(blocks: &[Block], occupied: &std::collections::BTreeSet<String>) -> bool {
     blocks
         .iter()
@@ -429,19 +419,13 @@ impl EditorPane {
         cx: &mut Context<Self>,
     ) {
         perf_span!("pane.on_edits");
-        self.text_map.edited();
+        self.map_edited(cx);
         self.caret.restart(editor, cx);
-        let frontmatter = find_frontmatter(&editor.read(cx).value());
+        let frontmatter = frontmatter_of(editor.read(cx).text());
         let applying = self.applying.take();
         let mut next = self.suggestions.clone();
         for (edit, rope) in event.edits() {
-            let after = rope.to_string();
-            let changes = edit_change(
-                edit.start_byte,
-                edit.old_end_byte,
-                edit.new_end_byte,
-                &after,
-            );
+            let changes = edit_change(edit.start_byte, edit.old_end_byte, edit.new_end_byte, rope);
             if let Some(review) = self.review.as_mut() {
                 review.changes = review.changes.compose(&changes);
             }
@@ -493,7 +477,12 @@ impl EditorPane {
     }
 
     pub fn text(&self, cx: &App) -> String {
-        self.editor.read(cx).value().to_string()
+        self.editor.read(cx).text().to_string()
+    }
+
+    /// The text without copying it: a Rope shares its content with the editor's.
+    pub fn rope(&self, cx: &App) -> Rope {
+        self.editor.read(cx).text().clone()
     }
 
     pub(crate) fn set_suggestions(&mut self, next: SuggestionsState, cx: &mut Context<Self>) {

@@ -2,6 +2,7 @@
 
 pub mod blocks;
 pub mod change_set;
+pub mod coalescing_writer;
 pub mod diff;
 pub mod log_err;
 

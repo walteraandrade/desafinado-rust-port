@@ -59,6 +59,10 @@ impl<Reference> SwitchableHistory<Reference> {
         self.current.edited(text, now);
     }
 
+    pub fn edited_with(&mut self, read: impl Fn() -> String + Send + Sync + 'static, now: i64) {
+        self.current.edited_with(read, now);
+    }
+
     pub fn accepted(&mut self, input: AcceptedInput, now: i64) {
         self.current.accepted(input, now);
     }
@@ -93,6 +97,14 @@ impl<Reference> SwitchableHistory<Reference> {
 
     pub fn poll(&mut self, now: i64) {
         self.current.poll(now);
+    }
+
+    pub fn poll_deferred(&mut self, now: i64) -> Option<super::session::DeferredWrites> {
+        self.current.poll_deferred(now)
+    }
+
+    pub fn wrote(&mut self, errors: &[super::store::StoreError]) {
+        self.current.wrote(errors);
     }
 
     pub fn next_due(&self) -> Option<i64> {

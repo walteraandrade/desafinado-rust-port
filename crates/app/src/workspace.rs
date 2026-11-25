@@ -3,7 +3,10 @@ use std::{
     collections::HashMap,
     path::{Path, PathBuf},
     rc::Rc,
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
@@ -56,7 +59,7 @@ use crate::{
     caret,
     document::{
         Conflict, DiskState, ExternalFacts, ExternalVerdict, FileSession, SCRATCH_KEY,
-        UNTITLED_NAME, decide_external_change, edited_session, has_unsaved_changes, history_key,
+        UNTITLED_NAME, decide_external_change, has_unsaved_changes, history_key, mark_edited,
         minimal_change, name_of, opened_session, suggested_file_name,
     },
     editor_pane::{EditorPane, PaneEvent, PaneToastAction},
@@ -76,9 +79,15 @@ use crate::{
     theme::{self, Roles},
     ui::{self, ButtonKind, ToastTone, Type as _},
 };
-use desafinado_ai::editor::place::{
-    PlaceWrites, SavedPlace, place_from_json, place_to_json, restore_place,
+use desafinado_ai::editor::place::{SavedPlace, place_from_json, place_to_json, restore_place};
+use desafinado_core::coalescing_writer::CoalescingWriter;
+use gpui_kit::base::input::Rope;
+
+use crate::persist::{
+    PlaceSnapshot, UnsavedQueue, UnsavedSnapshot, place_job_key, unsaved_job_key, write_place,
+    write_unsaved,
 };
+use crate::rope_text::frontmatter_source;
 use desafinado_ai::quick_action_settings::{
     QuickActionSettings, default_quick_action_settings, enabled_quick_actions,
     parse_quick_action_settings, serialize_quick_action_settings,
@@ -100,27 +109,13 @@ struct KeptPlaces {
     /// Places taken in this run, by History key, so a file opened again finds its place
     /// before the background write of it lands.
     taken: HashMap<String, SavedPlace>,
-    written: PlaceWrites,
+    /// The last place handed to the writer, by History key, so a place that did not move is
+    /// not written again.
+    written: Option<(String, PlaceSnapshot)>,
     writer: Option<Task<()>>,
-    /// Clearing the stored place once used; the next interval write waits for it, so the
-    /// clear cannot land after the write and wipe it.
-    clearing: Option<Task<()>>,
 }
 
-/// Writes a place off the UI thread, after `after` when it is given.
-fn save_place_in_background(
-    db: Arc<HistoryDb>,
-    (key, json): (String, String),
-    after: Option<Task<()>>,
-    cx: &mut Context<Workspace>,
-) -> Task<()> {
-    cx.background_spawn(async move {
-        if let Some(after) = after {
-            after.await;
-        }
-        db.save_place(&key, &json, now_ms()).log_err();
-    })
-}
+static HISTORY_WRITES: AtomicU64 = AtomicU64::new(0);
 
 const HISTORY_IDLE_MS: i64 = 30_000;
 const UNSAVED_DELAY: Duration = Duration::from_millis(400);
@@ -437,11 +432,10 @@ pub struct Workspace {
     writing: Option<String>,
     saves: Saves,
     noticed: Option<DiskState<String>>,
-    last_text: String,
+    last_text: Rope,
     pub(crate) history: SwitchableHistory<PathBuf>,
     history_tick: Option<Task<()>>,
-    unsaved: HashMap<String, Unsaved>,
-    unsaved_task: Option<Task<()>>,
+    unsaved: UnsavedQueue,
     places: KeptPlaces,
     remembered: Option<PathBuf>,
     watcher: Option<ExternalChangesController>,
@@ -503,6 +497,7 @@ impl Workspace {
         let user_data = services.user_data.clone();
         let Start {
             db,
+            writer,
             store,
             initial,
             notice,
@@ -536,11 +531,10 @@ impl Workspace {
             writing: None,
             saves: Saves::default(),
             noticed: None,
-            last_text: initial,
+            last_text: Rope::from_str(&initial),
             history,
             history_tick: None,
-            unsaved: HashMap::new(),
-            unsaved_task: None,
+            unsaved: UnsavedQueue::new(writer),
             places: KeptPlaces::default(),
             remembered,
             watcher: None,
@@ -684,9 +678,7 @@ impl Workspace {
             // Closing the window releases the Workspace before the app quits, so the place is
             // written here, at once, like the unsaved text in `flush_all`.
             cx.on_release(|this, cx| {
-                if let Some((db, key, json)) = this.take_place(cx) {
-                    db.save_place(&key, &json, now_ms()).log_err();
-                }
+                this.keep_place_now(cx);
                 this.flush_all();
             }),
             cx.on_app_quit(|this, _| {
@@ -848,11 +840,11 @@ impl Workspace {
         match event {
             PaneEvent::Changed => {
                 perf_span!("workspace.changed");
-                let text = self.text(cx);
+                let text = self.pane.read(cx).rope(cx);
                 if text != self.last_text {
-                    self.last_text.clone_from(&text);
+                    self.last_text = text.clone();
                     self.text_changed(&text, cx);
-                    self.history.edited(text, now_ms());
+                    self.history.edited_with(move || text.to_string(), now_ms());
                     self.schedule_history(cx);
                 }
             }
@@ -861,7 +853,7 @@ impl Workspace {
                 text,
                 changes,
             } => {
-                self.last_text = self.text(cx);
+                self.last_text = self.pane.read(cx).rope(cx);
                 let current = self.last_text.clone();
                 self.text_changed(&current, cx);
                 self.history.accepted(
@@ -900,29 +892,29 @@ impl Workspace {
         cx.notify();
     }
 
-    fn text_changed(&mut self, text: &str, cx: &mut Context<Self>) {
-        self.session = edited_session(self.session.as_ref(), text);
+    fn text_changed(&mut self, text: &Rope, cx: &mut Context<Self>) {
+        mark_edited(self.session.as_mut(), text);
         self.announce(text, cx);
         self.frontmatter_due = true;
     }
 
-    fn announce(&mut self, text: &str, cx: &mut Context<Self>) {
+    fn announce(&mut self, text: &Rope, cx: &mut Context<Self>) {
         perf_span!("workspace.announce");
-        self.unsaved.insert(
+        self.unsaved.snapshots.insert(
             SCRATCH_KEY.to_string(),
-            Unsaved {
-                text: text.to_string(),
-                base: String::new(),
+            UnsavedSnapshot {
+                text: text.clone(),
+                base: Arc::from(""),
             },
         );
         if let Some(session) = &self.session
             && let Some(path) = &session.path
         {
-            self.unsaved.insert(
+            self.unsaved.snapshots.insert(
                 history_key(Some(path)),
-                Unsaved {
-                    text: text.to_string(),
-                    base: session.saved_text.clone(),
+                UnsavedSnapshot {
+                    text: text.clone(),
+                    base: Arc::clone(&session.saved_text),
                 },
             );
             if self.remembered.as_ref() != Some(path) {
@@ -930,36 +922,76 @@ impl Workspace {
                 save_last_file(&self.services.user_data, path);
             }
         }
-        self.unsaved_task = Some(cx.spawn(async move |this, cx| {
+        self.unsaved.task = Some(cx.spawn(async move |this, cx| {
             cx.background_executor().timer(UNSAVED_DELAY).await;
-            this.update(cx, |this, _| this.flush_unsaved()).log_warn();
+            this.update(cx, Workspace::flush_unsaved_later).log_warn();
         }));
     }
 
-    fn flush_unsaved(&mut self) {
+    /// Hands a job to the writer; the drain runs in the background.
+    fn write_later(
+        &self,
+        key: String,
+        job: impl FnOnce() + Send + 'static,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(drain) = self.unsaved.writer.submit(key, job) {
+            cx.background_spawn(async move { drain.run() }).detach();
+        }
+    }
+
+    /// Hands a job to the writer and waits until it is written. For quitting, and for reads
+    /// that must see what was written.
+    fn write_now(&self, key: String, job: impl FnOnce() + Send + 'static) {
+        if let Some(drain) = self.unsaved.writer.submit(key, job) {
+            drain.run();
+        }
+        self.unsaved.writer.flush();
+    }
+
+    fn queue_unsaved(&mut self) -> Vec<(String, Box<dyn FnOnce() + Send>)> {
         perf_span!("workspace.flush_unsaved");
-        self.unsaved_task = None;
-        let pending = std::mem::take(&mut self.unsaved);
-        let Some(db) = &self.db else {
-            return;
+        self.unsaved.task = None;
+        let pending = std::mem::take(&mut self.unsaved.snapshots);
+        let Some(db) = self.db.clone() else {
+            return Vec::new();
         };
-        for (key, unsaved) in pending {
-            let result = if unsaved.text == unsaved.base {
-                db.clear_unsaved(&key)
-            } else {
-                db.save_unsaved(&key, &unsaved, now_ms())
-            };
-            if let Err(error) = result {
-                log::error!("Unsaved text write failed: {error}");
+        let at = now_ms();
+        pending
+            .into_iter()
+            .map(|(key, snapshot)| {
+                let db = Arc::clone(&db);
+                let job_key = unsaved_job_key(&key);
+                let job: Box<dyn FnOnce() + Send> =
+                    Box::new(move || write_unsaved(&db, &key, &snapshot, at));
+                (job_key, job)
+            })
+            .collect()
+    }
+
+    fn flush_unsaved_later(&mut self, cx: &mut Context<Self>) {
+        for (key, job) in self.queue_unsaved() {
+            self.write_later(key, job, cx);
+        }
+    }
+
+    /// Writes the unsaved text now, on this thread, and what was handed to the writer before.
+    fn flush_unsaved(&mut self) {
+        for (key, job) in self.queue_unsaved() {
+            if let Some(drain) = self.unsaved.writer.submit(key, job) {
+                drain.run();
             }
         }
+        self.unsaved.writer.flush();
     }
 
     fn discard_unsaved(&mut self, path: &Path) {
         let key = history_key(Some(path));
-        self.unsaved.remove(&key);
-        if let Some(db) = &self.db {
-            db.clear_unsaved(&key).log_err();
+        self.unsaved.snapshots.remove(&key);
+        if let Some(db) = self.db.clone() {
+            self.write_now(unsaved_job_key(&key), move || {
+                db.clear_unsaved(&key).log_err();
+            });
         }
     }
 
@@ -999,10 +1031,25 @@ impl Workspace {
     }
 
     /// Keeps where the writer is in the open Document, to come back to it later.
-    fn keep_place(&mut self, cx: &mut Context<Self>) -> Task<()> {
-        match self.take_place(cx) {
-            Some((db, key, json)) => save_place_in_background(db, (key, json), None, cx),
-            None => Task::ready(()),
+    fn keep_place(&mut self, cx: &mut Context<Self>) {
+        if let Some((db, key, json)) = self.take_place(cx) {
+            let job_key = place_job_key(&key);
+            self.write_later(
+                job_key,
+                move || {
+                    db.save_place(&key, &json, now_ms()).log_err();
+                },
+                cx,
+            );
+        }
+    }
+
+    /// Keeps the place and waits until it is written, for closing the window.
+    fn keep_place_now(&mut self, cx: &App) {
+        if let Some((db, key, json)) = self.take_place(cx) {
+            self.write_now(place_job_key(&key), move || {
+                db.save_place(&key, &json, now_ms()).log_err();
+            });
         }
     }
 
@@ -1025,21 +1072,29 @@ impl Workspace {
             return;
         };
         let key = history_key(self.session_path());
-        let Some(json) = place_to_json(&self.pane.read(cx).place(cx)).log_err() else {
-            return;
-        };
-        if !self.places.written.moved(&key, &json) {
+        let snapshot = self.pane.read(cx).place_snapshot(cx);
+        let moved = self
+            .places
+            .written
+            .as_ref()
+            .is_none_or(|(last_key, last)| *last_key != key || *last != snapshot);
+        if !moved {
             return;
         }
-        let clearing = self.places.clearing.take();
-        save_place_in_background(db, (key, json), clearing, cx).detach();
+        self.places.written = Some((key.clone(), snapshot.clone()));
+        let job_key = place_job_key(&key);
+        self.write_later(
+            job_key,
+            move || write_place(&db, &key, &snapshot, now_ms()),
+            cx,
+        );
     }
 
     /// Returns to the place kept for the open Document, if there is one, and says how many
     /// of its Suggestions no longer fit the text.
     fn return_to_place(&mut self, cx: &mut Context<Self>) -> Option<usize> {
         let key = history_key(self.session_path());
-        self.places.written.forget();
+        self.places.written = None;
         let saved = self.places.taken.remove(&key).or_else(|| {
             let json = self.db.as_deref()?.load_place(&key).log_err().flatten()?;
             place_from_json(&json).log_warn()
@@ -1047,12 +1102,13 @@ impl Workspace {
         let text = self.text(cx);
         if let Some(db) = self.db.clone() {
             let forget = key.clone();
-            let clearing = cx.background_spawn(async move {
-                db.clear_place(&forget).log_err();
-            });
-            if let Some(earlier) = self.places.clearing.replace(clearing) {
-                earlier.detach();
-            }
+            self.write_later(
+                place_job_key(&key),
+                move || {
+                    db.clear_place(&forget).log_err();
+                },
+                cx,
+            );
         }
         let restored = restore_place(&saved?, &text)?;
         let dropped = restored.dropped;
@@ -1062,9 +1118,41 @@ impl Workspace {
     }
 
     fn settle_history(&mut self, cx: &mut Context<Self>) {
+        perf_span!("history.settle");
         self.history.settled();
         self.schedule_history(cx);
         cx.notify();
+    }
+
+    /// Records the edit that has been idle for long enough. Writing it reads and compresses the
+    /// whole text, so it runs on the writer; the timeline is listed again once it is written.
+    fn poll_history(&mut self, cx: &mut Context<Self>) {
+        let Some(deferred) = self.history.poll_deferred(now_ms()) else {
+            self.settle_history(cx);
+            return;
+        };
+        let (sender, receiver) = futures::channel::oneshot::channel();
+        let serial = HISTORY_WRITES.fetch_add(1, Ordering::Relaxed);
+        let key = format!("history:{serial}");
+        self.write_later(
+            key,
+            move || {
+                if sender.send(deferred.apply()).is_err() {
+                    log::warn!("The History write finished after its listener went away");
+                }
+            },
+            cx,
+        );
+        cx.spawn(async move |this, cx| {
+            if let Ok(errors) = receiver.await {
+                this.update(cx, |this, cx| {
+                    this.history.wrote(&errors);
+                    this.settle_history(cx);
+                })
+                .log_warn();
+            }
+        })
+        .detach();
     }
 
     fn schedule_history(&mut self, cx: &mut Context<Self>) {
@@ -1075,11 +1163,7 @@ impl Workspace {
         let wait = Duration::from_millis((due - now_ms()).max(0) as u64);
         self.history_tick = Some(cx.spawn(async move |this, cx| {
             cx.background_executor().timer(wait).await;
-            this.update(cx, |this, cx| {
-                this.history.poll(now_ms());
-                this.settle_history(cx);
-            })
-            .log_warn();
+            this.update(cx, Workspace::poll_history).log_warn();
         }));
     }
 
@@ -1122,7 +1206,7 @@ impl Workspace {
         if self.session_path() == Some(path.as_path()) {
             self.remember_place(cx);
         } else {
-            self.keep_place(cx).detach();
+            self.keep_place(cx);
         }
         self.settle_before(&arrived.text, cx);
         self.saves.document += 1;
@@ -1132,7 +1216,7 @@ impl Workspace {
             &arrived.text,
             &arrived.saved_text,
         ));
-        self.last_text.clone_from(&arrived.text);
+        self.last_text = Rope::from_str(&arrived.text);
         self.pane
             .update(cx, |pane, cx| pane.replace_text(&arrived.text, window, cx));
         self.arrived();
@@ -1144,7 +1228,7 @@ impl Workspace {
         }
         self.settle_history(cx);
         self.replaced(window, cx);
-        self.announce(&arrived.text, cx);
+        self.announce(&Rope::from_str(&arrived.text), cx);
         let dropped = self.return_to_place(cx).unwrap_or(0);
         let done = match kind {
             Arrival::Opened => "Opened",
@@ -1207,7 +1291,7 @@ impl Workspace {
         self.saves.document += 1;
         self.session = Some(opened_session(&name, &path, &text, &text));
         let change = minimal_change(&self.text(cx), &text);
-        self.last_text.clone_from(&text);
+        self.last_text = Rope::from_str(&text);
         self.remember_place(cx);
         self.pane
             .update(cx, |pane, cx| pane.refresh_text(&change, window, cx));
@@ -1215,7 +1299,7 @@ impl Workspace {
         self.history.external(text.clone(), now_ms());
         self.settle_history(cx);
         self.replaced(window, cx);
-        self.announce(&text, cx);
+        self.announce(&Rope::from_str(&text), cx);
         self.notify(format!("Reloaded {name}: it changed on disk"), cx);
         // The editor reports the reload's edit after this update; returning to the place
         // before it would move the restored Suggestions a second time.
@@ -1305,10 +1389,10 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         self.settle_before(&text, cx);
-        self.last_text.clone_from(&text);
+        self.last_text = Rope::from_str(&text);
         self.pane
             .update(cx, |pane, cx| pane.restore_text(&text, window, cx));
-        self.text_changed(&text, cx);
+        self.text_changed(&self.last_text.clone(), cx);
         self.history.restored(text, from, now_ms());
         self.settle_history(cx);
         self.replaced(window, cx);
@@ -1735,7 +1819,7 @@ impl Workspace {
 
     fn refresh_frontmatter(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.frontmatter_due = false;
-        let text = self.text(cx);
+        let text = self.pane.read(cx).rope(cx);
         let active = self.open_path_string();
         let open = active.as_ref().and_then(|active| {
             open_skill_file(self.library.read(cx).roots(), &|path| path == active)
@@ -1756,17 +1840,17 @@ impl Workspace {
         } else {
             None
         };
+        let is_skill = is_skill_file(file_name.as_deref());
         let report = inspect_frontmatter(
-            &text,
+            &frontmatter_source(&text, is_skill),
             &FrontmatterContext {
                 file_name: file_name.as_deref(),
                 folder_name: folder_name.as_deref(),
             },
         );
-        let is_skill = is_skill_file(file_name.as_deref());
         self.pane.update(cx, |pane, _| pane.is_skill = is_skill);
         self.frontmatter
-            .update(cx, |view, cx| view.refresh(&text, report, window, cx));
+            .update(cx, |view, cx| view.refresh(text, report, window, cx));
     }
 
     fn frontmatter_problems(&self, cx: &App) -> Vec<String> {
@@ -1862,20 +1946,20 @@ impl Workspace {
 
     fn clear_document(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.session_path().is_some() {
-            self.keep_place(cx).detach();
+            self.keep_place(cx);
         }
         self.settle_before("", cx);
         self.saves.document += 1;
         self.session = None;
         self.forget_last_file();
-        self.last_text = String::new();
+        self.last_text = Rope::new();
         self.pane
             .update(cx, |pane, cx| pane.replace_text("", window, cx));
         self.arrived();
         self.history.opened("", UNTITLED_NAME, now_ms());
         self.settle_history(cx);
         self.replaced(window, cx);
-        self.announce("", cx);
+        self.announce(&Rope::new(), cx);
         self.notify("New Document", cx);
         self.watch();
     }
@@ -1932,7 +2016,10 @@ impl Workspace {
         let document = self.saves.document;
         let text = self.text(cx);
         self.writing = Some(text.clone());
-        self.history.saving(text.clone(), now_ms());
+        {
+            perf_span!("history.saving");
+            self.history.saving(text.clone(), now_ms());
+        }
         self.settle_history(cx);
         let name = self.session.as_ref().map_or_else(
             || suggested_file_name(&text),
@@ -1947,7 +2034,7 @@ impl Workspace {
                 let request = SaveRequest {
                     path,
                     text: text.clone(),
-                    expected: saved_text,
+                    expected: saved_text.to_string(),
                 };
                 let write = cx
                     .background_spawn(async move { save_markdown(&request) })
@@ -2015,6 +2102,7 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        perf_span!("workspace.finish_save");
         self.writing = None;
         self.saves.task = None;
         let Saving {
@@ -2045,15 +2133,18 @@ impl Workspace {
                 ),
             },
             FileSaveResult::Saved { path, name } => {
-                let current = self.text(cx);
+                let current = self.pane.read(cx).rope(cx);
                 self.session = Some(FileSession {
                     name: name.clone(),
                     path: Some(path),
-                    saved_text: text.clone(),
+                    saved_text: Arc::from(text.as_str()),
                     dirty: current != text,
                 });
                 self.arrived();
-                self.history.saved(text, name.clone(), now_ms());
+                {
+                    perf_span!("history.saved");
+                    self.history.saved(text, name.clone(), now_ms());
+                }
                 self.settle_history(cx);
                 self.announce(&current, cx);
                 self.notify_success(format!("Saved {name}"), cx);
@@ -2996,6 +3087,7 @@ fn row(
 
 struct Start {
     db: Option<Arc<HistoryDb>>,
+    writer: CoalescingWriter,
     store: Arc<dyn HistoryStore>,
     initial: String,
     notice: Option<(String, ToastTone)>,
@@ -3010,8 +3102,9 @@ fn open_start(launch: Option<PathBuf>, user_data: &Path) -> Start {
         .map_err(|error| log::error!("History could not open: {error}"))
         .ok()
         .map(Arc::new);
+    let writer = CoalescingWriter::default();
     let store: Arc<dyn HistoryStore> = match &db {
-        Some(db) => Arc::new(DbHistoryStore::new(Arc::clone(db), now_ms)),
+        Some(db) => Arc::new(DbHistoryStore::new(Arc::clone(db), now_ms, writer.clone())),
         None => Arc::new(MemoryHistoryStore::new()),
     };
     let from_launch = launch
@@ -3065,6 +3158,7 @@ fn open_start(launch: Option<PathBuf>, user_data: &Path) -> Start {
     };
     Start {
         db,
+        writer,
         store,
         initial,
         notice,
@@ -3099,7 +3193,7 @@ fn session_of(start: Option<&StartFile>, initial: &str) -> (Option<FileSession>,
     let session = start.map(|start| FileSession {
         name: start.name.clone(),
         path: Some(start.path.clone()),
-        saved_text: start.saved_text.clone(),
+        saved_text: Arc::from(start.saved_text.as_str()),
         dirty: initial != start.saved_text,
     });
     let conflict = start
