@@ -60,9 +60,9 @@ use crate::spelling::{NextIssue, PreviousIssue};
 use crate::{
     caret,
     document::{
-        Conflict, DiskReads, DiskState, ExternalFacts, ExternalVerdict, FileSession, SCRATCH_KEY,
-        UNTITLED_NAME, decide_external_change, has_unsaved_changes, history_key, mark_edited,
-        minimal_change, name_of, opened_session, suggested_file_name,
+        Conflict, DiskReads, DiskState, ExternalFacts, ExternalVerdict, FileSession, ReadVerdict,
+        SCRATCH_KEY, UNTITLED_NAME, decide_external_change, has_unsaved_changes, history_key,
+        mark_edited, minimal_change, name_of, opened_session, suggested_file_name,
     },
     editor_pane::{EditorPane, PaneEvent, PaneToastAction},
     evals_view::{self, EvalSkill, EvalsEvent, EvalsView},
@@ -1273,6 +1273,7 @@ impl Workspace {
     }
 
     fn arrived(&mut self) {
+        self.saves.disk_reads.bump_epoch();
         self.reading_feed.touch();
         self.conflict = None;
         self.noticed = None;
@@ -1434,17 +1435,17 @@ impl Workspace {
         {
             return;
         }
-        let taken = self.saves.disk_reads.bump();
+        let ticket = self.saves.disk_reads.start_read();
         cx.spawn_in(window, async move |this, cx| {
             let reading = path.clone();
             let read = cx
                 .background_spawn(async move { read_markdown(&reading) })
                 .await;
             this.update_in(cx, |this, window, cx| {
-                if this.saves.disk_reads.is_current(taken) {
-                    this.judge_external_change(path, read, window, cx);
-                } else {
-                    this.external_changes(changes, window, cx);
+                match this.saves.disk_reads.verdict(ticket) {
+                    ReadVerdict::Judge => this.judge_external_change(path, read, window, cx),
+                    ReadVerdict::Rerun => this.external_changes(changes, window, cx),
+                    ReadVerdict::Drop => {}
                 }
             })
             .log_warn();
@@ -2150,7 +2151,7 @@ impl Workspace {
         }
         let document = self.saves.document;
         let text = self.text(cx);
-        self.saves.disk_reads.bump();
+        self.saves.disk_reads.bump_epoch();
         self.writing = Some(text.clone());
         {
             perf_span!("history.saving");
@@ -2240,7 +2241,7 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         perf_span!("workspace.finish_save");
-        self.saves.disk_reads.bump();
+        self.saves.disk_reads.bump_epoch();
         self.writing = None;
         self.saves.task = None;
         let Saving {

@@ -101,20 +101,50 @@ pub struct ExternalFacts<'a> {
     pub noticed: Option<DiskState<&'a str>>,
 }
 
-/// Counts what can make a read of the file stale: a save starting or ending, and every newer
-/// read. A read taken before the count moved must not be judged.
+/// Tells which read of the file may be judged. A newer read supersedes an older one, which is
+/// dropped; a save starting or ending, or the Document being replaced, makes the newest read
+/// stale, and it is taken again.
 #[derive(Debug, Default)]
-pub struct DiskReads(u64);
+pub struct DiskReads {
+    latest_read: u64,
+    epoch: u64,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct ReadTicket {
+    read: u64,
+    epoch: u64,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum ReadVerdict {
+    Judge,
+    Drop,
+    Rerun,
+}
 
 impl DiskReads {
-    /// Marks a change to the file or its session; returns the count a new read starts from.
-    pub fn bump(&mut self) -> u64 {
-        self.0 += 1;
-        self.0
+    pub fn start_read(&mut self) -> ReadTicket {
+        self.latest_read += 1;
+        ReadTicket {
+            read: self.latest_read,
+            epoch: self.epoch,
+        }
     }
 
-    pub fn is_current(&self, taken: u64) -> bool {
-        self.0 == taken
+    /// A save started or ended, or the Document was replaced.
+    pub fn bump_epoch(&mut self) {
+        self.epoch += 1;
+    }
+
+    pub fn verdict(&self, ticket: ReadTicket) -> ReadVerdict {
+        if ticket.read != self.latest_read {
+            ReadVerdict::Drop
+        } else if ticket.epoch != self.epoch {
+            ReadVerdict::Rerun
+        } else {
+            ReadVerdict::Judge
+        }
     }
 }
 
@@ -240,16 +270,62 @@ mod tests {
     }
 
     #[test]
-    fn a_read_is_stale_after_a_save_starts_or_ends_or_a_newer_read_starts() {
+    fn a_read_with_nothing_in_between_is_judged() {
         let mut reads = DiskReads::default();
-        let first = reads.bump();
-        assert!(reads.is_current(first));
-        reads.bump();
-        assert!(!reads.is_current(first));
-        let second = reads.bump();
-        let third = reads.bump();
-        assert!(!reads.is_current(second));
-        assert!(reads.is_current(third));
+        let ticket = reads.start_read();
+        assert_eq!(reads.verdict(ticket), ReadVerdict::Judge);
+    }
+
+    #[test]
+    fn a_read_superseded_by_a_newer_one_is_dropped() {
+        let mut reads = DiskReads::default();
+        let older = reads.start_read();
+        let newer = reads.start_read();
+        assert_eq!(reads.verdict(older), ReadVerdict::Drop);
+        assert_eq!(reads.verdict(newer), ReadVerdict::Judge);
+    }
+
+    #[test]
+    fn a_save_in_between_makes_the_newest_read_run_again() {
+        let mut reads = DiskReads::default();
+        let ticket = reads.start_read();
+        reads.bump_epoch();
+        assert_eq!(reads.verdict(ticket), ReadVerdict::Rerun);
+        let again = reads.start_read();
+        assert_eq!(reads.verdict(again), ReadVerdict::Judge);
+    }
+
+    #[test]
+    fn overlapping_reads_judge_exactly_once_and_never_run_again_forever() {
+        let mut reads = DiskReads::default();
+        let mut pending = vec![reads.start_read(), reads.start_read()];
+        let mut judged = 0;
+        let mut reruns = 0;
+        while let Some(ticket) = pending.pop() {
+            match reads.verdict(ticket) {
+                ReadVerdict::Judge => judged += 1,
+                ReadVerdict::Drop => {}
+                ReadVerdict::Rerun => {
+                    reruns += 1;
+                    pending.push(reads.start_read());
+                }
+            }
+            assert!(reruns < 3);
+        }
+        assert_eq!((judged, reruns), (1, 0));
+    }
+
+    #[test]
+    fn overlapping_reads_with_a_save_between_judge_once_after_one_rerun() {
+        let mut reads = DiskReads::default();
+        let first = reads.start_read();
+        let second = reads.start_read();
+        reads.bump_epoch();
+        assert_eq!(reads.verdict(first), ReadVerdict::Drop);
+        assert_eq!(reads.verdict(second), ReadVerdict::Rerun);
+        let third = reads.start_read();
+        assert_eq!(reads.verdict(third), ReadVerdict::Judge);
+        assert_eq!(reads.verdict(second), ReadVerdict::Drop);
     }
 
     #[test]
