@@ -5,7 +5,7 @@
 
 use std::rc::Rc;
 
-use gpui_kit::component::scroll::ScrollableElement as _;
+use gpui_kit::component::scroll::{ScrollableElement as _, ScrollbarHandle};
 use gpui_kit::{base::TextViewStyle, prelude::FluentBuilder as _, *};
 
 use desafinado_features::caret::{CaretSettings, CaretShape};
@@ -19,6 +19,12 @@ pub const TEXT_DOCUMENT: Pixels = px(17.);
 pub const UI_FAMILY: &str = "Inter";
 pub const MONO_FAMILY: &str = "Noto Sans Mono";
 const WORDMARK_FAMILY: &str = "League Spartan";
+
+pub fn body_line_height(window: &Window) -> Pixels {
+    let mut style = window.text_style();
+    style.font_size = TEXT_BODY.into();
+    style.line_height_in_pixels(window.rem_size())
+}
 
 pub trait Type: Styled + Sized {
     fn type_body(self) -> Self {
@@ -687,7 +693,7 @@ pub fn scrolled(content: impl IntoElement, handle: &ScrollHandle) -> Div {
         .vertical_scrollbar(handle)
 }
 
-pub fn scrolled_rest(content: impl IntoElement, handle: &ScrollHandle) -> Div {
+pub fn scrolled_rest<H: ScrollbarHandle + Clone>(content: impl IntoElement, handle: &H) -> Div {
     div()
         .relative()
         .flex_1()

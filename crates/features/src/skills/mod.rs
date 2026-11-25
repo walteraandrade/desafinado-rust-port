@@ -13,6 +13,7 @@ pub mod library;
 pub mod library_search;
 pub mod library_tree;
 pub mod library_view;
+pub mod memo;
 pub mod new_skill;
 pub mod scan_skills;
 #[cfg(test)]

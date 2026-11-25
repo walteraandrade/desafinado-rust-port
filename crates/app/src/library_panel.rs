@@ -2,6 +2,7 @@ use desafinado_core::log_err::LogErr;
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},
+    rc::Rc,
     time::{Duration, Instant},
 };
 
@@ -10,10 +11,9 @@ use desafinado_features::skills::{
         AddRootResult, CreateSkillRequest, CreateSkillResult, LibraryRoot, RemoveRootResult,
     },
     library_search::{MatchRange, SearchKind, SearchResult, search_library},
-    library_tree::{
-        TreeItem, TreeKind, TreeNode, ancestor_ids, build_library_tree, open_file_id, visible_items,
-    },
+    library_tree::{TreeItem, TreeKind, TreeNode, TreeView, derive_tree_view, items_change},
     library_view::skill_count,
+    memo::Memo,
     search_keys::{SearchKeyAction, SearchKeyEvent, SearchKeyState, search_key},
     tree_keys::{TreeAction, TreeKeyEvent, tree_key},
 };
@@ -41,6 +41,10 @@ pub const LIBRARY_WIDTH: f32 = 288.;
 const TEXT_COLUMN: f32 = 768.;
 const TYPE_AHEAD: Duration = Duration::from_millis(700);
 const INDENT: f32 = 12.;
+const TREE_END_PADDING: f32 = 24.;
+const LIST_OVERDRAW: f32 = 200.;
+const ROW_HEIGHT_HINT: f32 = 35.;
+const LIST_WHEEL_LINE: f32 = 20.;
 
 actions!(library, [SearchUp, SearchDown, SearchEnter, SearchEscape]);
 
@@ -120,11 +124,21 @@ pub struct LibraryPanel {
     typed_at: Instant,
     active_path: Option<String>,
     parents: HashMap<String, Option<String>>,
+    parents_of: Option<Rc<TreeView>>,
     pub focus: FocusHandle,
     tree_focus: FocusHandle,
-    tree_scroll: ScrollHandle,
+    tree_list: ListState,
+    list_of: Option<Rc<TreeView>>,
+    note_row: Option<usize>,
+    hinted_width: Pixels,
+    reveal: Option<String>,
+    row_context: Option<Rc<RowContext>>,
     search: Entity<InputState>,
     search_text: String,
+    snapshot_rev: u64,
+    choices_rev: u64,
+    view_memo: Memo<(u64, u64, Option<String>), Rc<TreeView>>,
+    results_memo: Memo<(u64, String), Rc<Vec<SearchResult>>>,
     search_active: usize,
     search_focused: bool,
     _subscriptions: Vec<Subscription>,
@@ -184,11 +198,21 @@ impl LibraryPanel {
             typed_at: Instant::now(),
             active_path: None,
             parents: HashMap::new(),
+            parents_of: None,
             focus: cx.focus_handle(),
             tree_focus: cx.focus_handle(),
-            tree_scroll: ScrollHandle::new(),
+            tree_list: ListState::new(1, ListAlignment::Top, px(LIST_OVERDRAW)),
+            list_of: None,
+            note_row: None,
+            hinted_width: px(0.),
+            reveal: None,
+            row_context: None,
             search,
             search_text: String::new(),
+            snapshot_rev: 0,
+            choices_rev: 0,
+            view_memo: Memo::new(),
+            results_memo: Memo::new(),
             search_active: 0,
             search_focused: false,
             _subscriptions: vec![search_events, search_blur, search_focus],
@@ -220,6 +244,7 @@ impl LibraryPanel {
                 if load != this.load {
                     return;
                 }
+                this.snapshot_rev += 1;
                 this.state = match listed {
                     Some(snapshot) => LibraryState::Ready(snapshot),
                     None => LibraryState::Failed,
@@ -244,8 +269,9 @@ impl LibraryPanel {
     }
 
     pub fn focus_tree(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let items = self.items();
-        let active = self.active_id();
+        let view = self.view();
+        let items = &view.items;
+        let active = view.active_id.clone();
         let has = |id: &Option<String>| {
             id.as_ref()
                 .is_some_and(|id| items.iter().any(|item| &item.node.id == id))
@@ -260,9 +286,7 @@ impl LibraryPanel {
         self.focused_id = target;
         self.keyboard_hot = true;
         window.focus(&self.tree_focus, cx);
-        if let Some(index) = self.focused_index(&items) {
-            self.tree_scroll.scroll_to_item(index);
-        }
+        self.reveal.clone_from(&self.focused_id);
         cx.notify();
     }
 
@@ -274,39 +298,29 @@ impl LibraryPanel {
         cx.notify();
     }
 
-    fn tree(&self) -> Vec<TreeNode> {
-        build_library_tree(self.roots())
+    fn view(&mut self) -> Rc<TreeView> {
+        let key = (
+            self.snapshot_rev,
+            self.choices_rev,
+            self.active_path.clone(),
+        );
+        let roots: &[LibraryRoot] = match &self.state {
+            LibraryState::Ready(snapshot) => &snapshot.roots,
+            _ => &[],
+        };
+        let choices = &self.choices;
+        Rc::clone(self.view_memo.get_or_compute(key, |(_, _, active)| {
+            Rc::new(derive_tree_view(roots, choices, active.as_deref()))
+        }))
     }
 
-    fn is_active(&self, path: &str) -> bool {
-        self.active_path.as_deref() == Some(path)
+    fn set_choice(&mut self, id: String, expand: bool) {
+        self.choices.insert(id, expand);
+        self.choices_rev += 1;
     }
 
-    fn active_id(&self) -> Option<String> {
-        open_file_id(&self.tree(), &|path| self.is_active(path))
-    }
-
-    fn holding(&self, tree: &[TreeNode]) -> Vec<String> {
-        ancestor_ids(tree, &|path| self.is_active(path))
-    }
-
-    fn items(&self) -> Vec<TreeItem> {
-        let tree = self.tree();
-        let holding = self.holding(&tree);
-        visible_items(&tree, &|node| {
-            self.choices
-                .get(&node.id)
-                .copied()
-                .unwrap_or(node.kind == TreeKind::Root || holding.contains(&node.id))
-        })
-    }
-
-    fn focused_index(&self, items: &[TreeItem]) -> Option<usize> {
-        let id = self.focused_id.as_ref()?;
-        items.iter().position(|item| &item.node.id == id)
-    }
-
-    fn settle_focus(&mut self, items: &[TreeItem]) {
+    fn settle_focus(&mut self, view: &Rc<TreeView>) {
+        let items = &view.items;
         if let Some(focused) = self.focused_id.clone()
             && !items.iter().any(|item| item.node.id == focused)
         {
@@ -319,10 +333,18 @@ impl LibraryPanel {
             }
             self.focused_id = next.or_else(|| items.first().map(|item| item.node.id.clone()));
         }
+        if self
+            .parents_of
+            .as_ref()
+            .is_some_and(|held| Rc::ptr_eq(held, view))
+        {
+            return;
+        }
         self.parents = items
             .iter()
             .map(|item| (item.node.id.clone(), item.parent_id.clone()))
             .collect();
+        self.parents_of = Some(Rc::clone(view));
     }
 
     fn run(
@@ -341,13 +363,11 @@ impl LibraryPanel {
         match action {
             TreeAction::None => {}
             TreeAction::Focus { id } => {
+                self.reveal = Some(id.clone());
                 self.focused_id = Some(id);
-                if let Some(index) = self.focused_index(items) {
-                    self.tree_scroll.scroll_to_item(index);
-                }
             }
             TreeAction::Toggle { id, expand } => {
-                self.choices.insert(id, expand);
+                self.set_choice(id, expand);
             }
             TreeAction::Open { id, focus_text } => {
                 if let Some(node) = node_of(&id) {
@@ -386,9 +406,10 @@ impl LibraryPanel {
         if self.typed_at.elapsed() > TYPE_AHEAD {
             self.typed.clear();
         }
-        let items = self.items();
+        let view = self.view();
+        let items = &view.items;
         let result = tree_key(
-            &items,
+            items,
             self.focused_id.as_deref(),
             &TreeKeyEvent {
                 key: &key,
@@ -404,17 +425,21 @@ impl LibraryPanel {
             self.keyboard_hot = true;
             cx.stop_propagation();
         }
-        self.run(result.action, &items, window, cx);
+        self.run(result.action, items, window, cx);
     }
 
-    fn click_row(&mut self, item: &TreeItem, window: &mut Window, cx: &mut Context<Self>) {
+    fn click_row(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let view = self.view();
+        let Some(item) = view.items.iter().find(|item| item.node.id == id) else {
+            return;
+        };
         self.focused_id = Some(item.node.id.clone());
         self.keyboard_hot = false;
         window.focus(&self.tree_focus, cx);
         if item.node.kind == TreeKind::File {
             self.open_node(&item.node, true, cx);
         } else if item.expandable {
-            self.choices.insert(item.node.id.clone(), !item.expanded);
+            self.set_choice(item.node.id.clone(), !item.expanded);
         }
         cx.notify();
     }
@@ -478,7 +503,8 @@ impl LibraryPanel {
         let Some(path) = node.path.clone() else {
             return;
         };
-        let tree = self.tree();
+        let view = self.view();
+        let tree = &view.tree;
         let at = tree.iter().position(|root| root.id == node.id);
         let neighbor = at.and_then(|at| {
             at.checked_sub(1)
@@ -505,8 +531,16 @@ impl LibraryPanel {
         self.refresh(cx);
     }
 
-    fn results(&self) -> Vec<SearchResult> {
-        search_library(self.roots(), &self.search_text)
+    fn results(&mut self) -> Rc<Vec<SearchResult>> {
+        let key = (self.snapshot_rev, self.search_text.clone());
+        let roots: &[LibraryRoot] = match &self.state {
+            LibraryState::Ready(snapshot) => &snapshot.roots,
+            _ => &[],
+        };
+        Rc::clone(
+            self.results_memo
+                .get_or_compute(key, |(_, text)| Rc::new(search_library(roots, text))),
+        )
     }
 
     fn search_key(&mut self, key: &str, window: &mut Window, cx: &mut Context<Self>) {
@@ -561,8 +595,13 @@ impl LibraryPanel {
             })
     }
 
-    fn render_search(&self, window: &Window, roles: Roles, cx: &mut Context<Self>) -> AnyElement {
-        let results = self.results();
+    fn render_search(
+        &self,
+        results: &[SearchResult],
+        window: &Window,
+        roles: Roles,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let searching = !self.search_text.trim().is_empty();
         let current = self.search_active.min(results.len().saturating_sub(1));
         let show_list = self.search_focused && !results.is_empty();
@@ -570,7 +609,7 @@ impl LibraryPanel {
         let max_height = window.viewport_size().height * 0.6;
         let list: Vec<AnyElement> = if show_list {
             results
-                .into_iter()
+                .iter()
                 .enumerate()
                 .map(|(index, result)| {
                     self.render_result(index, index == current, result, roles, cx)
@@ -635,7 +674,7 @@ impl LibraryPanel {
         &self,
         index: usize,
         selected: bool,
-        result: SearchResult,
+        result: &SearchResult,
         roles: Roles,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
@@ -683,6 +722,119 @@ impl LibraryPanel {
             }))
     }
 
+    fn note_row_of(&self, view: &TreeView, tree_focused: bool) -> Option<usize> {
+        let id = self.focused_id.as_ref()?;
+        (tree_focused && self.keyboard_hot)
+            .then(|| view.items.iter().position(|item| &item.node.id == id))
+            .flatten()
+            .filter(|index| view.items[*index].node.kind == TreeKind::Skill)
+    }
+
+    fn sync_list(
+        &mut self,
+        view: &Rc<TreeView>,
+        tree_focused: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> ListSync {
+        let note_row = self.note_row_of(view, tree_focused);
+        let same_view = self
+            .list_of
+            .as_ref()
+            .is_some_and(|held| Rc::ptr_eq(held, view));
+        let mut sync = ListSync::default();
+        if !same_view {
+            let old = self.list_of.replace(Rc::clone(view));
+            let old_items = old.as_ref().map_or(&[][..], |old| &old.items[..]);
+            if let Some(change) = items_change(old_items, &view.items) {
+                let anchor = self.tree_list.logical_scroll_top();
+                let anchored = change.old.contains(&anchor.item_ix);
+                self.tree_list.splice(change.old, change.new_len);
+                if old_items.is_empty() {
+                    self.tree_list.scroll_to(ListOffset::default());
+                } else if anchored && anchor.item_ix < view.items.len() {
+                    self.tree_list.scroll_to(anchor);
+                }
+                self.hint_rows();
+                sync.structural = true;
+            }
+        }
+        if note_row != self.note_row {
+            let stale = if sync.structural { None } else { self.note_row };
+            for index in [stale, note_row].into_iter().flatten() {
+                if index < view.items.len() {
+                    self.tree_list.remeasure_items(index..index + 1);
+                }
+            }
+            sync.remeasured = true;
+        }
+        self.note_row = note_row;
+        let width = self.tree_list.viewport_bounds().size.width;
+        if width > px(0.) && width != self.hinted_width {
+            let first = self.hinted_width == px(0.);
+            self.hint_rows();
+            if first {
+                cx.on_next_frame(window, |_, _, cx| cx.notify());
+            }
+        }
+        sync
+    }
+
+    fn hint_rows(&mut self) {
+        self.hinted_width = self.tree_list.viewport_bounds().size.width;
+        self.tree_list
+            .clone()
+            .with_uniform_item_height(px(ROW_HEIGHT_HINT));
+    }
+
+    fn resolve_reveal(
+        &mut self,
+        view: &TreeView,
+        sync: ListSync,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(id) = self.reveal.take() else {
+            return;
+        };
+        let Some(index) = view.items.iter().position(|item| item.node.id == id) else {
+            return;
+        };
+        let laid_out = self.tree_list.viewport_bounds().size.height > px(0.);
+        if sync.structural || !laid_out {
+            self.tree_list.scroll_to(ListOffset {
+                item_ix: index,
+                offset_in_item: px(0.),
+            });
+        } else if sync.remeasured {
+            self.reveal = Some(id);
+            cx.on_next_frame(window, |_, _, cx| cx.notify());
+        } else if self.tree_list.bounds_for_item(index).is_some() {
+            self.tree_list.scroll_to_reveal_item(index);
+        } else {
+            self.tree_list.scroll_to(ListOffset {
+                item_ix: index,
+                offset_in_item: px(0.),
+            });
+        }
+    }
+
+    fn render_list_item(
+        &mut self,
+        index: usize,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let Some(context) = self.row_context.clone() else {
+            return div().into_any_element();
+        };
+        let Some(item) = context.view.items.get(index) else {
+            return div().h(px(TREE_END_PADDING)).into_any_element();
+        };
+        let roles = theme::roles(cx);
+        self.render_row(index, item, &context, roles, cx)
+    }
+
     fn render_row(
         &self,
         index: usize,
@@ -693,9 +845,10 @@ impl LibraryPanel {
     ) -> AnyElement {
         let node = &item.node;
         let hot = context.tree_focused && self.focused_id.as_ref() == Some(&node.id);
-        let is_active = node.kind == TreeKind::File && context.active_id.as_ref() == Some(&node.id);
+        let is_active =
+            node.kind == TreeKind::File && context.view.active_id.as_ref() == Some(&node.id);
         let note_open = item.expanded || (hot && self.keyboard_hot);
-        let row_item = item.clone();
+        let row_id = node.id.clone();
         let row = ui::focusable_row(("library-row", index), hot, is_active, roles)
             .flex_col()
             .items_start()
@@ -704,7 +857,7 @@ impl LibraryPanel {
             .pr(px(12.))
             .pl(px((item.level as f32 - 1.) * INDENT + 12.))
             .on_mouse_down(MouseButton::Left, |_, window, _| window.prevent_default())
-            .on_click(cx.listener(move |this, _, window, cx| this.click_row(&row_item, window, cx)))
+            .on_click(cx.listener(move |this, _, window, cx| this.click_row(&row_id, window, cx)))
             .when_some(
                 (node.kind == TreeKind::File)
                     .then(|| node.path.clone())
@@ -720,6 +873,7 @@ impl LibraryPanel {
                 this.child(row_note(index, node, roles))
             });
         div()
+            .w_full()
             .child(row)
             .children(
                 node.note
@@ -738,8 +892,9 @@ impl LibraryPanel {
         cx: &mut Context<Self>,
     ) -> Div {
         let node = &item.node;
-        let is_active = node.kind == TreeKind::File && context.active_id.as_ref() == Some(&node.id);
-        let holds_open = node.kind == TreeKind::Skill && context.holding.contains(&node.id);
+        let is_active =
+            node.kind == TreeKind::File && context.view.active_id.as_ref() == Some(&node.id);
+        let holds_open = node.kind == TreeKind::Skill && context.view.holding.contains(&node.id);
         let unopenable = node.kind == TreeKind::File && node.openable != Some(true);
         let marker: AnyElement = if node.kind == TreeKind::File {
             div()
@@ -911,8 +1066,13 @@ fn row_note(index: usize, node: &TreeNode, roles: Roles) -> Div {
 
 struct RowContext {
     tree_focused: bool,
-    active_id: Option<String>,
-    holding: Vec<String>,
+    view: Rc<TreeView>,
+}
+
+#[derive(Default, Clone, Copy)]
+struct ListSync {
+    structural: bool,
+    remeasured: bool,
 }
 
 fn marked(text: &str, range: Option<MatchRange>, roles: Roles) -> StyledText {
@@ -946,20 +1106,15 @@ impl Render for LibraryPanel {
         perf_span!("library.render");
         let roles = theme::roles(cx);
         self.search_focused = self.search.read(cx).focus_handle(cx).is_focused(window);
-        let items = self.items();
-        self.settle_focus(&items);
-        let tree = self.tree();
-        let context = RowContext {
-            tree_focused: self.tree_focus.is_focused(window),
-            active_id: self.active_id(),
-            holding: self.holding(&tree),
-        };
-        let rows: Vec<AnyElement> = items
-            .iter()
-            .enumerate()
-            .map(|(index, item)| self.render_row(index, item, &context, roles, cx))
-            .collect();
-        let search = self.render_search(window, roles, cx);
+        let view = self.view();
+        self.settle_focus(&view);
+        let results = self.results();
+        let tree_focused = self.tree_focus.is_focused(window);
+        let sync = self.sync_list(&view, tree_focused, window, cx);
+        self.resolve_reveal(&view, sync, window, cx);
+        self.row_context = Some(Rc::new(RowContext { tree_focused, view }));
+        let line = f32::from(ui::body_line_height(window));
+        let search = self.render_search(&results, window, roles, cx);
         div()
             .id("library-panel")
             .track_focus(&self.focus)
@@ -977,15 +1132,31 @@ impl Render for LibraryPanel {
                 div()
                     .id("library-tree")
                     .track_focus(&self.tree_focus)
-                    .track_scroll(&self.tree_scroll)
                     .flex_1()
                     .min_h_0()
-                    .overflow_y_scroll()
-                    .pb(px(24.))
                     .pr(px(8.))
                     .on_key_down(cx.listener(Self::on_tree_key))
-                    .children(rows),
-                &self.tree_scroll,
+                    .on_scroll(cx.listener(move |this, event: &ScrollEvent, _, cx| {
+                        if let ScrollDelta::Lines(lines) = event.delta {
+                            let distance = if lines.y == 0. {
+                                lines.x * line
+                            } else {
+                                lines.y * (line - LIST_WHEEL_LINE)
+                            };
+                            this.tree_list.scroll_by(px(-distance));
+                            cx.notify();
+                        }
+                    }))
+                    .child(
+                        gpui_kit::list(
+                            self.tree_list.clone(),
+                            cx.processor(|this, index: usize, window, cx| {
+                                this.render_list_item(index, window, cx)
+                            }),
+                        )
+                        .size_full(),
+                    ),
+                &self.tree_list,
             ))
     }
 }

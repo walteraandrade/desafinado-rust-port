@@ -1,3 +1,6 @@
+use std::collections::HashMap;
+use std::ops::Range;
+
 use serde::{Deserialize, Serialize};
 
 use super::frontmatter_fields::FrontmatterProblem;
@@ -261,6 +264,60 @@ pub fn open_file_id(tree: &[TreeNode], is_open_file: &dyn Fn(&str) -> bool) -> O
             item.node.kind == TreeKind::File && item.node.path.as_deref().is_some_and(is_open_file)
         })
         .map(|item| item.node.id)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TreeView {
+    pub tree: Vec<TreeNode>,
+    pub items: Vec<TreeItem>,
+    pub active_id: Option<String>,
+    pub holding: Vec<String>,
+}
+
+pub fn derive_tree_view(
+    roots: &[LibraryRoot],
+    choices: &HashMap<String, bool>,
+    active_path: Option<&str>,
+) -> TreeView {
+    let tree = build_library_tree(roots);
+    let is_open_file = |path: &str| active_path == Some(path);
+    let active_id = open_file_id(&tree, &is_open_file);
+    let holding = ancestor_ids(&tree, &is_open_file);
+    let items = visible_items(&tree, &|node| {
+        choices
+            .get(&node.id)
+            .copied()
+            .unwrap_or(node.kind == TreeKind::Root || holding.contains(&node.id))
+    });
+    TreeView {
+        tree,
+        items,
+        active_id,
+        holding,
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ItemsChange {
+    pub old: Range<usize>,
+    pub new_len: usize,
+}
+
+pub fn items_change(old: &[TreeItem], new: &[TreeItem]) -> Option<ItemsChange> {
+    let prefix = old.iter().zip(new).take_while(|(a, b)| a == b).count();
+    if prefix == old.len() && prefix == new.len() {
+        return None;
+    }
+    let suffix = old[prefix..]
+        .iter()
+        .rev()
+        .zip(new[prefix..].iter().rev())
+        .take_while(|(a, b)| a == b)
+        .count();
+    Some(ItemsChange {
+        old: prefix..old.len() - suffix,
+        new_len: new.len() - prefix - suffix,
+    })
 }
 
 #[cfg(test)]
@@ -602,6 +659,106 @@ mod tests {
             ]
         );
         assert_eq!(ids.len(), 4);
+    }
+
+    #[test]
+    fn derive_tree_view_matches_the_separate_derivations() {
+        let roots = [root(vec![
+            skill("git", &["SKILL.md", "refs/a.md"]),
+            skill("pdf", &["SKILL.md"]),
+        ])];
+        let mut choices = HashMap::new();
+        choices.insert("skill:/skills/pdf".to_string(), true);
+        let active = Some("/skills/git/refs/a.md");
+        let view = derive_tree_view(&roots, &choices, active);
+        let tree = build_library_tree(&roots);
+        assert_eq!(view.tree, tree);
+        assert_eq!(
+            view.active_id.as_deref(),
+            Some("skill:/skills/git/refs/a.md")
+        );
+        assert_eq!(
+            view.holding,
+            vec![
+                "root:/skills",
+                "skill:/skills/git",
+                "skill:/skills/git/refs"
+            ]
+        );
+        let ids: Vec<&str> = view
+            .items
+            .iter()
+            .map(|item| item.node.id.as_str())
+            .collect();
+        assert_eq!(
+            ids,
+            vec![
+                "root:/skills",
+                "skill:/skills/git",
+                "skill:/skills/git/SKILL.md",
+                "skill:/skills/git/refs",
+                "skill:/skills/git/refs/a.md",
+                "skill:/skills/pdf",
+                "skill:/skills/pdf/SKILL.md",
+            ]
+        );
+    }
+
+    #[test]
+    fn derive_tree_view_lets_a_choice_fold_what_the_open_file_would_open() {
+        let roots = [root(vec![skill("git", &["SKILL.md"])])];
+        let mut choices = HashMap::new();
+        choices.insert("skill:/skills/git".to_string(), false);
+        let view = derive_tree_view(&roots, &choices, Some("/skills/git/SKILL.md"));
+        assert_eq!(view.items.len(), 2);
+    }
+
+    fn items_of(roots: &[LibraryRoot], choices: &HashMap<String, bool>) -> Vec<TreeItem> {
+        derive_tree_view(roots, choices, None).items
+    }
+
+    #[test]
+    fn items_change_is_none_for_equal_lists() {
+        let roots = [root(vec![skill("git", &["SKILL.md"])])];
+        let items = items_of(&roots, &HashMap::new());
+        assert_eq!(items_change(&items, &items.clone()), None);
+    }
+
+    #[test]
+    fn items_change_covers_only_the_toggled_row_and_the_rows_it_added() {
+        let roots = [root(vec![
+            skill("a", &["SKILL.md", "x.md"]),
+            skill("b", &["SKILL.md"]),
+            skill("c", &["SKILL.md"]),
+        ])];
+        let folded = items_of(&roots, &HashMap::new());
+        let mut choices = HashMap::new();
+        choices.insert("skill:/skills/b".to_string(), true);
+        let open = items_of(&roots, &choices);
+        assert_eq!(folded.len(), 4);
+        assert_eq!(open.len(), 5);
+        let change = items_change(&folded, &open);
+        assert_eq!(
+            change,
+            Some(ItemsChange {
+                old: 2..3,
+                new_len: 2
+            })
+        );
+        assert_eq!(items_change(&open, &folded).map(|c| c.old), Some(2..4));
+    }
+
+    #[test]
+    fn items_change_marks_the_whole_list_when_everything_differs() {
+        let roots = [root(vec![skill("a", &["SKILL.md"])])];
+        let items = items_of(&roots, &HashMap::new());
+        assert_eq!(
+            items_change(&[], &items),
+            Some(ItemsChange {
+                old: 0..0,
+                new_len: 2
+            })
+        );
     }
 
     #[test]
