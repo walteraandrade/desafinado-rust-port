@@ -4,7 +4,7 @@
 
 use std::{
     collections::HashMap,
-    sync::Arc,
+    sync::{Arc, atomic::AtomicBool},
     time::{Duration, Instant},
 };
 
@@ -27,6 +27,9 @@ pub(crate) struct UnsavedQueue {
     pub task: Option<Task<()>>,
     /// When the oldest edit not yet handed to the writer was made.
     pub first_unwritten: Option<Instant>,
+    /// Set by a write of the unsaved text that failed; the Workspace tells the writer once.
+    pub failed: Arc<AtomicBool>,
+    pub warned: bool,
     pub writer: CoalescingWriter,
 }
 
@@ -36,6 +39,8 @@ impl UnsavedQueue {
             snapshots: HashMap::new(),
             task: None,
             first_unwritten: None,
+            failed: Arc::default(),
+            warned: false,
             writer,
         }
     }
@@ -63,7 +68,13 @@ pub(crate) fn place_job_key(key: &str) -> String {
 
 /// Writes the snapshot, or clears the stored text when it is the saved text again. Run it off
 /// the UI thread: it reads the whole text.
-pub(crate) fn write_unsaved(db: &HistoryDb, key: &str, snapshot: &UnsavedSnapshot, at: i64) {
+/// Returns whether it was written.
+pub(crate) fn write_unsaved(
+    db: &HistoryDb,
+    key: &str,
+    snapshot: &UnsavedSnapshot,
+    at: i64,
+) -> bool {
     let result = if snapshot.text == *snapshot.base {
         db.clear_unsaved(key)
     } else {
@@ -76,8 +87,12 @@ pub(crate) fn write_unsaved(db: &HistoryDb, key: &str, snapshot: &UnsavedSnapsho
             at,
         )
     };
-    if let Err(error) = result {
-        log::error!("Unsaved text write failed: {error}");
+    match result {
+        Ok(()) => true,
+        Err(error) => {
+            log::error!("Unsaved text write failed: {error}");
+            false
+        }
     }
 }
 
@@ -142,7 +157,7 @@ mod tests {
         let db = Arc::clone(db);
         let snap = snapshot(text, "saved");
         writer.submit(unsaved_job_key("a.md"), move || {
-            write_unsaved(&db, "a.md", &snap, 1);
+            assert!(write_unsaved(&db, "a.md", &snap, 1));
         })
     }
 

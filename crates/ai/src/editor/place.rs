@@ -163,6 +163,8 @@ fn still_fits(item: &Suggestion, text: &str) -> bool {
 /// Puts a saved place back over `text`, the Document as it opens now. When the file changed
 /// since the place was taken, everything follows the change as it would follow an edit:
 /// a Suggestion whose text was changed is dropped, and a Note over changed text is marked stale.
+/// The frontmatter is searched in the whole `text` here, unlike the 64 KB probe the editor
+/// uses on every keystroke: this runs once, when a file opens, on text already in memory.
 pub fn restore_place(saved: &SavedPlace, text: &str) -> Option<RestoredPlace> {
     if saved.version != PLACE_VERSION {
         return None;

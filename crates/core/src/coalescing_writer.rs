@@ -85,21 +85,26 @@ pub struct CoalescingWriter {
 /// The loop that writes what was submitted; run it off the UI thread.
 pub struct Drain {
     shared: Arc<Shared>,
+    /// `run` already cleared the mark; dropping must not clear a newer drain's.
+    finished: bool,
 }
 
 impl Drop for Drain {
     fn drop(&mut self) {
-        locked(&self.shared.pending).draining = false;
+        if !self.finished {
+            locked(&self.shared.pending).draining = false;
+        }
     }
 }
 
 impl Drain {
-    pub fn run(self) {
+    pub fn run(mut self) {
         loop {
             self.shared.run_batch();
             let mut pending = locked(&self.shared.pending);
             if pending.jobs.is_empty() || WRITING.get() {
                 pending.draining = false;
+                self.finished = true;
                 return;
             }
         }
@@ -124,6 +129,7 @@ impl CoalescingWriter {
         pending.draining = true;
         Some(Drain {
             shared: Arc::clone(&self.shared),
+            finished: false,
         })
     }
 
@@ -262,5 +268,16 @@ mod tests {
         let written = log();
         drop(writer.submit("a", push(&written, "a")));
         assert!(writer.submit("a", push(&written, "a2")).is_some());
+    }
+
+    #[test]
+    fn a_finished_drain_does_not_clear_the_mark_of_the_one_that_replaced_it() {
+        let writer = CoalescingWriter::default();
+        let written = log();
+        let first = writer.submit("a", push(&written, "a")).expect("drain");
+        first.run();
+        let second = writer.submit("b", push(&written, "b"));
+        assert!(second.is_some());
+        assert!(writer.submit("c", push(&written, "c")).is_none());
     }
 }

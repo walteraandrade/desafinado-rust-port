@@ -921,6 +921,13 @@ impl Workspace {
                 save_last_file(&self.services.user_data, path);
             }
         }
+        if self.unsaved.failed.swap(false, Ordering::Relaxed) && !self.unsaved.warned {
+            self.unsaved.warned = true;
+            self.notify_failure(
+                "Could not keep your unsaved changes; save the file to be safe",
+                cx,
+            );
+        }
         let now = Instant::now();
         let first = *self.unsaved.first_unwritten.get_or_insert(now);
         if unsaved_due(first, now, now) {
@@ -967,9 +974,13 @@ impl Workspace {
             .into_iter()
             .map(|(key, snapshot)| {
                 let db = Arc::clone(&db);
+                let failed = Arc::clone(&self.unsaved.failed);
                 let job_key = unsaved_job_key(&key);
-                let job: Box<dyn FnOnce() + Send> =
-                    Box::new(move || write_unsaved(&db, &key, &snapshot, at));
+                let job: Box<dyn FnOnce() + Send> = Box::new(move || {
+                    if !write_unsaved(&db, &key, &snapshot, at) {
+                        failed.store(true, Ordering::Relaxed);
+                    }
+                });
                 (job_key, job)
             })
             .collect()
@@ -1151,18 +1162,20 @@ impl Workspace {
             cx,
         );
         cx.spawn(async move |this, cx| {
-            if let Ok(errors) = receiver.await {
-                this.update(cx, |this, cx| {
-                    if this.history.wrote(&written_key, &errors) {
-                        this.settle_history(cx);
-                    } else {
-                        for error in &errors {
-                            log::error!("History write for {written_key} failed: {error}");
-                        }
+            let errors = receiver.await.unwrap_or_else(|_| {
+                log::error!("The History write for {written_key} did not finish");
+                Vec::new()
+            });
+            this.update(cx, |this, cx| {
+                if this.history.wrote(&written_key, &errors) {
+                    this.settle_history(cx);
+                } else {
+                    for error in &errors {
+                        log::error!("History write for {written_key} failed: {error}");
                     }
-                })
-                .log_warn();
-            }
+                }
+            })
+            .log_warn();
         })
         .detach();
     }

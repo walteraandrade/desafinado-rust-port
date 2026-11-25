@@ -37,26 +37,33 @@ fn floor_char_boundary(text: &Rope, at: usize) -> usize {
     at
 }
 
-/// The frontmatter at the start of the text, found in its first [`FRONTMATTER_PROBE`] bytes.
+/// The frontmatter at the start of the text, found in its first [`FRONTMATTER_PROBE`] (64 KB)
+/// bytes. One that closes after them is taken as none; the closing line may end exactly at the
+/// cut, and counts then when a newline follows it.
 pub(crate) fn frontmatter_of(text: &Rope) -> Option<Frontmatter> {
     if !text.bytes().take(3).eq("---".bytes()) {
         return None;
     }
     let probe_end = floor_char_boundary(text, FRONTMATTER_PROBE);
     let probe = text.slice(..probe_end).to_string();
-    find_frontmatter(&probe).filter(|found| probe_end == text.len() || found.to < probe_end)
+    let found = find_frontmatter(&probe)?;
+    let closed_inside = found.to < probe_end;
+    let ends_at_the_cut = found.to == probe_end
+        && probe_end < text.len()
+        && text
+            .try_slice(probe_end..=probe_end)
+            .is_ok_and(|next| next == "\n");
+    (probe_end == text.len() || closed_inside || ends_at_the_cut).then_some(found)
 }
 
-/// The part of the text the frontmatter panel reads. A skill file is read whole (the panel
-/// also checks what its frontmatter would be); any other file only up to the end of its
-/// frontmatter, or the probe when it opens like one and does not close, which is all that
-/// decides the report.
+/// The part of the text the frontmatter panel reads: up to the end of the frontmatter, which
+/// is all that decides the report. Without one, a skill file is read whole (the panel checks
+/// what its frontmatter would be), and any other file is read up to the probe when it opens
+/// like a frontmatter that does not close, and not at all otherwise.
 pub(crate) fn frontmatter_source(text: &Rope, is_skill: bool) -> String {
-    if is_skill {
-        return text.to_string();
-    }
     match frontmatter_of(text) {
         Some(found) => text.slice(..found.to).to_string(),
+        None if is_skill => text.to_string(),
         None if !text.bytes().take(3).eq("---".bytes()) => String::new(),
         None => text
             .slice(..floor_char_boundary(text, FRONTMATTER_PROBE))
@@ -100,8 +107,29 @@ mod tests {
     }
 
     #[test]
-    fn a_skill_file_is_read_whole() {
-        let text = format!("---\nname: demo\n---\n{}", "word ".repeat(100));
+    fn a_skill_file_with_a_frontmatter_reads_only_the_frontmatter_and_the_same_report() {
+        let body = "word ".repeat(10_000);
+        for text in [
+            format!("---\nname: demo\ndescription: Does a thing.\n---\n{body}"),
+            format!("---\nname: [oops\n---\n{body}"),
+            format!("---\nname: Wrong Name\n---\n{body}"),
+        ] {
+            let source = frontmatter_source(&Rope::from_str(&text), true);
+            assert!(source.len() < text.len() / 10);
+            let context = FrontmatterContext {
+                file_name: Some("SKILL.md"),
+                folder_name: Some("demo"),
+            };
+            assert_eq!(
+                format!("{:?}", inspect_frontmatter(&source, &context)),
+                format!("{:?}", inspect_frontmatter(&text, &context))
+            );
+        }
+    }
+
+    #[test]
+    fn a_skill_file_without_a_frontmatter_is_read_whole() {
+        let text = format!("# Demo\n{}", "word ".repeat(100));
         assert_eq!(frontmatter_source(&Rope::from_str(&text), true), text);
     }
 
@@ -176,6 +204,15 @@ mod tests {
         assert!(text.len() > FRONTMATTER_PROBE * 4);
         assert_eq!(frontmatter_of(&rope(&text)), find_frontmatter(&text));
         assert_eq!(frontmatter_of(&rope(&text)), None);
+    }
+
+    #[test]
+    fn a_frontmatter_ending_exactly_at_the_cut_is_found_when_a_newline_follows() {
+        let comment = format!("#{}\n", "x".repeat(FRONTMATTER_PROBE - 7 - 5_000 - 2));
+        let yaml = format!("{}{comment}", "a: b\n".repeat(1_000));
+        let text = format!("---\n{yaml}---\n{}", "word ".repeat(1_000));
+        assert_eq!(find_frontmatter(&text).unwrap().to, FRONTMATTER_PROBE);
+        assert_eq!(frontmatter_of(&rope(&text)), find_frontmatter(&text));
     }
 
     #[test]
