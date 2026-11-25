@@ -59,6 +59,10 @@ impl<Reference> SwitchableHistory<Reference> {
         self.current.edited(text, now);
     }
 
+    pub fn edited_with(&mut self, read: impl Fn() -> String + Send + Sync + 'static, now: i64) {
+        self.current.edited_with(read, now);
+    }
+
     pub fn accepted(&mut self, input: AcceptedInput, now: i64) {
         self.current.accepted(input, now);
     }
@@ -93,6 +97,20 @@ impl<Reference> SwitchableHistory<Reference> {
 
     pub fn poll(&mut self, now: i64) {
         self.current.poll(now);
+    }
+
+    pub fn poll_deferred(&mut self, now: i64) -> Option<super::session::DeferredWrites> {
+        self.current.poll_deferred(now)
+    }
+
+    /// Takes the result of a deferred write for `key`; false when the Document has changed
+    /// since, which the result no longer concerns.
+    pub fn wrote(&mut self, key: &str, errors: &[super::store::StoreError]) -> bool {
+        let current = key == self.key;
+        if current {
+            self.current.wrote(errors);
+        }
+        current
     }
 
     pub fn next_due(&self) -> Option<i64> {
@@ -326,5 +344,15 @@ mod tests {
         hub.flush(1000);
         hub.settled();
         assert_eq!(calls(&store), vec!["/notes/a.md:edited:unsaved typing"]);
+    }
+
+    #[test]
+    fn a_deferred_result_for_a_document_left_behind_is_ignored() {
+        let (mut hub, _store) = create_hub(vec![]);
+        hub.select(Some(&a()), 1000);
+        let key = hub.key().to_string();
+        assert!(hub.wrote(&key, &[]));
+        hub.select(None, 2000);
+        assert!(!hub.wrote(&key, &[]));
     }
 }

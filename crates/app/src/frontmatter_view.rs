@@ -10,6 +10,7 @@ use desafinado_features::skills::{
     skill_frontmatter::{CheckedField, DESCRIPTION_MAX_LENGTH},
 };
 use desafinado_runtime::ai_backend::{AiBackend, DescriptionCall};
+use gpui_kit::base::input::Rope;
 use gpui_kit::{
     component::input::{Input, InputEvent, InputState, Textarea, TextareaState},
     prelude::FluentBuilder as _,
@@ -57,7 +58,7 @@ impl DescriptionAi {
 
 pub struct FrontmatterView {
     pub report: FrontmatterReport,
-    text: String,
+    text: Rope,
     name: Entity<InputState>,
     description: Entity<TextareaState>,
     ai: Arc<dyn AiBackend>,
@@ -97,7 +98,7 @@ impl FrontmatterView {
             });
         Self {
             report: FrontmatterReport::None,
-            text: String::new(),
+            text: Rope::new(),
             name,
             description,
             ai,
@@ -123,12 +124,12 @@ impl FrontmatterView {
 
     pub fn refresh(
         &mut self,
-        text: &str,
+        text: Rope,
         report: FrontmatterReport,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.text = text.to_string();
+        self.text = text;
         if let FrontmatterReport::Skill {
             name, description, ..
         } = &report
@@ -182,7 +183,7 @@ impl FrontmatterView {
         let input = DescriptionPromptInput {
             name: name.clone(),
             description: description.clone(),
-            body: skill_body(&self.text),
+            body: skill_body(&self.text.to_string()),
         };
         let current = description.clone();
         self.assist = DescriptionAi::Working {

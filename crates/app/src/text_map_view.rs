@@ -4,10 +4,11 @@
 //! nearest one.
 
 use desafinado_core::{
+    log_err::LogErr,
     suggestions::{RefineState, Suggestion, active_suggestion, suggestion_anchor},
     text_map::{
-        MapLine, MapMark, MarkTone, TextMap, View, locate, map_lines, mark_near, off_screen,
-        reveal_first_row, scroll_row_for, step_in_view, text_map,
+        MapLine, MapMark, MarkTone, TextMap, View, fill_rows, line_shapes, locate, map_lines,
+        mark_near, off_screen, reveal_first_row, scroll_row_for, step_in_view, text_map,
     },
 };
 use gpui_kit::{
@@ -17,6 +18,7 @@ use gpui_kit::{
 use std::{
     cell::{Cell, RefCell},
     rc::Rc,
+    time::{Duration, Instant},
 };
 
 use crate::{editor_pane::EditorPane, theme::Roles, ui};
@@ -39,12 +41,36 @@ pub(crate) struct TextMapState {
     drag: Option<(Rc<MapClick>, Pixels)>,
     /// Where wheel turns over the map have scrolled to before the editor applied them.
     wheel_target: Cell<Option<Pixels>>,
+    /// When the text last changed, to draw the map from the lines measured before while the
+    /// writer is still typing.
+    last_edit: Option<Instant>,
+    /// Redraws the map once the typing stopped.
+    settle: Option<Task<()>>,
+    /// The lines of the text at a revision, measured apart from the editor once the typing
+    /// stopped; only their rows are left to read from the editor.
+    shapes: Option<(u64, Vec<MapLine>)>,
 }
 
+/// How long after the last edit the map keeps the lines it measured before the edit.
+const MAP_SETTLE: Duration = Duration::from_millis(250);
+
 impl TextMapState {
-    pub(crate) fn edited(&mut self) {
+    pub(crate) fn edited(&mut self, now: Instant) {
         self.revision = self.revision.wrapping_add(1);
+        self.last_edit = Some(now);
     }
+
+    fn typing(&self, now: Instant) -> bool {
+        self.last_edit
+            .is_some_and(|edit| now.saturating_duration_since(edit) < MAP_SETTLE)
+    }
+}
+
+/// Whether the lines must match the text now, or the ones measured before the last edits will do.
+#[derive(Clone, Copy, PartialEq)]
+enum Lines {
+    Exact,
+    Drawn,
 }
 
 /// What the measured lines depend on besides the text: wrapping follows the width.
@@ -97,9 +123,34 @@ fn tone_of(item: &Suggestion, active: Option<&str>) -> MarkTone {
 }
 
 impl EditorPane {
+    /// Notes an edit for the map, and redraws it when the typing stops.
+    pub(crate) fn map_edited(&mut self, cx: &mut Context<Self>) {
+        self.text_map.edited(Instant::now());
+        self.text_map.settle = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(MAP_SETTLE).await;
+            let Ok(read) = this.update(cx, |this, cx| {
+                (this.text_map.revision, this.editor.read(cx).text().clone())
+            }) else {
+                return;
+            };
+            let (revision, text) = read;
+            let shapes = cx
+                .background_spawn(async move { line_shapes(&text.to_string()) })
+                .await;
+            this.update(cx, |this, cx| {
+                if this.text_map.revision == revision {
+                    this.text_map.shapes = Some((revision, shapes));
+                }
+                cx.notify();
+            })
+            .log_warn();
+        }));
+    }
+
     /// The Document's lines in display rows, measured again only when the text or the wrapping
-    /// changed.
-    fn measured_lines(&self, cx: &App) -> Rc<[MapLine]> {
+    /// changed. While the writer types, a frame that only draws keeps the lines measured
+    /// before, so a keystroke does not measure the whole Document.
+    fn measured_lines(&self, kind: Lines, cx: &App) -> Rc<[MapLine]> {
         perf_span!("text_map.measured_lines");
         let state = self.editor.read(cx);
         let display = state.display_map();
@@ -111,24 +162,42 @@ impl EditorPane {
         };
         let mut cache = self.text_map.lines.borrow_mut();
         if let Some((cached, lines)) = cache.as_ref()
-            && *cached == key
+            && (*cached == key
+                || (kind == Lines::Drawn
+                    && cached.width == key.width
+                    && self.text_map.typing(Instant::now())))
         {
             return Rc::clone(lines);
         }
-        let lines: Rc<[MapLine]> = map_lines(&state.value(), |line| {
+        let rows_of = |line: usize| {
             display
                 .buffer_line_to_display_row_range(line)
                 .map_or(0, |rows| rows.len())
-        })
+        };
+        let shapes = self
+            .text_map
+            .shapes
+            .as_ref()
+            .filter(|(revision, shapes)| {
+                *revision == self.text_map.revision
+                    && shapes
+                        .last()
+                        .is_some_and(|last| last.start + last.len == key.len)
+            })
+            .map(|(_, shapes)| shapes.clone());
+        let lines: Rc<[MapLine]> = match shapes {
+            Some(shapes) => fill_rows(shapes, rows_of),
+            None => map_lines(&state.text().to_string(), rows_of),
+        }
         .into();
         *cache = Some((key, Rc::clone(&lines)));
         lines
     }
 
     /// The Document's lines in display rows, the rows on screen, and the row height.
-    fn rows_on_screen(&self, cx: &App) -> Option<(Rc<[MapLine]>, View, Pixels)> {
+    fn rows_on_screen(&self, kind: Lines, cx: &App) -> Option<(Rc<[MapLine]>, View, Pixels)> {
         let line_height = self.editor.read(cx).line_height()?;
-        let lines = self.measured_lines(cx);
+        let lines = self.measured_lines(kind, cx);
         let state = self.editor.read(cx);
         let view = View {
             first_row: f32::from(-state.scroll_offset().y) / f32::from(line_height),
@@ -149,7 +218,7 @@ impl EditorPane {
 
     /// Scrolls so that a caret just moved to `offset` by a jump sits well inside the screen.
     pub(crate) fn reveal_jump(&mut self, offset: usize, cx: &mut Context<Self>) {
-        let Some((lines, view, line_height)) = self.rows_on_screen(cx) else {
+        let Some((lines, view, line_height)) = self.rows_on_screen(Lines::Exact, cx) else {
             return;
         };
         if let Some(first) = reveal_first_row(view, self.display_row(&lines, offset, cx)) {
@@ -159,9 +228,9 @@ impl EditorPane {
         }
     }
 
-    fn map_frame(&self, cx: &App) -> Option<MapFrame> {
+    fn map_frame(&self, kind: Lines, cx: &App) -> Option<MapFrame> {
         let state = self.editor.read(cx);
-        let (lines, view, line_height) = self.rows_on_screen(cx)?;
+        let (lines, view, line_height) = self.rows_on_screen(kind, cx)?;
         let active = active_suggestion(&self.suggestions, Some(state.cursor()))
             .map(|ready| ready.id.clone());
         let mut items: Vec<&Suggestion> = self.suggestions.items.iter().collect();
@@ -186,7 +255,7 @@ impl EditorPane {
     /// Where `Alt+↑` and `Alt+↓` go when the caret is off screen: the Suggestion the screen
     /// steps to, so the keys agree with the chips. `None` when the caret is on screen.
     pub(crate) fn step_from_screen(&self, forward: bool, cx: &App) -> Option<usize> {
-        let frame = self.map_frame(cx)?;
+        let frame = self.map_frame(Lines::Exact, cx)?;
         let caret = self.display_row(&frame.lines, self.editor.read(cx).cursor(), cx) as f32;
         let view = frame.view;
         if caret + 1. > view.first_row && caret < view.first_row + view.rows {
@@ -312,7 +381,7 @@ impl EditorPane {
         cx: &mut Context<Self>,
     ) -> Vec<AnyElement> {
         self.text_map.wheel_target.set(None);
-        let frame = self.map_frame(cx);
+        let frame = self.map_frame(Lines::Drawn, cx);
         let map = frame
             .as_ref()
             .and_then(|frame| self.render_text_map(frame, roles, cx));

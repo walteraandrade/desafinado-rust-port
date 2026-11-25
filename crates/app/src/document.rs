@@ -1,4 +1,9 @@
-use std::path::{Path, PathBuf};
+use std::{
+    path::{Path, PathBuf},
+    sync::Arc,
+};
+
+use gpui_kit::base::input::Rope;
 
 use desafinado_core::blocks::{BlockKind, extract_blocks, heading_text};
 
@@ -11,7 +16,7 @@ const MAX_SLUG_LENGTH: usize = 60;
 pub struct FileSession {
     pub name: String,
     pub path: Option<PathBuf>,
-    pub saved_text: String,
+    pub saved_text: Arc<str>,
     pub dirty: bool,
 }
 
@@ -25,16 +30,16 @@ pub fn opened_session(name: &str, path: &Path, text: &str, saved_text: &str) -> 
     FileSession {
         name: name.to_string(),
         path: Some(path.to_path_buf()),
-        saved_text: saved_text.to_string(),
+        saved_text: Arc::from(saved_text),
         dirty: text != saved_text,
     }
 }
 
-pub fn edited_session(session: Option<&FileSession>, text: &str) -> Option<FileSession> {
-    session.map(|session| FileSession {
-        dirty: text != session.saved_text,
-        ..session.clone()
-    })
+/// Marks the open file as edited or not, comparing the Rope with the saved text in place.
+pub fn mark_edited(session: Option<&mut FileSession>, text: &Rope) {
+    if let Some(session) = session {
+        session.dirty = *text != *session.saved_text;
+    }
 }
 
 pub fn has_unsaved_changes(session: Option<&FileSession>, text: &str, baseline: &str) -> bool {
@@ -275,8 +280,26 @@ mod tests {
         assert!(has_unsaved_changes(None, "typed", "sample"));
         let session = opened_session("a.md", Path::new("/a.md"), "x", "x");
         assert!(!has_unsaved_changes(Some(&session), "y", ""));
-        let edited = edited_session(Some(&session), "y").unwrap();
+        let mut edited = session.clone();
+        mark_edited(Some(&mut edited), &Rope::from_str("y"));
         assert!(has_unsaved_changes(Some(&edited), "y", ""));
+        mark_edited(Some(&mut edited), &Rope::from_str("x"));
+        assert!(!edited.dirty);
+    }
+
+    #[test]
+    fn marks_an_edit_dirty_only_when_the_text_differs_from_the_saved_text() {
+        let mut session = opened_session("a.md", Path::new("/a.md"), "same", "same");
+        for (text, dirty) in [
+            ("same!", true),
+            ("sam", true),
+            ("sane", true),
+            ("same", false),
+        ] {
+            mark_edited(Some(&mut session), &Rope::from_str(text));
+            assert_eq!(session.dirty, dirty, "{text}");
+        }
+        mark_edited(None, &Rope::from_str("x"));
     }
 
     #[test]

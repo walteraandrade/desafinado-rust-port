@@ -3,6 +3,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 
+use desafinado_core::coalescing_writer::CoalescingWriter;
 use desafinado_features::history::{
     store::{HistoryStore, MarkSavedInput, RecordInput, StoreError},
     types::{
@@ -15,14 +16,22 @@ pub struct DbHistoryStore {
     db: Arc<HistoryDb>,
     now: Box<dyn Fn() -> i64 + Send + Sync>,
     thinned: Mutex<HashSet<String>>,
+    /// Writes handed to the background writer. Every use of the store waits for them first,
+    /// so a read sees them and a write cannot land before them.
+    writer: CoalescingWriter,
 }
 
 impl DbHistoryStore {
-    pub fn new(db: Arc<HistoryDb>, now: impl Fn() -> i64 + Send + Sync + 'static) -> Self {
+    pub fn new(
+        db: Arc<HistoryDb>,
+        now: impl Fn() -> i64 + Send + Sync + 'static,
+        writer: CoalescingWriter,
+    ) -> Self {
         Self {
             db,
             now: Box::new(now),
             thinned: Mutex::new(HashSet::new()),
+            writer,
         }
     }
 }
@@ -105,6 +114,7 @@ pub fn summary_from_db(summary: db::VersionSummary) -> VersionSummary {
 
 impl HistoryStore for DbHistoryStore {
     fn list(&self, key: &str) -> Result<VersionList, StoreError> {
+        self.writer.flush();
         let first = self
             .thinned
             .lock()
@@ -119,10 +129,12 @@ impl HistoryStore for DbHistoryStore {
     }
 
     fn text(&self, key: &str, id: VersionId) -> Result<Option<String>, StoreError> {
+        self.writer.flush();
         self.db.text(key, id).map_err(failed)
     }
 
     fn record(&self, key: &str, input: RecordInput) -> Result<(), StoreError> {
+        self.writer.flush();
         self.db
             .record(
                 key,
@@ -136,6 +148,7 @@ impl HistoryStore for DbHistoryStore {
     }
 
     fn mark_saved(&self, key: &str, input: MarkSavedInput) -> Result<(), StoreError> {
+        self.writer.flush();
         self.db
             .mark_saved(
                 key,
@@ -154,9 +167,38 @@ mod tests {
     use super::*;
 
     fn store() -> (tempfile::TempDir, DbHistoryStore) {
+        let (dir, store, _) = store_with_writer();
+        (dir, store)
+    }
+
+    fn store_with_writer() -> (tempfile::TempDir, DbHistoryStore, CoalescingWriter) {
         let dir = tempfile::tempdir().unwrap();
         let db = HistoryDb::open(&dir.path().join("history.sqlite")).unwrap();
-        (dir, DbHistoryStore::new(Arc::new(db), || 1_000))
+        let writer = CoalescingWriter::default();
+        let store = DbHistoryStore::new(Arc::new(db), || 1_000, writer.clone());
+        (dir, store, writer)
+    }
+
+    #[test]
+    fn a_read_sees_the_writes_still_waiting_in_the_background_writer() {
+        let (_dir, store, writer) = store_with_writer();
+        let store = Arc::new(store);
+        let background = Arc::clone(&store);
+        let _never_run = writer.submit("history:1", move || {
+            background
+                .record(
+                    "/a.md",
+                    RecordInput {
+                        at: 1_000,
+                        cause: VersionCause::Edited,
+                        text: "typed".into(),
+                    },
+                )
+                .unwrap();
+        });
+        let listed = store.list("/a.md").unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].cause, VersionCause::Started);
     }
 
     fn record(store: &DbHistoryStore, key: &str, cause: VersionCause, text: &str) {

@@ -101,18 +101,31 @@ fn gunzip(body: &[u8]) -> Result<String> {
     Ok(text)
 }
 
-fn in_transaction<T>(connection: &Connection, run: impl FnOnce() -> Result<T>) -> Result<T> {
-    connection.execute_batch("begin immediate")?;
-    match run() {
-        Ok(value) => {
-            connection.execute_batch("commit")?;
-            Ok(value)
-        }
-        Err(error) => {
-            connection.execute_batch("rollback").log_warn();
-            Err(error)
+/// Rolls the open transaction back when dropped, unless it was committed: a panic inside a
+/// write must not leave the shared connection inside a transaction.
+struct Rollback<'a> {
+    connection: &'a Connection,
+    committed: bool,
+}
+
+impl Drop for Rollback<'_> {
+    fn drop(&mut self) {
+        if !self.committed {
+            self.connection.execute_batch("rollback").log_warn();
         }
     }
+}
+
+fn in_transaction<T>(connection: &Connection, run: impl FnOnce() -> Result<T>) -> Result<T> {
+    connection.execute_batch("begin immediate")?;
+    let mut guard = Rollback {
+        connection,
+        committed: false,
+    };
+    let value = run()?;
+    connection.execute_batch("commit")?;
+    guard.committed = true;
+    Ok(value)
 }
 
 /// Switching to WAL needs a moment alone with the file, and SQLite reports `busy`
@@ -493,6 +506,34 @@ impl HistoryStore for HistoryDb {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_panic_inside_a_transaction_rolls_it_back_and_the_connection_still_writes() {
+        use std::panic::{AssertUnwindSafe, catch_unwind};
+        let connection = Connection::open_in_memory().unwrap();
+        connection.execute_batch("create table t (v text)").unwrap();
+        let panicked = catch_unwind(AssertUnwindSafe(|| {
+            in_transaction(&connection, || -> Result<()> {
+                connection.execute("insert into t values ('lost')", [])?;
+                panic!("job failed");
+            })
+            .log_warn();
+        }));
+        assert!(panicked.is_err());
+        in_transaction(&connection, || {
+            connection.execute("insert into t values ('kept')", [])?;
+            Ok(())
+        })
+        .unwrap();
+        let values: Vec<String> = connection
+            .prepare("select v from t")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<std::result::Result<_, _>>()
+            .unwrap();
+        assert_eq!(values, ["kept"]);
+    }
+
     use super::*;
     use crate::history::AcceptedChange;
 

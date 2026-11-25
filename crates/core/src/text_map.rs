@@ -64,12 +64,12 @@ pub struct TextMap {
 pub const MAX_PITCH: f32 = 4.;
 const MIN_WIDTH: f32 = 0.2;
 
-pub fn map_lines(text: &str, rows_of: impl Fn(usize) -> usize) -> Vec<MapLine> {
+/// The lines of the text, without their rows: where each starts, how long, what it looks like.
+/// It reads the text only, so it can run apart from the editor; [`fill_rows`] adds the rows.
+pub fn line_shapes(text: &str) -> Vec<MapLine> {
     let mut start = 0;
-    let mut first_row = 0;
     text.split('\n')
-        .enumerate()
-        .map(|(index, line)| {
+        .map(|line| {
             let trimmed = line.trim();
             let kind = if trimmed.is_empty() {
                 LineKind::Blank
@@ -78,19 +78,33 @@ pub fn map_lines(text: &str, rows_of: impl Fn(usize) -> usize) -> Vec<MapLine> {
             } else {
                 LineKind::Text
             };
-            let rows = rows_of(index);
             let item = MapLine {
                 start,
                 len: line.len(),
-                first_row,
-                rows,
+                first_row: 0,
+                rows: 0,
                 kind,
             };
             start += line.len() + 1;
-            first_row += rows;
             item
         })
         .collect()
+}
+
+/// Gives each line of [`line_shapes`] its rows, and the row it starts on.
+pub fn fill_rows(mut lines: Vec<MapLine>, rows_of: impl Fn(usize) -> usize) -> Vec<MapLine> {
+    let mut first_row = 0;
+    for (index, line) in lines.iter_mut().enumerate() {
+        let rows = rows_of(index);
+        line.first_row = first_row;
+        line.rows = rows;
+        first_row += rows;
+    }
+    lines
+}
+
+pub fn map_lines(text: &str, rows_of: impl Fn(usize) -> usize) -> Vec<MapLine> {
+    fill_rows(line_shapes(text), rows_of)
 }
 
 pub fn total_rows(lines: &[MapLine]) -> usize {
@@ -230,6 +244,14 @@ pub fn mark_near(marks: &[MapMark], map: &TextMap, y: f32, reach: f32) -> Option
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn shapes_then_rows_make_the_same_lines_as_map_lines() {
+        let text = "# Title\n\nA paragraph that wraps.\nlast";
+        let rows = |index: usize| index + 1;
+        assert_eq!(fill_rows(line_shapes(text), rows), map_lines(text, rows));
+        assert_eq!(line_shapes(text)[2].rows, 0);
+    }
+
     use super::*;
 
     fn one_row(_: usize) -> usize {
