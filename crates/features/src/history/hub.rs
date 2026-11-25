@@ -3,7 +3,7 @@ use std::sync::Arc;
 use super::recorder::AcceptedInput;
 use super::session::DocumentHistory;
 use super::store::HistoryKey;
-use super::types::{VersionId, VersionList};
+use super::types::{VersionCause, VersionId, VersionList};
 
 type KeyOf<Reference> = dyn Fn(Option<&Reference>) -> HistoryKey + Send + Sync;
 type Create = dyn Fn(HistoryKey, Option<VersionList>) -> DocumentHistory + Send + Sync;
@@ -91,6 +91,32 @@ impl<Reference> SwitchableHistory<Reference> {
         self.current.saved(text, name, now);
     }
 
+    pub fn recorded_deferred(
+        &mut self,
+        text: impl Into<String>,
+        cause: VersionCause,
+        now: i64,
+    ) -> super::session::DeferredWrites {
+        self.current.recorded_deferred(text, cause, now)
+    }
+
+    pub fn saving_deferred(
+        &mut self,
+        text: impl Into<String>,
+        now: i64,
+    ) -> super::session::DeferredWrites {
+        self.current.saving_deferred(text, now)
+    }
+
+    pub fn saved_deferred(
+        &mut self,
+        text: impl Into<String>,
+        name: impl Into<String>,
+        now: i64,
+    ) -> super::session::DeferredWrites {
+        self.current.saved_deferred(text, name, now)
+    }
+
     pub fn flush(&mut self, now: i64) {
         self.current.flush(now);
     }
@@ -105,10 +131,10 @@ impl<Reference> SwitchableHistory<Reference> {
 
     /// Takes the result of a deferred write for `key`; false when the Document has changed
     /// since, which the result no longer concerns.
-    pub fn wrote(&mut self, key: &str, errors: &[super::store::StoreError]) -> bool {
+    pub fn wrote(&mut self, key: &str, applied: super::session::Applied) -> bool {
         let current = key == self.key;
         if current {
-            self.current.wrote(errors);
+            self.current.wrote(applied);
         }
         current
     }
@@ -351,8 +377,10 @@ mod tests {
         let (mut hub, _store) = create_hub(vec![]);
         hub.select(Some(&a()), 1000);
         let key = hub.key().to_string();
-        assert!(hub.wrote(&key, &[]));
+        let first = hub.saving_deferred("text", 1000).apply();
+        assert!(hub.wrote(&key, first));
+        let second = hub.saving_deferred("text", 1500).apply();
         hub.select(None, 2000);
-        assert!(!hub.wrote(&key, &[]));
+        assert!(!hub.wrote(&key, second));
     }
 }

@@ -5,6 +5,9 @@ use desafinado_platform::files::write_atomic_unconditionally;
 
 pub const LAST_FILE_NAME: &str = "last-file.txt";
 
+/// The writer key of every save and clear of the record, so the newest replaces the one waiting.
+pub const LAST_FILE_JOB: &str = "last-file";
+
 fn file_in(dir: &Path) -> PathBuf {
     dir.join(LAST_FILE_NAME)
 }
@@ -42,5 +45,31 @@ mod tests {
         assert_eq!(load_last_file(dir.path()), None);
         std::fs::write(dir.path().join(LAST_FILE_NAME), "relative.md").unwrap();
         assert_eq!(load_last_file(dir.path()), None);
+    }
+
+    #[test]
+    fn a_clear_queued_after_a_save_wins_and_a_save_queued_after_a_clear_wins() {
+        use desafinado_core::coalescing_writer::CoalescingWriter;
+        let dir = tempfile::tempdir().unwrap();
+        let writer = CoalescingWriter::default();
+        let submit = |job: Box<dyn FnOnce() + Send>| {
+            let _never_run = writer.submit(LAST_FILE_JOB, job);
+        };
+        let (save_dir, clear_dir) = (dir.path().to_path_buf(), dir.path().to_path_buf());
+        submit(Box::new(move || {
+            save_last_file(&save_dir, Path::new("/notes/a.md"));
+        }));
+        submit(Box::new(move || clear_last_file(&clear_dir)));
+        writer.flush();
+        assert_eq!(load_last_file(dir.path()), None);
+        let save_dir = dir.path().to_path_buf();
+        submit(Box::new(move || {
+            save_last_file(&save_dir, Path::new("/notes/b.md"));
+        }));
+        writer.flush();
+        assert_eq!(
+            load_last_file(dir.path()),
+            Some(PathBuf::from("/notes/b.md"))
+        );
     }
 }
