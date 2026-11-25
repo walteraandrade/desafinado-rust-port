@@ -13,11 +13,7 @@ impl<K: PartialEq, V> Memo<K, V> {
             let value = compute(&key);
             self.slot = Some((key, value));
         }
-        &self
-            .slot
-            .as_ref()
-            .expect("the slot is filled above")
-            .1
+        &self.slot.as_ref().expect("the slot is filled above").1
     }
 }
 

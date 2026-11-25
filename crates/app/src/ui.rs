@@ -5,7 +5,7 @@
 
 use std::rc::Rc;
 
-use gpui_kit::component::scroll::ScrollableElement as _;
+use gpui_kit::component::scroll::{ScrollableElement as _, ScrollbarHandle};
 use gpui_kit::{base::TextViewStyle, prelude::FluentBuilder as _, *};
 
 use desafinado_features::caret::{CaretSettings, CaretShape};
@@ -687,7 +687,7 @@ pub fn scrolled(content: impl IntoElement, handle: &ScrollHandle) -> Div {
         .vertical_scrollbar(handle)
 }
 
-pub fn scrolled_rest(content: impl IntoElement, handle: &ScrollHandle) -> Div {
+pub fn scrolled_rest<H: ScrollbarHandle + Clone>(content: impl IntoElement, handle: &H) -> Div {
     div()
         .relative()
         .flex_1()

@@ -649,12 +649,23 @@ mod tests {
         let view = derive_tree_view(&roots, &choices, active);
         let tree = build_library_tree(&roots);
         assert_eq!(view.tree, tree);
-        assert_eq!(view.active_id.as_deref(), Some("skill:/skills/git/refs/a.md"));
+        assert_eq!(
+            view.active_id.as_deref(),
+            Some("skill:/skills/git/refs/a.md")
+        );
         assert_eq!(
             view.holding,
-            vec!["root:/skills", "skill:/skills/git", "skill:/skills/git/refs"]
+            vec![
+                "root:/skills",
+                "skill:/skills/git",
+                "skill:/skills/git/refs"
+            ]
         );
-        let ids: Vec<&str> = view.items.iter().map(|item| item.node.id.as_str()).collect();
+        let ids: Vec<&str> = view
+            .items
+            .iter()
+            .map(|item| item.node.id.as_str())
+            .collect();
         assert_eq!(
             ids,
             vec![
