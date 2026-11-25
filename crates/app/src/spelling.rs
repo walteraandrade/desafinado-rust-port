@@ -724,9 +724,18 @@ impl EditorPane {
 
 /// The text a mark covers; empty when an edit has moved the text out from under it.
 fn words_in(text: &gpui_kit::base::input::Rope, range: &Range<usize>) -> String {
+    text_in(text, range).unwrap_or_default()
+}
+
+/// The text in `range`, or `None` when the range is not in the text. Ropey's `try_slice`
+/// still panics on an end past the text, so the bounds are checked here first.
+pub(crate) fn text_in(text: &gpui_kit::base::input::Rope, range: &Range<usize>) -> Option<String> {
+    if range.start > range.end || range.end > text.len() {
+        return None;
+    }
     text.try_slice(range.clone())
+        .ok()
         .map(|slice| slice.to_string())
-        .unwrap_or_default()
 }
 
 fn add_to_wordbook(word: &str, cx: &mut Context<EditorPane>) {
@@ -776,8 +785,18 @@ fn save_wordbook(save: u64, file: &Path, text: &str) -> std::io::Result<()> {
 mod tests {
     use super::{
         BlockKind, Checked, Issue, IssueKind, MenuChoice, Mutex, check_document, checkable,
-        choice_label, choices,
+        choice_label, choices, text_in,
     };
+
+    #[test]
+    fn a_mark_past_the_end_of_the_text_covers_nothing_instead_of_panicking() {
+        let text = gpui_kit::base::input::Rope::from("Hans Lippershey");
+        assert_eq!(text_in(&text, &(5..15)).as_deref(), Some("Lippershey"));
+        assert_eq!(text_in(&text, &(5..20)), None);
+        assert_eq!(text_in(&text, &(16..20)), None);
+        let (start, end) = (9, 5);
+        assert_eq!(text_in(&text, &(start..end)), None);
+    }
 
     fn issue(kind: IssueKind, replacements: &[&str]) -> Issue {
         Issue {

@@ -1863,6 +1863,7 @@ impl Workspace {
         self.settle_before("", cx);
         self.saves.document += 1;
         self.session = None;
+        self.forget_last_file();
         self.last_text = String::new();
         self.pane
             .update(cx, |pane, cx| pane.replace_text("", window, cx));
@@ -1873,6 +1874,14 @@ impl Workspace {
         self.announce("", cx);
         self.notify("New Document", cx);
         self.watch();
+    }
+
+    /// An Untitled Document comes back after a restart from its unsaved text, which a remembered
+    /// file would shadow. Synchronous like `save_last_file` in `announce`, so a file opened
+    /// right after cannot have its record removed by a late clear.
+    fn forget_last_file(&mut self) {
+        self.remembered = None;
+        clear_last_file(&self.services.user_data);
     }
 
     fn open_document(&mut self, _: &OpenDocument, window: &mut Window, cx: &mut Context<Self>) {
