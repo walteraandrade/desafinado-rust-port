@@ -730,7 +730,13 @@ impl LibraryPanel {
             .filter(|index| view.items[*index].node.kind == TreeKind::Skill)
     }
 
-    fn sync_list(&mut self, view: &Rc<TreeView>, tree_focused: bool) -> ListSync {
+    fn sync_list(
+        &mut self,
+        view: &Rc<TreeView>,
+        tree_focused: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> ListSync {
         let note_row = self.note_row_of(view, tree_focused);
         let same_view = self
             .list_of
@@ -741,23 +747,35 @@ impl LibraryPanel {
             let old = self.list_of.replace(Rc::clone(view));
             let old_items = old.as_ref().map_or(&[][..], |old| &old.items[..]);
             if let Some(change) = items_change(old_items, &view.items) {
+                let anchor = self.tree_list.logical_scroll_top();
+                let anchored = change.old.contains(&anchor.item_ix);
                 self.tree_list.splice(change.old, change.new_len);
                 if old_items.is_empty() {
                     self.tree_list.scroll_to(ListOffset::default());
+                } else if anchored && anchor.item_ix < view.items.len() {
+                    self.tree_list.scroll_to(anchor);
                 }
                 self.hint_rows();
                 sync.structural = true;
             }
-        } else if note_row != self.note_row {
-            for index in [self.note_row, note_row].into_iter().flatten() {
-                self.tree_list.remeasure_items(index..index + 1);
+        }
+        if note_row != self.note_row {
+            let stale = if sync.structural { None } else { self.note_row };
+            for index in [stale, note_row].into_iter().flatten() {
+                if index < view.items.len() {
+                    self.tree_list.remeasure_items(index..index + 1);
+                }
             }
             sync.remeasured = true;
         }
         self.note_row = note_row;
         let width = self.tree_list.viewport_bounds().size.width;
         if width > px(0.) && width != self.hinted_width {
+            let first = self.hinted_width == px(0.);
             self.hint_rows();
+            if first {
+                cx.on_next_frame(window, |_, _, cx| cx.notify());
+            }
         }
         sync
     }
@@ -1092,7 +1110,7 @@ impl Render for LibraryPanel {
         self.settle_focus(&view);
         let results = self.results();
         let tree_focused = self.tree_focus.is_focused(window);
-        let sync = self.sync_list(&view, tree_focused);
+        let sync = self.sync_list(&view, tree_focused, window, cx);
         self.resolve_reveal(&view, sync, window, cx);
         self.row_context = Some(Rc::new(RowContext { tree_focused, view }));
         let line = f32::from(ui::body_line_height(window));
