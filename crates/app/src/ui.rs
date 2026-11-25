@@ -1545,12 +1545,22 @@ pub fn spelling_layer(
     canvas(
         |_, _, _| (),
         move |_, (), window, cx| {
+            perf_span!("spelling.paint");
             let state = editor.read(cx);
             let mask = ContentMask {
                 bounds: state.input_bounds(),
             };
             window.with_content_mask(Some(mask), |window| {
-                for mark in &marks {
+                let view = state.visible_row_range().map(|rows| {
+                    use gpui_kit::base::input::RopeExt as _;
+                    let from = state.text().line_start_offset(rows.start.saturating_sub(1));
+                    from..state.text().line_start_offset(rows.end + 1).max(from)
+                });
+                let near: Box<dyn Iterator<Item = &SpellMark>> = match &view {
+                    Some(view) => Box::new(marks_near(&marks, view)),
+                    None => Box::new(marks.iter()),
+                };
+                for mark in near {
                     for (left, right, line) in mark_rows(state, &mark.range) {
                         let top = line.top() + line.size.height * 0.5 + px(SPELL_DOT_DROP);
                         for dot in dotted_line(left, right, top) {
@@ -1566,6 +1576,18 @@ pub fn spelling_layer(
     .left_0()
     .size_full()
     .into_any_element()
+}
+
+/// The marks that can reach `view`, from `marks` in Document order: the ones starting after it
+/// are cut by a search, the ones that end before it are skipped by comparing offsets only.
+fn marks_near<'a>(
+    marks: &'a [SpellMark],
+    view: &std::ops::Range<usize>,
+) -> impl Iterator<Item = &'a SpellMark> {
+    let until = marks.partition_point(|mark| mark.range.start < view.end);
+    marks[..until]
+        .iter()
+        .filter(|mark| mark.range.end >= view.start)
 }
 
 /// How far below the middle of a line the dots sit: under the letters, above the next line.
@@ -1709,7 +1731,9 @@ fn next_character(
 
 #[cfg(test)]
 mod tests {
-    use super::{CaretInk, CaretSpot, SPELL_DOT, caret_quads, dotted_line, word_spans};
+    use super::{
+        CaretInk, CaretSpot, SPELL_DOT, SpellMark, caret_quads, dotted_line, marks_near, word_spans,
+    };
     use super::{
         Enter, cascade_delay, column_share, delayed, dot_opacity, ease_in_out_sine, ease_out_expo,
         ease_out_quart, enter_offset, lead_of,
@@ -1892,5 +1916,24 @@ mod tests {
         assert_eq!(word_spans("could  of"), vec![0..5, 7..9]);
         assert_eq!(word_spans(" não "), vec![1..5]);
         assert!(word_spans("   ").is_empty());
+    }
+
+    #[test]
+    fn only_marks_reaching_the_view_are_painted() {
+        let mark = |range: std::ops::Range<usize>| SpellMark {
+            range,
+            color: gpui_kit::Hsla::default(),
+        };
+        let marks = vec![
+            mark(0..5),
+            mark(8..40),
+            mark(20..24),
+            mark(60..64),
+            mark(90..95),
+        ];
+        let near: Vec<_> = marks_near(&marks, &(18..70))
+            .map(|mark| mark.range.clone())
+            .collect();
+        assert_eq!(near, vec![8..40, 20..24, 60..64]);
     }
 }

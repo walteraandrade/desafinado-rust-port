@@ -76,6 +76,53 @@ pub fn merge_progress(
     found
 }
 
+/// What a chunk of a check added to the marks: the Blocks it finished and the issues found in
+/// them.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Delta {
+    /// Where the finished Blocks sit, in Document order, each text at every place it occurs.
+    pub blocks: Vec<Range<usize>>,
+    /// The issues found in them, in Document order.
+    pub issues: Vec<Issue>,
+}
+
+/// Applies `delta` to the marks shown, which are in Document order: the marks inside the
+/// finished Blocks give way to the issues found there, every other mark stays. Costs what the
+/// delta covers plus the move of the marks after it, not a pass over all of them. Returns the
+/// span of the Document whose marks changed, `None` when nothing did.
+pub fn apply_delta(shown: &mut Vec<Issue>, delta: Delta) -> Option<Range<usize>> {
+    let (first, last) = (delta.blocks.first()?, delta.blocks.last()?);
+    let window_start = shown.partition_point(|issue| issue.range.start < first.start);
+    let window_end = shown.partition_point(|issue| issue.range.start < last.end);
+    let mut next_block = 0;
+    let (stale, kept): (Vec<Issue>, Vec<Issue>) = shown[window_start..window_end]
+        .iter()
+        .cloned()
+        .partition(|issue| {
+            while delta.blocks[next_block].end < issue.range.start {
+                next_block += 1;
+            }
+            let block = &delta.blocks[next_block];
+            block.start <= issue.range.start && issue.range.end <= block.end
+        });
+    if stale.is_empty() && delta.issues.is_empty() {
+        return None;
+    }
+    let touched = stale
+        .iter()
+        .map(|issue| &issue.range)
+        .chain(delta.issues.iter().map(|issue| &issue.range))
+        .fold((usize::MAX, 0), |(from, to), range| {
+            (from.min(range.start), to.max(range.end))
+        });
+    let touched = touched.0..touched.1;
+    let mut window = kept;
+    window.extend(delta.issues);
+    window.sort_by_key(|issue| (issue.range.start, issue.range.end));
+    shown.splice(window_start..window_end, window);
+    Some(touched)
+}
+
 /// The issues of every Block, placed at the Block's offset in the Document.
 pub fn place(blocks: &[(usize, String)], checked: &Checked) -> Vec<Issue> {
     blocks
@@ -316,6 +363,48 @@ mod tests {
         let previous = vec![issue(2..4, IssueKind::Spelling)];
         let found = vec![issue(8..9, IssueKind::Spelling)];
         assert_eq!(merge_progress(&previous, &[], found.clone()), found);
+    }
+
+    #[test]
+    fn a_delta_replaces_the_marks_inside_finished_blocks_and_keeps_the_rest() {
+        let mut shown = vec![
+            issue(2..4, IssueKind::Spelling),
+            issue(12..14, IssueKind::Spelling),
+            issue(25..27, IssueKind::Spelling),
+            issue(40..44, IssueKind::Spelling),
+        ];
+        let delta = Delta {
+            blocks: vec![10..16, 20..30],
+            issues: vec![issue(22..24, IssueKind::Grammar)],
+        };
+        let touched = apply_delta(&mut shown, delta);
+        let ranges: Vec<_> = shown.iter().map(|i| i.range.clone()).collect();
+        assert_eq!(ranges, vec![2..4, 22..24, 40..44]);
+        assert_eq!(touched, Some(12..27));
+    }
+
+    #[test]
+    fn a_delta_that_changes_nothing_reports_nothing() {
+        let mut shown = vec![issue(2..4, IssueKind::Spelling)];
+        let delta = Delta {
+            blocks: std::iter::once(10..16).collect(),
+            issues: vec![],
+        };
+        assert_eq!(apply_delta(&mut shown, delta), None);
+        assert_eq!(shown.len(), 1);
+        assert_eq!(apply_delta(&mut shown, Delta::default()), None);
+    }
+
+    #[test]
+    fn a_mark_straddling_a_finished_block_is_kept() {
+        let mut shown = vec![issue(8..14, IssueKind::Grammar)];
+        let delta = Delta {
+            blocks: std::iter::once(10..16).collect(),
+            issues: vec![issue(11..13, IssueKind::Spelling)],
+        };
+        apply_delta(&mut shown, delta);
+        let ranges: Vec<_> = shown.iter().map(|i| i.range.clone()).collect();
+        assert_eq!(ranges, vec![8..14, 11..13]);
     }
 
     #[test]
