@@ -43,7 +43,7 @@ fn resize(wrapper: &mut TextWrapper, text: &Rope, width: Pixels, reuse: bool) ->
         &(0..text.len()),
         text,
         reuse,
-        &mut |line, width, _| {
+        &mut |line, width, _, _| {
             calls += 1;
             measured_wrap(line, width, indent, measure)
         },
@@ -220,7 +220,7 @@ fn native_cached_resize_matches_original_word_and_grapheme_breaks() {
                                 let mut original =
                                     TextWrapper::new(font.clone(), font_size, Some(px(width)));
                                 original.wrapping_indent = indent;
-                                original._update(&source, &(0..0), &source, &mut |line, width, _| {
+                                original._update(&source, &(0..0), &source, &mut |line, width, _, _| {
                                     measured_wrap_boundaries(line, width, indent, measure)
                                 });
                                 assert_eq!(

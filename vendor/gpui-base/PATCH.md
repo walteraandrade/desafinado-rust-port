@@ -10,7 +10,7 @@ diff -ru ~/.cargo/registry/src/*/gpui-base-0.9.1/src vendor/gpui-base/src
 
 ## What changed
 
-Four changes. The first is in `src/text`:
+Five changes. The first is in `src/text`:
 
 - **Reading view options** on `TextView` (`text/text_view.rs`, `text/state.rs`, `text/document.rs`), used by `crates/app/src/reading_view.rs`:
   - `lazy_measure(true)`: a scrollable view measures only the blocks it shows. The list is built without `measure_all` and `render_root` gives every block an estimated height (`estimated_block_height`), so the scrollbar thumb settles as blocks are measured instead of being exact from the first frame. Without it the first frame lays out the whole document.
@@ -35,6 +35,8 @@ The other three are in `src/input`:
   - `largest_fitting` starts at a guess and gallops away from it, so a right guess costs two shapings (`k` fits, `k + 1` does not) and the answer is always bracketed by two measured prefixes. The guess is the previous row's width per byte, carried across lines in `update_wrapped` (`measured_wrap_hinted`); a wrong hint changes which prefixes are shaped, never the breaks. The guess is capped at twice the last row (at most 1 KB) plus 16 bytes, so a hint from zero-width text costs a bounded number of shapings, not a line's length.
   - It looks at word breaks inside a 256-grapheme window first and falls back to graphemes when every word in the window fits or the first word does not, as before. For a measure that grows with the prefix it returns what the old search returned; `text_wrapper/reference.rs` keeps the old search and `text_wrapper/fast_search_tests.rs` compares them, counts shapings per row and checks `valid_widths`, bounds the cost of bad hints and compares on the real text system (prose with tabs, no `fi`/`ff`/`fl` ligatures).
   - Shapings per row of prose go from about 15 to 2 or 3. A measure that is not monotone in the prefix (a ligature that shrinks a width) may pick a different, equally fitting break than before.
+
+- **Rewrap only from the edit**: `display_map/text_wrapper.rs`: `rewrap_edited` and `measured_wrap_resumable`. An edit inside one line keeps the old breaks that end at least 32 bytes before it, restarts at the last of them, and stops at the first new break that lands on an old break (shifted by the edit's length change), reusing the old breaks after it. The result equals wrapping the whole line; typing in a 55 KB paragraph shaped about 400 rows per key before and now shapes a few. Lines with inline metrics, `WrappingIndent::None` and multi-line edits take the full path. Tests: `text_wrapper/incremental_tests.rs`.
 
 Tests for inlays and zones are in `inlays.rs`, `text_wrapper.rs`, `inline_line.rs` and at the end of `base/element.rs` (through `InputState` in a test window). The `gpui-base` CI job runs the crate's whole library suite and checks its format. From this folder:
 

@@ -5,7 +5,7 @@ use super::*;
 use std::cell::Cell;
 
 /// Prefix widths that are not a plain sum: pair kerning, wide CJK and emoji, tabs.
-fn kerned(text: &str) -> Pixels {
+pub(super) fn kerned(text: &str) -> Pixels {
     let mut total = 0.;
     let mut previous = 0u32;
     for grapheme in text.graphemes(true) {
@@ -31,7 +31,7 @@ fn kerned(text: &str) -> Pixels {
 const ENGLISH: &str = "The writer opens a draft and reads each paragraph slowly while the editor keeps every change as a tracked suggestion that waits for review. ";
 const PORTUGUESE: &str = "A coleção de músicas baianas não cabe numa só tarde; ação, emoção e informação convivem com a canção. ";
 
-fn corpus() -> Vec<String> {
+pub(super) fn corpus() -> Vec<String> {
     vec![
         String::new(),
         "a".into(),
