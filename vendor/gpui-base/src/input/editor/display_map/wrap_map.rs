@@ -163,6 +163,32 @@ impl WrapMap {
         self.wrapper.prepare_if_need(text, cx)
     }
 
+    /// See [`TextWrapper::set_focus`].
+    pub(super) fn set_focus(&mut self, focus: Vec<Range<usize>>) {
+        self.wrapper.set_focus(focus);
+    }
+
+    /// See [`TextWrapper::set_progressive_min_bytes`].
+    #[cfg(test)]
+    pub(super) fn set_progressive_min_bytes(&mut self, bytes: usize) {
+        self.wrapper.set_progressive_min_bytes(bytes);
+    }
+
+    /// See [`TextWrapper::has_estimated`].
+    pub(super) fn has_estimated(&self) -> bool {
+        self.wrapper.has_estimated()
+    }
+
+    /// See [`TextWrapper::refine_lines`].
+    pub(super) fn refine_lines(
+        &mut self,
+        lines: Range<usize>,
+        deadline: Option<std::time::Instant>,
+        cx: &mut App,
+    ) -> Option<Range<usize>> {
+        self.wrapper.refine_lines(lines, deadline, cx)
+    }
+
     /// Initialize with text
     pub(super) fn set_text(&mut self, text: &Rope, cx: &mut App) {
         self.wrapper.set_default_text(text);

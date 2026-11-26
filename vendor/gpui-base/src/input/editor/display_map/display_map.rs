@@ -31,6 +31,8 @@ pub struct DisplayMap {
     fold_map: FoldMap,
     /// Sorted by offset.
     inlays: std::rc::Rc<[super::Inlay]>,
+    #[cfg(test)]
+    rebuilds: std::cell::Cell<usize>,
 }
 
 impl DisplayMap {
@@ -39,6 +41,8 @@ impl DisplayMap {
             wrap_map: WrapMap::new(font, font_size, wrap_width),
             fold_map: FoldMap::new(),
             inlays: std::rc::Rc::from([]),
+            #[cfg(test)]
+            rebuilds: std::cell::Cell::new(0),
         }
     }
 
@@ -317,6 +321,63 @@ impl DisplayMap {
         }
     }
 
+    /// Whether some lines still have estimated wrap rows, which `refine_lines` replaces with
+    /// the exact ones. A large Document opens that way.
+    pub fn has_estimated_rows(&self) -> bool {
+        self.wrap_map.has_estimated()
+    }
+
+    /// Makes every full wrapping pass exact for documents shorter than `bytes`.
+    #[cfg(test)]
+    pub(crate) fn set_progressive_min_bytes(&mut self, bytes: usize) {
+        self.wrap_map.set_progressive_min_bytes(bytes);
+    }
+
+    /// Sets the buffer lines that the next full wrapping pass wraps exactly.
+    pub fn set_wrap_focus(&mut self, focus: Vec<Range<usize>>) {
+        self.wrap_map.set_focus(focus);
+    }
+
+    /// Wraps the estimated lines in `lines` exactly, until `deadline` when given. Returns the
+    /// buffer lines it wrapped; their rows and the rows after them changed.
+    pub fn refine_lines(
+        &mut self,
+        lines: Range<usize>,
+        deadline: Option<std::time::Instant>,
+        cx: &mut App,
+    ) -> Option<Range<usize>> {
+        self.refine_ranges(&[lines], deadline, cx)
+    }
+
+    /// `refine_lines` for several ranges, with one rebuild of the fold projection. Returns the
+    /// buffer lines it went through, as one range.
+    pub fn refine_ranges(
+        &mut self,
+        ranges: &[Range<usize>],
+        deadline: Option<std::time::Instant>,
+        cx: &mut App,
+    ) -> Option<Range<usize>> {
+        let mut covered: Option<Range<usize>> = None;
+        for lines in ranges {
+            if let Some(done) = self.wrap_map.refine_lines(lines.clone(), deadline, cx) {
+                covered = Some(covered.map_or(done.clone(), |covered| {
+                    covered.start.min(done.start)..covered.end.max(done.end)
+                }));
+            }
+        }
+        if covered.is_some() {
+            self.fold_map.mark_dirty();
+            self.rebuild_fold_projection();
+        }
+        covered
+    }
+
+    /// How many times the fold projection was rebuilt.
+    #[cfg(test)]
+    pub(crate) fn fold_rebuilds(&self) -> usize {
+        self.rebuilds.get()
+    }
+
     /// Initialize with text
     pub fn set_text(&mut self, text: &Rope, cx: &mut App) {
         self.wrap_map.set_text(text, cx);
@@ -328,6 +389,8 @@ impl DisplayMap {
     /// Rebuild fold projection after wrap_map or fold state changes
     /// Only rebuilds if there are actually folded ranges
     fn rebuild_fold_projection(&mut self) {
+        #[cfg(test)]
+        self.rebuilds.set(self.rebuilds.get() + 1);
         if !self.fold_map.folded_ranges().is_empty() {
             self.fold_map.rebuild(&self.wrap_map);
         } else {

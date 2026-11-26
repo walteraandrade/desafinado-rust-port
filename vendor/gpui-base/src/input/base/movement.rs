@@ -265,6 +265,13 @@ impl<M: InputModeKind> InputBaseState<M> {
             return;
         }
         self.pause_blink_cursor(cx);
+        if let Some(line_height) = self.last_layout.as_ref().map(|layout| layout.line_height) {
+            self.refine_around_cursors(
+                move_lines.unsigned_abs().saturating_add(8),
+                line_height,
+                cx,
+            );
+        }
 
         let direction = if move_lines < 0 {
             MoveDirection::Up
