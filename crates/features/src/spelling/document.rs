@@ -197,6 +197,25 @@ pub fn shown(
         .collect()
 }
 
+/// The issues to show that reach `window`, with the same rules as [`shown`]. The words of an
+/// issue are read only when the issue reaches the window. `issues` are in Document order.
+pub fn shown_in(
+    issues: &[Issue],
+    window: &Range<usize>,
+    word_of: impl Fn(&Range<usize>) -> String,
+    wordbook: &Wordbook,
+    ignored: &HashSet<String>,
+    covered: &[Range<usize>],
+) -> Vec<Issue> {
+    let until = issues.partition_point(|issue| issue.range.start < window.end);
+    let near: Vec<Issue> = issues[..until]
+        .iter()
+        .filter(|issue| issue.range.end >= window.start)
+        .cloned()
+        .collect();
+    shown(&near, word_of, wordbook, ignored, covered)
+}
+
 /// The issue under `offset`, the shortest when several hold it.
 pub fn issue_at(issues: &[Issue], offset: usize) -> Option<usize> {
     issues
@@ -310,6 +329,52 @@ mod tests {
         list.iter()
             .map(|(from, text)| (*from, (*text).to_string()))
             .collect()
+    }
+
+    #[test]
+    fn shown_in_matches_shown_for_the_issues_reaching_the_window() {
+        let text = "aaa bbb ccc ddd eee fff";
+        let issues = vec![
+            issue(0..3, IssueKind::Spelling),
+            issue(4..7, IssueKind::Spelling),
+            issue(8..11, IssueKind::Spelling),
+            issue(12..15, IssueKind::Spelling),
+            issue(20..23, IssueKind::Spelling),
+        ];
+        let wordbook = Wordbook::default().with("ccc");
+        let ignored = HashSet::from(["ddd".to_string()]);
+        let window = 5..21;
+        let in_window = shown_in(&issues, &window, word_in(text), &wordbook, &ignored, &[]);
+        let expected: Vec<_> = shown(&issues, word_in(text), &wordbook, &ignored, &[])
+            .into_iter()
+            .filter(|issue| issue.range.end >= window.start && issue.range.start < window.end)
+            .collect();
+        assert_eq!(in_window, expected);
+        assert_eq!(in_window.len(), 2);
+    }
+
+    #[test]
+    fn shown_in_reads_words_only_for_issues_in_the_window() {
+        let text = "aaa bbb ccc";
+        let issues = vec![
+            issue(0..3, IssueKind::Spelling),
+            issue(4..7, IssueKind::Spelling),
+            issue(8..11, IssueKind::Spelling),
+        ];
+        let reads = std::cell::Cell::new(0);
+        let word_of = |range: &Range<usize>| {
+            reads.set(reads.get() + 1);
+            text[range.clone()].to_string()
+        };
+        shown_in(
+            &issues,
+            &(4..7),
+            word_of,
+            &Wordbook::default(),
+            &HashSet::new(),
+            &[],
+        );
+        assert_eq!(reads.get(), 1);
     }
 
     #[test]

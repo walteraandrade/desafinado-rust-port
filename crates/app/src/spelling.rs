@@ -58,14 +58,14 @@ const MENU_KEY: &str = "\u{0}spell";
 static SPELLER: LazyLock<Option<Mutex<Speller>>> =
     LazyLock::new(|| Speller::new().log_err().map(Mutex::new));
 static SPELLER_FAILURE_SHOWN: AtomicBool = AtomicBool::new(false);
-static EMPTY_WORDBOOK: LazyLock<Wordbook> = LazyLock::new(Wordbook::default);
+static EMPTY_WORDBOOK: LazyLock<Arc<Wordbook>> = LazyLock::new(Arc::default);
 /// The latest save of the dictionary of added words, and the lock that keeps saves in order.
 static WORDBOOK_SAVE: AtomicU64 = AtomicU64::new(0);
 static WORDBOOK_WRITE: Mutex<()> = Mutex::new(());
 
 /// The writer's own words, shared by every window, and the file they are saved in.
 pub struct WordbookChoice {
-    pub wordbook: Wordbook,
+    pub wordbook: Arc<Wordbook>,
     pub file: PathBuf,
 }
 
@@ -99,7 +99,10 @@ pub fn init(user_data: &Path, cx: &mut App) {
             Wordbook::default()
         }
     };
-    cx.set_global(WordbookChoice { wordbook, file });
+    cx.set_global(WordbookChoice {
+        wordbook: Arc::new(wordbook),
+        file,
+    });
     cx.bind_keys([
         KeyBinding::new("ctrl-.", SpellMenuCtrlPeriod, Some("EditorPane > Input")),
         KeyBinding::new("alt-enter", SpellMenuAltEnter, Some("EditorPane > Input")),
@@ -144,9 +147,11 @@ pub fn choose(
     move || write_atomic_unconditionally(&file, &text)
 }
 
-fn wordbook(cx: &App) -> &Wordbook {
-    cx.try_global::<WordbookChoice>()
-        .map_or(&*EMPTY_WORDBOOK, |choice| &choice.wordbook)
+fn wordbook(cx: &App) -> Arc<Wordbook> {
+    cx.try_global::<WordbookChoice>().map_or_else(
+        || Arc::clone(&EMPTY_WORDBOOK),
+        |choice| Arc::clone(&choice.wordbook),
+    )
 }
 
 /// The spell checker's state in one editor.
@@ -156,8 +161,8 @@ pub struct SpellState {
     generation: Arc<AtomicU64>,
     /// Where a running check works first: the line on screen, kept up to date by each render.
     anchor: Arc<AtomicUsize>,
-    issues: Vec<Issue>,
-    ignored: HashSet<String>,
+    issues: Arc<Vec<Issue>>,
+    ignored: Arc<HashSet<String>>,
     hovered: Option<Range<usize>>,
     menu: Option<SpellMenu>,
     pub(crate) focus: FocusHandle,
@@ -190,8 +195,8 @@ impl SpellState {
             checked: Arc::new(Mutex::new(Checked::new())),
             generation: Arc::new(AtomicU64::new(0)),
             anchor: Arc::new(AtomicUsize::new(0)),
-            issues: Vec::new(),
-            ignored: HashSet::new(),
+            issues: Arc::new(Vec::new()),
+            ignored: Arc::new(HashSet::new()),
             hovered: None,
             menu: None,
             focus: cx.focus_handle(),
@@ -352,15 +357,16 @@ impl EditorPane {
                     if progress.pending.is_empty() {
                         perf_span!("spelling.complete");
                     }
-                    self.spelling.issues = document::merge_progress(
+                    self.spelling.issues = Arc::new(document::merge_progress(
                         &self.spelling.issues,
                         &progress.pending,
                         progress.issues,
-                    );
+                    ));
                     redraw = true;
                 }
                 Update::Delta(delta) => {
-                    let touched = document::apply_delta(&mut self.spelling.issues, delta);
+                    let touched =
+                        document::apply_delta(Arc::make_mut(&mut self.spelling.issues), delta);
                     redraw |= touched.is_some_and(|span| {
                         view.as_ref()
                             .is_none_or(|view| span.start < view.end && view.start < span.end)
@@ -398,47 +404,83 @@ impl EditorPane {
 
     /// Moves the marks with an edit; the ones it touched wait for the next check.
     pub(crate) fn map_spelling(&mut self, start: usize, old_end: usize, new_end: usize) {
-        self.spelling.issues = document::map_issues(&self.spelling.issues, start, old_end, new_end);
+        self.spelling.issues = Arc::new(document::map_issues(
+            &self.spelling.issues,
+            start,
+            old_end,
+            new_end,
+        ));
         self.spelling.menu = None;
         self.spelling.dismissed = None;
     }
 
     pub(crate) fn clear_spelling(&mut self) {
-        self.spelling.issues.clear();
+        self.spelling.issues = Arc::new(Vec::new());
         self.spelling.menu = None;
         self.spelling.hovered = None;
     }
 
-    /// The marks to show: not on the writer's own words or ignored ones, nor under a Suggestion.
-    fn shown_issues(&self, cx: &App) -> Vec<Issue> {
-        let covered: Vec<Range<usize>> = self
-            .suggestions
+    fn covered(&self) -> Vec<Range<usize>> {
+        self.suggestions
             .items
             .iter()
             .map(|item| item.from..item.to)
-            .collect();
+            .collect()
+    }
+
+    /// The marks to show: not on the writer's own words or ignored ones, nor under a Suggestion.
+    fn shown_issues(&self, cx: &App) -> Vec<Issue> {
         let text = self.editor.read(cx).text();
         document::shown(
             &self.spelling.issues,
             |range| words_in(text, range),
-            wordbook(cx),
+            &wordbook(cx),
             &self.spelling.ignored,
-            &covered,
+            &self.covered(),
         )
     }
 
-    pub(crate) fn spell_marks(&self, roles: Roles, cx: &App) -> Vec<ui::SpellMark> {
-        perf_span!("spelling.spell_marks");
+    /// The marks to show that reach `window`, the same ones as [`Self::shown_issues`] keeps.
+    fn shown_issues_in(&self, window: &Range<usize>, cx: &App) -> Vec<Issue> {
+        let text = self.editor.read(cx).text();
+        document::shown_in(
+            &self.spelling.issues,
+            window,
+            |range| words_in(text, range),
+            &wordbook(cx),
+            &self.spelling.ignored,
+            &self.covered(),
+        )
+    }
+
+    /// Builds the marks lazily, at paint, for the rows in view: what a frame costs follows the
+    /// screen, not the number of marks in the Document.
+    pub(crate) fn spell_marks(&self, roles: Roles, cx: &App) -> ui::MarksIn {
         let open = self
             .spelling
             .menu
             .as_ref()
             .map(|menu| menu.issue.range.clone());
-        self.shown_issues(cx)
+        let hovered = self.spelling.hovered.clone();
+        let issues = Arc::clone(&self.spelling.issues);
+        let ignored = Arc::clone(&self.spelling.ignored);
+        let wordbook = wordbook(cx);
+        let covered = self.covered();
+        std::rc::Rc::new(move |state, window| {
+            perf_span!("spelling.spell_marks");
+            let text = state.text();
+            document::shown_in(
+                &issues,
+                &window,
+                |range| words_in(text, range),
+                &wordbook,
+                &ignored,
+                &covered,
+            )
             .into_iter()
             .map(|issue| {
-                let lit = self.spelling.hovered.as_ref() == Some(&issue.range)
-                    || open.as_ref() == Some(&issue.range);
+                let lit =
+                    hovered.as_ref() == Some(&issue.range) || open.as_ref() == Some(&issue.range);
                 let color = match (lit, issue.kind) {
                     (false, _) => roles.faint,
                     (true, IssueKind::Spelling) => roles.danger,
@@ -450,6 +492,7 @@ impl EditorPane {
                 }
             })
             .collect()
+        })
     }
 
     fn issue_under(&self, position: Point<Pixels>, cx: &App) -> Option<Issue> {
@@ -458,7 +501,11 @@ impl EditorPane {
         }
         let state = self.editor.read(cx);
         let column = self.content_left()..self.content_right();
-        self.shown_issues(cx)
+        let candidates = self.view_bytes(cx).map_or_else(
+            || self.shown_issues(cx),
+            |view| self.shown_issues_in(&view, cx),
+        );
+        candidates
             .into_iter()
             .filter(|issue| {
                 let (Some(from), Some(to)) = (
@@ -736,8 +783,7 @@ impl EditorPane {
             MenuChoice::Replace(text) => self.edit_range(menu.issue.range, &text, window, cx),
             MenuChoice::AddToDictionary => add_to_wordbook(&words, cx),
             MenuChoice::Ignore => {
-                self.spelling
-                    .ignored
+                Arc::make_mut(&mut self.spelling.ignored)
                     .insert(document::ignore_key(&menu.issue, &words));
             }
         }
@@ -867,7 +913,7 @@ fn add_to_wordbook(word: &str, cx: &mut Context<EditorPane>) {
     let Some(choice) = cx.try_global::<WordbookChoice>() else {
         return;
     };
-    let wordbook = choice.wordbook.with(word);
+    let wordbook = Arc::new(choice.wordbook.with(word));
     let file = choice.file.clone();
     let text = wordbook.to_text();
     cx.set_global(WordbookChoice {
