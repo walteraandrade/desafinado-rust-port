@@ -24,6 +24,7 @@ use desafinado_features::spelling::{
     document::{self, Checked, WORDBOOK_FILE_NAME, Wordbook},
     pass::{self, Outcome, Plan, Update},
     settings::{MenuKey, Press, SPELLING_FILE_NAME, SpellSettings},
+    worker::Worker,
 };
 use desafinado_platform::files::write_atomic_unconditionally;
 use futures::StreamExt as _;
@@ -57,6 +58,12 @@ const MENU_KEY: &str = "\u{0}spell";
 
 static SPELLER: LazyLock<Option<Mutex<Speller>>> =
     LazyLock::new(|| Speller::new().log_err().map(Mutex::new));
+/// Every check runs on this one thread; see [`Worker`].
+static WORKER: LazyLock<Option<Worker>> =
+    LazyLock::new(|| Worker::spawn("spelling", warm_up).log_err());
+/// A made-up word that no English word is within three edits of, so checking it builds the
+/// widest fuzzy-search table Harper uses before a real word needs it.
+const WARM_UP_WORD: &str = "Qzxqzxqzxqzx";
 static SPELLER_FAILURE_SHOWN: AtomicBool = AtomicBool::new(false);
 static EMPTY_WORDBOOK: LazyLock<Arc<Wordbook>> = LazyLock::new(Arc::default);
 /// The latest save of the dictionary of added words, and the lock that keeps saves in order.
@@ -124,6 +131,37 @@ pub fn preload(cx: &App) {
         LazyLock::force(&SPELLER);
     })
     .detach();
+}
+
+fn warm_up() {
+    perf_span!("spelling.warm_up");
+    if let Some(speller) = SPELLER.as_ref() {
+        speller
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .check(WARM_UP_WORD);
+    }
+}
+
+/// Runs `job` on the spelling thread, or on the pool when that thread could not start. The
+/// task gives `None` when the job was dropped without running.
+fn on_spelling_thread<T: Send + 'static>(
+    executor: &BackgroundExecutor,
+    job: impl FnOnce() -> T + Send + 'static,
+) -> Task<Option<T>> {
+    let (sender, receiver) = futures::channel::oneshot::channel();
+    let job = move || {
+        if sender.send(job()).is_err() {
+            log::debug!("A spell check finished after its result was dropped");
+        }
+    };
+    match WORKER.as_ref() {
+        Some(worker) => {
+            worker.submit(Box::new(job)).log_err();
+        }
+        None => executor.spawn(async move { job() }).detach(),
+    }
+    executor.spawn(async move { receiver.await.ok() })
 }
 
 pub fn settings(cx: &App) -> SpellSettings {
@@ -298,7 +336,7 @@ impl EditorPane {
                 return;
             };
             let (sender, mut receiver) = futures::channel::mpsc::unbounded::<Update>();
-            let work = cx.background_spawn(async move {
+            let work = on_spelling_thread(cx.background_executor(), move || {
                 let live = || latest.load(Ordering::SeqCst) == generation && !sender.is_closed();
                 let publish = |update| {
                     sender.unbounded_send(update).log_warn();
@@ -327,7 +365,7 @@ impl EditorPane {
                     .log_err();
                 next = receiver.next().await;
             }
-            if matches!(work.await, Finished::NoSpeller) {
+            if matches!(work.await, Some(Finished::NoSpeller)) {
                 this.update(cx, |_, cx| {
                     if !SPELLER_FAILURE_SHOWN.swap(true, Ordering::Relaxed) {
                         cx.emit(PaneEvent::Toast {

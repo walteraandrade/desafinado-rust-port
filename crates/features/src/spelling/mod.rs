@@ -8,6 +8,7 @@ pub mod pass;
 mod portuguese;
 pub mod settings;
 mod words;
+pub mod worker;
 
 use std::ops::Range;
 
