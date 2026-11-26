@@ -1600,7 +1600,7 @@ fn bytes_on_screen(
     screen: Bounds<Pixels>,
 ) -> std::ops::Range<usize> {
     let first_in_view = first_where(&within, |offset| {
-        !row_of(offset).is_some_and(|(_, bottom)| bottom < screen.top())
+        row_of(offset).is_none_or(|(_, bottom)| bottom >= screen.top())
     });
     let first_below = first_where(&within, |offset| {
         row_of(offset).is_some_and(|(top, _)| top > screen.bottom())
