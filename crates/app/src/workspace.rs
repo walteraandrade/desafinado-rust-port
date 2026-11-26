@@ -3270,7 +3270,7 @@ fn open_start(launch: Option<PathBuf>, user_data: &Path) -> Start {
         .is_none()
         .then(|| load_unsaved(db.as_deref(), SCRATCH_KEY).map(|unsaved| unsaved.text))
         .flatten();
-    let continues_untitled = untitled_unsaved.is_some();
+    let continues_untitled = untitled_unsaved.is_some() && last_file.is_none();
     let initial = reopened
         .text
         .clone()
