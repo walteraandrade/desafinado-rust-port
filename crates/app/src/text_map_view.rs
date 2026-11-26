@@ -8,7 +8,7 @@ use desafinado_core::{
     suggestions::{RefineState, Suggestion, active_suggestion, suggestion_anchor},
     text_map::{
         MapLine, MapMark, MarkTone, TextMap, View, fill_rows, line_shapes, locate, map_lines,
-        mark_near, off_screen, reveal_first_row, scroll_row_for, step_in_view, text_map,
+        mark_near, off_screen, reveal_first_row, scroll_row_for, step_in_view, text_map_bars,
     },
 };
 use gpui_kit::{
@@ -40,6 +40,8 @@ pub(crate) struct TextMapState {
     /// Bumped on every edit, so the lines are measured again only after the text changed.
     revision: u64,
     lines: RefCell<Option<MeasuredLines>>,
+    /// The bars of the map, kept while the lines, the marks and the height stay the same.
+    bars: RefCell<Option<CachedBars>>,
     /// A drag that started on the map, with the map it started on and its top edge.
     drag: Option<(Rc<MapClick>, Pixels)>,
     /// Where wheel turns over the map have scrolled to before the editor applied them.
@@ -52,6 +54,13 @@ pub(crate) struct TextMapState {
     /// The lines of the text at a revision, measured apart from the editor once the typing
     /// stopped; only their rows are left to read from the editor.
     shapes: Option<(u64, Vec<MapLine>)>,
+}
+
+struct CachedBars {
+    lines: Rc<[MapLine]>,
+    marks: Rc<[MapMark]>,
+    height: f32,
+    map: TextMap,
 }
 
 /// How long the map keeps the lines measured on estimated rows, before measuring again on the
@@ -299,6 +308,26 @@ impl EditorPane {
         (left + px(MAP_WIDTH + MAP_INSET) <= pane.size.width).then_some(left)
     }
 
+    /// The map of the frame. Its bars read every line, so they are kept until the lines, the
+    /// marks or the height change; scrolling only moves the band.
+    fn map_for(&self, frame: &MapFrame, room: f32) -> TextMap {
+        let mut cache = self.text_map.bars.borrow_mut();
+        let kept = cache.take().filter(|kept| {
+            Rc::ptr_eq(&kept.lines, &frame.lines)
+                && kept.height == room
+                && *kept.marks == *frame.marks
+        });
+        let kept = kept.unwrap_or_else(|| CachedBars {
+            lines: Rc::clone(&frame.lines),
+            marks: Rc::clone(&frame.marks),
+            height: room,
+            map: text_map_bars(&frame.lines, &frame.marks, room),
+        });
+        let map = kept.map.clone().with_view(frame.view);
+        *cache = Some(kept);
+        map
+    }
+
     fn render_text_map(
         &self,
         frame: &MapFrame,
@@ -308,7 +337,7 @@ impl EditorPane {
         let left = self.map_left()?;
         let pane = self.pane_bounds();
         let room = f32::from(pane.size.height) - 2. * MAP_INSET;
-        let map = text_map(&frame.lines, &frame.marks, frame.view, room);
+        let map = self.map_for(frame, room);
         let bars: Vec<Div> = map
             .bars
             .iter()

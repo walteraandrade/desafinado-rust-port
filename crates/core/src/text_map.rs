@@ -164,7 +164,25 @@ fn columns_of(lines: &[MapLine]) -> usize {
         .max(1)
 }
 
+/// The map for the rows on screen in `view`. The bars do not depend on the view, so a caller
+/// that draws every frame can keep [`text_map_bars`] while the lines, marks and height hold, and
+/// only move the band with [`TextMap::with_view`].
 pub fn text_map(lines: &[MapLine], marks: &[MapMark], view: View, height: f32) -> TextMap {
+    text_map_bars(lines, marks, height).with_view(view)
+}
+
+impl TextMap {
+    /// This map with its band on the rows of `view`.
+    #[must_use]
+    pub fn with_view(mut self, view: View) -> Self {
+        self.band_top = (view.first_row.max(0.) * self.pitch).min(self.height);
+        self.band_height = (view.rows * self.pitch).min(self.height - self.band_top);
+        self
+    }
+}
+
+/// The bars of the map, with the band at the top; the part that reads every line.
+pub fn text_map_bars(lines: &[MapLine], marks: &[MapMark], height: f32) -> TextMap {
     let total = total_rows(lines).max(1);
     let pitch = (height / total as f32).min(MAX_PITCH);
     let bar_height = (pitch * 0.5).clamp(1., 2.);
@@ -205,11 +223,10 @@ pub fn text_map(lines: &[MapLine], marks: &[MapMark], view: View, height: f32) -
             }
         }
     }
-    let band_top = (view.first_row.max(0.) * pitch).min(total as f32 * pitch);
     TextMap {
         bars,
-        band_top,
-        band_height: (view.rows * pitch).min(total as f32 * pitch - band_top),
+        band_top: 0.,
+        band_height: 0.,
         height: total as f32 * pitch,
         pitch,
     }
@@ -324,6 +341,33 @@ mod tests {
         assert!((map.pitch - 0.4).abs() < 1e-6);
         assert!(map.height <= 400.);
         assert!(map.bars.len() <= 400, "rows that share a pixel share a bar");
+    }
+
+    #[test]
+    fn moving_the_view_moves_only_the_band() {
+        let lines = map_lines(&vec!["word"; 300].join("\n"), one_row);
+        let marks = [mark(7), mark(120)];
+        let bars = text_map_bars(&lines, &marks, 400.);
+        for first_row in [0., 3.5, 120., 290., 400.] {
+            let view = View {
+                first_row,
+                rows: 40.,
+            };
+            assert_eq!(
+                bars.clone().with_view(view),
+                text_map(&lines, &marks, view, 400.)
+            );
+        }
+        let low = bars.clone().with_view(View {
+            first_row: 10.,
+            rows: 40.,
+        });
+        let high = bars.with_view(View {
+            first_row: 100.,
+            rows: 40.,
+        });
+        assert_eq!(low.bars, high.bars);
+        assert!(high.band_top > low.band_top);
     }
 
     #[test]
