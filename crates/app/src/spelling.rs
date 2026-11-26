@@ -149,15 +149,17 @@ fn lock(speller: &Mutex<Speller>) -> std::sync::MutexGuard<'_, Speller> {
 }
 
 /// Checks a chunk of Blocks on the spelling thread, or here when that thread could not start.
-/// A chunk whose check failed comes back with no issues; the failure is logged.
+/// A chunk whose check failed counts as checked with no issues, so it is not tried again on
+/// every pass; the failure is logged.
 fn check_chunk(speller: &'static Mutex<Speller>, chunk: Vec<String>) -> Vec<(String, Vec<Issue>)> {
-    match WORKER.as_ref() {
-        Some(worker) => worker
-            .run(move || pass::check_chunk(&mut lock(speller), chunk))
-            .log_err()
-            .unwrap_or_default(),
-        None => pass::check_chunk(&mut lock(speller), chunk),
-    }
+    let Some(worker) = WORKER.as_ref() else {
+        return pass::check_chunk(&mut lock(speller), chunk);
+    };
+    let texts = chunk.clone();
+    worker
+        .run(move || pass::check_chunk(&mut lock(speller), chunk))
+        .log_err()
+        .unwrap_or_else(|| texts.into_iter().map(|text| (text, Vec::new())).collect())
 }
 
 pub fn settings(cx: &App) -> SpellSettings {

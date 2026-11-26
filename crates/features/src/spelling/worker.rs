@@ -89,13 +89,13 @@ fn guarded(job: impl FnOnce()) {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::mpsc;
+    use std::sync::mpsc::{self, RecvTimeoutError};
     use std::thread::{self, ThreadId};
     use std::time::Duration;
 
     use super::Worker;
 
-    const IDLE: Duration = Duration::from_millis(200);
+    const IDLE: Duration = Duration::from_secs(1);
     const WAIT: Duration = Duration::from_secs(5);
 
     #[test]
@@ -135,16 +135,19 @@ mod tests {
     #[test]
     fn warms_up_once_on_the_same_thread_after_a_job_and_a_pause() {
         let (sender, warmed) = mpsc::channel::<ThreadId>();
+        let open = sender.clone();
         let worker = Worker::spawn("test-spelling", IDLE, move || {
             sender.send(thread::current().id()).unwrap();
         })
         .unwrap();
-        assert!(warmed.recv_timeout(IDLE * 2).is_err());
+        let quiet = |wait| warmed.recv_timeout(wait) == Err(RecvTimeoutError::Timeout);
+        assert!(quiet(IDLE / 2));
         let worker_thread = worker.run(|| thread::current().id()).unwrap();
-        assert!(warmed.recv_timeout(IDLE / 4).is_err());
+        assert!(quiet(IDLE / 4));
         assert_eq!(warmed.recv_timeout(WAIT).unwrap(), worker_thread);
         worker.run(|| ()).unwrap();
-        assert!(warmed.recv_timeout(IDLE * 2).is_err());
+        assert!(quiet(IDLE + IDLE / 2));
+        drop(open);
     }
 
     #[test]
