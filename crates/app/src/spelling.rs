@@ -24,6 +24,7 @@ use desafinado_features::spelling::{
     document::{self, Checked, WORDBOOK_FILE_NAME, Wordbook},
     pass::{self, Outcome, Plan, Update},
     settings::{MenuKey, Press, SPELLING_FILE_NAME, SpellSettings},
+    worker::Worker,
 };
 use desafinado_platform::files::write_atomic_unconditionally;
 use futures::StreamExt as _;
@@ -57,6 +58,14 @@ const MENU_KEY: &str = "\u{0}spell";
 
 static SPELLER: LazyLock<Option<Mutex<Speller>>> =
     LazyLock::new(|| Speller::new().log_err().map(Mutex::new));
+/// Every Block is checked on this one thread; see [`Worker`].
+static WORKER: LazyLock<Option<Worker>> =
+    LazyLock::new(|| Worker::spawn("spelling", WARM_UP_AFTER, warm_up).log_err());
+/// How long the spelling thread waits with nothing to check before it warms up.
+const WARM_UP_AFTER: Duration = Duration::from_secs(1);
+/// A made-up word that no English word is within three edits of, so checking it builds the
+/// widest fuzzy-search table Harper uses before a real word needs it.
+const WARM_UP_WORD: &str = "Qzxqzxqzxqzx";
 static SPELLER_FAILURE_SHOWN: AtomicBool = AtomicBool::new(false);
 static EMPTY_WORDBOOK: LazyLock<Arc<Wordbook>> = LazyLock::new(Arc::default);
 /// The latest save of the dictionary of added words, and the lock that keeps saves in order.
@@ -124,6 +133,33 @@ pub fn preload(cx: &App) {
         LazyLock::force(&SPELLER);
     })
     .detach();
+}
+
+fn warm_up() {
+    perf_span!("spelling.warm_up");
+    if let Some(speller) = SPELLER.as_ref() {
+        lock(speller).check(WARM_UP_WORD);
+    }
+}
+
+fn lock(speller: &Mutex<Speller>) -> std::sync::MutexGuard<'_, Speller> {
+    speller
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// Checks a chunk of Blocks on the spelling thread, or here when that thread could not start.
+/// A chunk whose check failed counts as checked with no issues, so it is not tried again on
+/// every pass; the failure is logged.
+fn check_chunk(speller: &'static Mutex<Speller>, chunk: Vec<String>) -> Vec<(String, Vec<Issue>)> {
+    let Some(worker) = WORKER.as_ref() else {
+        return pass::check_chunk(&mut lock(speller), chunk);
+    };
+    let texts = chunk.clone();
+    worker
+        .run(move || pass::check_chunk(&mut lock(speller), chunk))
+        .log_err()
+        .unwrap_or_else(|| texts.into_iter().map(|text| (text, Vec::new())).collect())
 }
 
 pub fn settings(cx: &App) -> SpellSettings {
@@ -266,7 +302,12 @@ fn check_document(
         live,
         publish,
     };
-    match pass::run(&blocks, checked, speller, &plan) {
+    match pass::run(
+        &blocks,
+        checked,
+        &|chunk| check_chunk(speller, chunk),
+        &plan,
+    ) {
         Outcome::Complete => Finished::Complete,
         Outcome::Superseded => Finished::Superseded,
     }
