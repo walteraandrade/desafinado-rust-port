@@ -58,9 +58,11 @@ const MENU_KEY: &str = "\u{0}spell";
 
 static SPELLER: LazyLock<Option<Mutex<Speller>>> =
     LazyLock::new(|| Speller::new().log_err().map(Mutex::new));
-/// Every check runs on this one thread; see [`Worker`].
+/// Every Block is checked on this one thread; see [`Worker`].
 static WORKER: LazyLock<Option<Worker>> =
-    LazyLock::new(|| Worker::spawn("spelling", warm_up).log_err());
+    LazyLock::new(|| Worker::spawn("spelling", WARM_UP_AFTER, warm_up).log_err());
+/// How long the spelling thread waits with nothing to check before it warms up.
+const WARM_UP_AFTER: Duration = Duration::from_secs(1);
 /// A made-up word that no English word is within three edits of, so checking it builds the
 /// widest fuzzy-search table Harper uses before a real word needs it.
 const WARM_UP_WORD: &str = "Qzxqzxqzxqzx";
@@ -136,32 +138,26 @@ pub fn preload(cx: &App) {
 fn warm_up() {
     perf_span!("spelling.warm_up");
     if let Some(speller) = SPELLER.as_ref() {
-        speller
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .check(WARM_UP_WORD);
+        lock(speller).check(WARM_UP_WORD);
     }
 }
 
-/// Runs `job` on the spelling thread, or on the pool when that thread could not start. The
-/// task gives `None` when the job was dropped without running.
-fn on_spelling_thread<T: Send + 'static>(
-    executor: &BackgroundExecutor,
-    job: impl FnOnce() -> T + Send + 'static,
-) -> Task<Option<T>> {
-    let (sender, receiver) = futures::channel::oneshot::channel();
-    let job = move || {
-        if sender.send(job()).is_err() {
-            log::debug!("A spell check finished after its result was dropped");
-        }
-    };
+fn lock(speller: &Mutex<Speller>) -> std::sync::MutexGuard<'_, Speller> {
+    speller
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// Checks a chunk of Blocks on the spelling thread, or here when that thread could not start.
+/// A chunk whose check failed comes back with no issues; the failure is logged.
+fn check_chunk(speller: &'static Mutex<Speller>, chunk: Vec<String>) -> Vec<(String, Vec<Issue>)> {
     match WORKER.as_ref() {
-        Some(worker) => {
-            worker.submit(Box::new(job)).log_err();
-        }
-        None => executor.spawn(async move { job() }).detach(),
+        Some(worker) => worker
+            .run(move || pass::check_chunk(&mut lock(speller), chunk))
+            .log_err()
+            .unwrap_or_default(),
+        None => pass::check_chunk(&mut lock(speller), chunk),
     }
-    executor.spawn(async move { receiver.await.ok() })
 }
 
 pub fn settings(cx: &App) -> SpellSettings {
@@ -304,7 +300,12 @@ fn check_document(
         live,
         publish,
     };
-    match pass::run(&blocks, checked, speller, &plan) {
+    match pass::run(
+        &blocks,
+        checked,
+        &|chunk| check_chunk(speller, chunk),
+        &plan,
+    ) {
         Outcome::Complete => Finished::Complete,
         Outcome::Superseded => Finished::Superseded,
     }
@@ -336,7 +337,7 @@ impl EditorPane {
                 return;
             };
             let (sender, mut receiver) = futures::channel::mpsc::unbounded::<Update>();
-            let work = on_spelling_thread(cx.background_executor(), move || {
+            let work = cx.background_spawn(async move {
                 let live = || latest.load(Ordering::SeqCst) == generation && !sender.is_closed();
                 let publish = |update| {
                     sender.unbounded_send(update).log_warn();
@@ -365,7 +366,7 @@ impl EditorPane {
                     .log_err();
                 next = receiver.next().await;
             }
-            if matches!(work.await, Some(Finished::NoSpeller)) {
+            if matches!(work.await, Finished::NoSpeller) {
                 this.update(cx, |_, cx| {
                     if !SPELLER_FAILURE_SHOWN.swap(true, Ordering::Relaxed) {
                         cx.emit(PaneEvent::Toast {

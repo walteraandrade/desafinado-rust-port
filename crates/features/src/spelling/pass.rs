@@ -55,12 +55,26 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
+/// Checks one chunk of Blocks: each Block's text with the issues found in it.
+pub type CheckChunk = dyn Fn(Vec<String>) -> Vec<(String, Vec<Issue>)> + Sync;
+
+/// Checks `chunk` with `speller`, Block by Block.
+pub fn check_chunk(speller: &mut Speller, chunk: Vec<String>) -> Vec<(String, Vec<Issue>)> {
+    chunk
+        .into_iter()
+        .map(|text| {
+            let issues = speller.check(&text);
+            (text, issues)
+        })
+        .collect()
+}
+
 /// Checks the Blocks of the Document that `checked` has no result for. `checked` is held only
 /// to read a snapshot and to add each chunk's results, never while a Block is being checked.
 pub fn run(
     blocks: &[(usize, String)],
     checked: &Mutex<Checked>,
-    primary: &Mutex<Speller>,
+    check: &CheckChunk,
     plan: &Plan<'_>,
 ) -> Outcome {
     let mut todo = document::unchecked_at(blocks, &lock(checked));
@@ -72,16 +86,7 @@ pub fn run(
         if chunk.is_empty() {
             break;
         }
-        let found: Vec<(String, Vec<Issue>)> = {
-            let mut speller = lock(primary);
-            chunk
-                .into_iter()
-                .map(|text| {
-                    let issues = speller.check(&text);
-                    (text, issues)
-                })
-                .collect()
-        };
+        let found = check(chunk);
         let mut checked = lock(checked);
         checked.extend(found.iter().cloned());
         fresh.extend(found);
@@ -196,6 +201,10 @@ mod tests {
             .collect()
     }
 
+    fn local(chunk: Vec<String>) -> Vec<(String, Vec<Issue>)> {
+        check_chunk(&mut lock(&SPELLER), chunk)
+    }
+
     fn plan<'a>(
         live: &'a (dyn Fn() -> bool + Sync),
         publish: &'a (dyn Fn(Update) + Sync),
@@ -252,7 +261,7 @@ mod tests {
         let mut plan = plan(&|| true, &publish);
         plan.anchor = &at;
         plan.throttle = throttle;
-        run(blocks, &checked, &SPELLER, &plan);
+        run(blocks, &checked, &local, &plan);
         updates.into_inner().expect("updates")
     }
 
@@ -392,11 +401,11 @@ mod tests {
         let publish = |_: Update| stale.store(true, Ordering::SeqCst);
         let live = || !stale.load(Ordering::SeqCst);
         let checked = Mutex::new(Checked::new());
-        let outcome = run(&blocks, &checked, &SPELLER, &plan(&live, &publish));
+        let outcome = run(&blocks, &checked, &local, &plan(&live, &publish));
         assert_eq!(outcome, Outcome::Superseded);
         let kept = lock(&checked).len();
         assert!(kept >= CHUNK && kept < blocks.len(), "{kept} kept");
-        let resumed = run(&blocks, &checked, &SPELLER, &plan(&|| true, &|_| {}));
+        let resumed = run(&blocks, &checked, &local, &plan(&|| true, &|_| {}));
         assert_eq!(resumed, Outcome::Complete);
         assert_eq!(
             document::place(&blocks, &lock(&checked)),
@@ -408,7 +417,7 @@ mod tests {
     fn a_check_with_nothing_new_still_publishes_the_issues_once() {
         let blocks = corpus(6);
         let checked = Mutex::new(Checked::new());
-        run(&blocks, &checked, &SPELLER, &plan(&|| true, &|_| {}));
+        run(&blocks, &checked, &local, &plan(&|| true, &|_| {}));
         let count = AtomicUsize::new(0);
         let publish = |update: Update| {
             let Update::Snapshot(progress) = update else {
@@ -417,7 +426,7 @@ mod tests {
             assert!(progress.pending.is_empty());
             count.fetch_add(1, Ordering::SeqCst);
         };
-        run(&blocks, &checked, &SPELLER, &plan(&|| true, &publish));
+        run(&blocks, &checked, &local, &plan(&|| true, &publish));
         assert_eq!(count.load(Ordering::SeqCst), 1);
     }
 
@@ -437,7 +446,7 @@ mod tests {
         let load = || anchor.load(Ordering::SeqCst);
         let mut plan = plan(&|| true, &publish);
         plan.anchor = &load;
-        run(&blocks, &checked, &SPELLER, &plan);
+        run(&blocks, &checked, &local, &plan);
         let updates = lock(&updates);
         let Update::Delta(second) = &updates[1] else {
             panic!("the second update is a delta");
@@ -466,7 +475,7 @@ mod tests {
             calls.fetch_add(1, Ordering::SeqCst);
             true
         };
-        run(&blocks, &checked, &SPELLER, &plan(&counting, &|_| {}));
+        run(&blocks, &checked, &local, &plan(&counting, &|_| {}));
         let total = calls.load(Ordering::SeqCst);
 
         calls.store(0, Ordering::SeqCst);
@@ -476,7 +485,7 @@ mod tests {
             cleanup_lock_held.store(checked.try_lock().is_err(), Ordering::SeqCst);
             calls.fetch_add(1, Ordering::SeqCst) + 1 < total
         };
-        let outcome = run(&blocks, &checked, &SPELLER, &plan(&live, &|_| {}));
+        let outcome = run(&blocks, &checked, &local, &plan(&live, &|_| {}));
         assert_eq!(outcome, Outcome::Superseded);
         assert!(
             cleanup_lock_held.load(Ordering::SeqCst),

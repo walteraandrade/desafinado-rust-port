@@ -1,17 +1,18 @@
-//! The one thread every spell check runs on. Harper keeps the tables of its fuzzy search per
-//! thread, and the widest one takes about a second to build: a long unknown word with no close
-//! match ("Antigravity") needs it. On a pool of threads each one built it again.
+//! The one thread every Block is spell checked on. Harper keeps the tables of its fuzzy search
+//! per thread, and the widest one takes about a second to build: a long unknown word with no
+//! close match ("Antigravity") needs it. On a pool of threads each one built it again.
 
 use std::io;
 use std::panic::{AssertUnwindSafe, catch_unwind};
-use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::thread;
+use std::time::Duration;
 
-pub type Job = Box<dyn FnOnce() + Send>;
+type Job = Box<dyn FnOnce() + Send>;
 
-/// The worker thread is gone, so the job was dropped without running.
+/// The job did not finish: it panicked, or the worker thread is gone.
 #[derive(Debug, thiserror::Error)]
-#[error("the spelling thread has stopped")]
+#[error("the spelling thread did not finish the job")]
 pub struct Stopped;
 
 pub struct Worker {
@@ -19,47 +20,68 @@ pub struct Worker {
 }
 
 impl Worker {
-    /// Starts the thread. `warm_up` runs once, the first time the queue is empty after a job,
-    /// so it never delays the first check.
-    pub fn spawn(name: &str, warm_up: impl FnOnce() + Send + 'static) -> io::Result<Self> {
+    /// Starts the thread. `warm_up` runs once, after the first job, when no job has come for
+    /// `idle`: a check is done by then, and the writer is most likely reading or typing.
+    pub fn spawn(
+        name: &str,
+        idle: Duration,
+        warm_up: impl FnOnce() + Send + 'static,
+    ) -> io::Result<Self> {
         let (jobs, queue) = mpsc::channel::<Job>();
         thread::Builder::new()
             .name(name.into())
-            .spawn(move || serve(&queue, warm_up))?;
+            .spawn(move || serve(&queue, idle, warm_up))?;
         Ok(Self { jobs })
     }
 
-    /// Queues `job` behind the ones already sent.
-    pub fn submit(&self, job: Job) -> Result<(), Stopped> {
-        self.jobs.send(job).map_err(|_dropped| Stopped)
+    /// Runs `job` on the worker thread, behind the jobs already sent, and waits for it.
+    pub fn run<T: Send + 'static>(
+        &self,
+        job: impl FnOnce() -> T + Send + 'static,
+    ) -> Result<T, Stopped> {
+        let (reply, result) = mpsc::sync_channel(1);
+        self.jobs
+            .send(Box::new(move || {
+                if reply.send(job()).is_err() {
+                    log::debug!("A spell check finished after its caller stopped waiting");
+                }
+            }))
+            .map_err(|_gone| Stopped)?;
+        result.recv().map_err(|_dropped| Stopped)
     }
 }
 
-fn serve(queue: &Receiver<Job>, warm_up: impl FnOnce()) {
+fn serve(queue: &Receiver<Job>, idle: Duration, warm_up: impl FnOnce()) {
     let mut warm_up = Some(warm_up);
-    let mut ran_a_job = false;
+    let Ok(mut job) = queue.recv() else {
+        return;
+    };
     loop {
-        let job = match queue.try_recv() {
-            Ok(job) => job,
-            Err(TryRecvError::Disconnected) => return,
-            Err(TryRecvError::Empty) => {
-                if ran_a_job && let Some(warm_up) = warm_up.take() {
-                    run(warm_up);
-                    continue;
+        guarded(job);
+        let next = match warm_up.take() {
+            None => queue.recv().ok(),
+            Some(warm) => match queue.recv_timeout(idle) {
+                Ok(next) => {
+                    warm_up = Some(warm);
+                    Some(next)
                 }
-                match queue.recv() {
-                    Ok(job) => job,
-                    Err(_) => return,
+                Err(RecvTimeoutError::Timeout) => {
+                    guarded(warm);
+                    queue.recv().ok()
                 }
-            }
+                Err(RecvTimeoutError::Disconnected) => None,
+            },
         };
-        run(job);
-        ran_a_job = true;
+        // `None` means every sender is gone: the app is quitting.
+        let Some(next) = next else {
+            return;
+        };
+        job = next;
     }
 }
 
 /// A job that panics loses its own result, not the thread every later check needs.
-fn run(job: impl FnOnce()) {
+fn guarded(job: impl FnOnce()) {
     if catch_unwind(AssertUnwindSafe(job)).is_err() {
         log::error!("A spell check panicked");
     }
@@ -73,66 +95,62 @@ mod tests {
 
     use super::Worker;
 
+    const IDLE: Duration = Duration::from_millis(200);
     const WAIT: Duration = Duration::from_secs(5);
 
     #[test]
-    fn every_job_runs_in_order_on_the_same_thread() {
-        let worker = Worker::spawn("test-spelling", || {}).unwrap();
-        let (sender, results) = mpsc::channel::<(usize, ThreadId)>();
-        for index in 0..5 {
-            let sender = sender.clone();
-            worker
-                .submit(Box::new(move || {
-                    sender.send((index, thread::current().id())).unwrap();
-                }))
-                .unwrap();
-        }
-        let seen: Vec<_> = (0..5)
-            .map(|_| results.recv_timeout(WAIT).unwrap())
+    fn every_job_runs_on_the_same_other_thread_and_returns_its_result() {
+        let worker = Worker::spawn("test-spelling", IDLE, || {}).unwrap();
+        let ids: Vec<ThreadId> = (0..3)
+            .map(|_| worker.run(|| thread::current().id()).unwrap())
             .collect();
-        assert_eq!(
-            seen.iter().map(|(index, _)| *index).collect::<Vec<_>>(),
-            [0, 1, 2, 3, 4]
-        );
-        assert!(seen.iter().all(|(_, id)| *id == seen[0].1));
-        assert_ne!(seen[0].1, thread::current().id());
+        assert!(ids.iter().all(|id| *id == ids[0]));
+        assert_ne!(ids[0], thread::current().id());
+        assert_eq!(worker.run(|| 2 + 2).unwrap(), 4);
     }
 
     #[test]
-    fn warms_up_once_after_the_first_job_and_on_the_same_thread() {
-        let (sender, events) = mpsc::channel::<(&str, ThreadId)>();
-        let warm = sender.clone();
-        let worker = Worker::spawn("test-spelling", move || {
-            warm.send(("warm", thread::current().id())).unwrap();
+    fn jobs_from_many_threads_run_one_at_a_time() {
+        let worker = Worker::spawn("test-spelling", IDLE, || {}).unwrap();
+        let (sender, events) = mpsc::channel::<&str>();
+        thread::scope(|scope| {
+            for _ in 0..4 {
+                let sender = sender.clone();
+                let worker = &worker;
+                scope.spawn(move || {
+                    worker
+                        .run(move || {
+                            sender.send("start").unwrap();
+                            thread::sleep(Duration::from_millis(10));
+                            sender.send("end").unwrap();
+                        })
+                        .unwrap();
+                });
+            }
+        });
+        let seen: Vec<_> = events.try_iter().collect();
+        assert_eq!(seen, ["start", "end"].repeat(4));
+    }
+
+    #[test]
+    fn warms_up_once_on_the_same_thread_after_a_job_and_a_pause() {
+        let (sender, warmed) = mpsc::channel::<ThreadId>();
+        let worker = Worker::spawn("test-spelling", IDLE, move || {
+            sender.send(thread::current().id()).unwrap();
         })
         .unwrap();
-        assert!(events.recv_timeout(Duration::from_millis(100)).is_err());
-        let job = |sender: mpsc::Sender<(&'static str, ThreadId)>| -> super::Job {
-            Box::new(move || sender.send(("job", thread::current().id())).unwrap())
-        };
-        worker.submit(job(sender.clone())).unwrap();
-        let mut seen = vec![
-            events.recv_timeout(WAIT).unwrap(),
-            events.recv_timeout(WAIT).unwrap(),
-        ];
-        worker.submit(job(sender)).unwrap();
-        seen.push(events.recv_timeout(WAIT).unwrap());
-        assert!(events.recv_timeout(Duration::from_millis(100)).is_err());
-        assert_eq!(
-            seen.iter().map(|(name, _)| *name).collect::<Vec<_>>(),
-            ["job", "warm", "job"]
-        );
-        assert!(seen.iter().all(|(_, id)| *id == seen[0].1));
+        assert!(warmed.recv_timeout(IDLE * 2).is_err());
+        let worker_thread = worker.run(|| thread::current().id()).unwrap();
+        assert!(warmed.recv_timeout(IDLE / 4).is_err());
+        assert_eq!(warmed.recv_timeout(WAIT).unwrap(), worker_thread);
+        worker.run(|| ()).unwrap();
+        assert!(warmed.recv_timeout(IDLE * 2).is_err());
     }
 
     #[test]
-    fn a_job_that_panics_leaves_the_thread_running() {
-        let worker = Worker::spawn("test-spelling", || {}).unwrap();
-        worker.submit(Box::new(|| panic!("boom"))).unwrap();
-        let (sender, results) = mpsc::channel();
-        worker
-            .submit(Box::new(move || sender.send(()).unwrap()))
-            .unwrap();
-        assert!(results.recv_timeout(WAIT).is_ok());
+    fn a_job_that_panics_fails_alone() {
+        let worker = Worker::spawn("test-spelling", IDLE, || {}).unwrap();
+        assert!(worker.run(|| panic!("boom")).is_err());
+        assert_eq!(worker.run(|| "still here").unwrap(), "still here");
     }
 }
