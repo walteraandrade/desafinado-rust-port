@@ -41,6 +41,14 @@ pub struct PlaceSuggestion {
     pub shown: usize,
 }
 
+/// The top of the viewport as a buffer line and the pixels scrolled into it. It means the same
+/// text however the lines above it are wrapped; `scroll_y` counts pixels of those rows.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct ScrollTop {
+    pub line: usize,
+    pub within: f32,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SavedPlace {
     pub version: u32,
@@ -48,6 +56,10 @@ pub struct SavedPlace {
     pub text: String,
     pub selection: PlaceSelection,
     pub scroll_y: f32,
+    /// Where `scroll_y` points, when the editor could tell. Places saved before it exist have
+    /// only `scroll_y`.
+    #[serde(default)]
+    pub scroll_top: Option<ScrollTop>,
     #[serde(default)]
     pub suggestions: Vec<PlaceSuggestion>,
     #[serde(default)]
@@ -63,6 +75,7 @@ pub struct PlaceInput<'a> {
     pub text: &'a str,
     pub selection: PlaceSelection,
     pub scroll_y: f32,
+    pub scroll_top: Option<ScrollTop>,
     pub suggestions: &'a SuggestionsState,
     pub notes: Option<&'a NoteBoard>,
     pub note_rewrites: &'a [(String, usize)],
@@ -73,6 +86,7 @@ pub struct PlaceInput<'a> {
 pub struct RestoredPlace {
     pub selection: PlaceSelection,
     pub scroll_y: f32,
+    pub scroll_top: Option<ScrollTop>,
     pub suggestions: SuggestionsState,
     pub notes: Option<NoteBoard>,
     pub note_rewrites: Vec<(String, usize)>,
@@ -109,6 +123,7 @@ pub fn take_place(input: &PlaceInput) -> SavedPlace {
         text: input.text.to_string(),
         selection: input.selection,
         scroll_y: input.scroll_y,
+        scroll_top: input.scroll_top,
         suggestions,
         notes,
         note_rewrites,
@@ -231,6 +246,10 @@ pub fn restore_place(saved: &SavedPlace, text: &str) -> Option<RestoredPlace> {
             reversed: selection.reversed && start != end,
         },
         scroll_y: saved.scroll_y.max(0.),
+        scroll_top: saved.scroll_top.map(|top| ScrollTop {
+            within: top.within.max(0.),
+            ..top
+        }),
         dropped: saved.suggestions.len() - items.len(),
         suggestions: SuggestionsState {
             items,
@@ -415,6 +434,10 @@ mod tests {
                 reversed: true,
             },
             scroll_y: 120.,
+            scroll_top: Some(ScrollTop {
+                line: 40,
+                within: 6.,
+            }),
             suggestions: state,
             notes: Some(&board),
             note_rewrites: &[("s2".to_string(), 1), ("s9".to_string(), 1)],
@@ -441,6 +464,13 @@ mod tests {
             }
         );
         assert!((restored.scroll_y - 120.).abs() < f32::EPSILON);
+        assert_eq!(
+            restored.scroll_top,
+            Some(ScrollTop {
+                line: 40,
+                within: 6.
+            })
+        );
         assert_eq!(restored.suggestions.items, state.items);
         assert_eq!(restored.suggestions.next_sequence, state.next_sequence);
         assert_eq!(restored.notes, Some(board()));
@@ -621,8 +651,23 @@ mod tests {
         let json = r#"{"version":1,"text":"Hi","selection":{"start":1,"end":1,"reversed":false},"scroll_y":40.0}"#;
         let restored = restore_place(&place_from_json(json).unwrap(), "Hi").unwrap();
         assert_eq!(restored.selection.start, 1);
+        assert_eq!(restored.scroll_top, None);
+        assert!((restored.scroll_y - 40.).abs() < f32::EPSILON);
         assert!(restored.suggestions.items.is_empty());
         assert_eq!(restored.notes, None);
         assert_eq!(restored.mode, None);
+    }
+
+    #[test]
+    fn the_top_line_of_the_view_survives_the_json_round_trip() {
+        let saved = taken(&empty_suggestions());
+        let json = place_to_json(&saved).unwrap();
+        assert_eq!(
+            place_from_json(&json).unwrap().scroll_top,
+            Some(ScrollTop {
+                line: 40,
+                within: 6.
+            })
+        );
     }
 }

@@ -76,7 +76,8 @@ fn only_the_focus_is_wrapped_exactly() {
     for row in 0..full.lines_count() {
         let line = partial.line(row).unwrap();
         let focused = (40..60).contains(&row) || (150..155).contains(&row);
-        assert_eq!(line.is_estimated(), !focused, "line {row}");
+        let empty = line.len() == 0;
+        assert_eq!(line.is_estimated(), !focused && !empty, "line {row}");
         assert_eq!(line.len(), full.line(row).unwrap().len());
         if focused {
             assert_eq!(line.wrapped_lines, full.line(row).unwrap().wrapped_lines);
@@ -147,7 +148,10 @@ fn refining_stops_at_the_deadline_after_one_line_and_resumes() {
         assert_eq!(done.len(), 1);
         steps += 1;
     }
-    assert!((90..=99).contains(&steps), "{steps} steps");
+    let estimated_at_first = (1..100)
+        .filter(|&row| full.line(row).unwrap().len() > 0)
+        .count();
+    assert_eq!(steps, estimated_at_first);
     assert_eq!(rows(&partial), rows(&full));
 }
 
@@ -158,9 +162,9 @@ fn refining_a_range_leaves_the_rest_estimated() {
     let done = partial
         .refine_lines_with(30..50, None, &mut fake_wrap)
         .unwrap();
-    assert_eq!(done, 30..50);
+    assert_eq!(done, 31..50);
     for row in 0..100 {
-        let wrapped = row == 0 || (30..50).contains(&row);
+        let wrapped = row == 0 || (30..50).contains(&row) || partial.line(row).unwrap().len() == 0;
         assert_eq!(partial.line(row).unwrap().is_estimated(), !wrapped, "{row}");
     }
 }
@@ -318,4 +322,26 @@ fn production_replacing_the_whole_text_is_progressive_and_converges() {
         full.update_all(&new, cx);
         assert_eq!(rows(&wrapper), rows(&full));
     });
+}
+
+#[test]
+fn empty_lines_are_never_estimated() {
+    let text = document(100);
+    let partial = progressive(&text, &[0..1]);
+    for (row, line) in partial.iter_lines().enumerate() {
+        if line.len() == 0 {
+            assert!(!line.is_estimated(), "line {row}");
+        }
+    }
+}
+
+#[test]
+fn refining_skips_exact_runs_and_covers_every_estimated_line_in_the_range() {
+    let text = document(300);
+    let mut partial = progressive(&text, &[100..200]);
+    let done = partial
+        .refine_lines_with(0..300, None, &mut fake_wrap)
+        .unwrap();
+    assert_eq!(done.end, 300);
+    assert!(!partial.has_estimated());
 }

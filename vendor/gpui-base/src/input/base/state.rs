@@ -488,6 +488,8 @@ pub struct InputBaseState<M: InputModeKind> {
     wrap_refinement: Option<gpui::Task<()>>,
     /// When a slice of that last asked for a frame.
     last_wrap_notify: std::time::Instant,
+    /// A scroll position to resolve against the wrapped rows at the next layout.
+    pending_scroll: Option<PendingScroll>,
     /// Fresh caret geometry stashed during prepaint for caret-anchored popups.
     ///
     /// Popups are positioned in their deferred prepaint, which runs after the
@@ -751,6 +753,15 @@ impl InputPresentation {
 impl<M: InputModeKind> EventEmitter<InputEvent> for InputBaseState<M> {}
 impl<M: InputModeKind> EventEmitter<InputEditsEvent> for InputBaseState<M> {}
 
+/// A scroll position that waits for the wrap rows it is measured in.
+#[derive(Clone, Copy)]
+enum PendingScroll {
+    /// The buffer line at the top of the viewport and the pixels of that line above it.
+    TopLine(usize, Pixels),
+    /// A pixel offset measured in exact rows, as saved before lines were saved by number.
+    Offset(Point<Pixels>),
+}
+
 /// How long one slice of the wrapping of a large document's estimated lines takes, between
 /// frames and input.
 const WRAP_SLICE: std::time::Duration = std::time::Duration::from_millis(5);
@@ -768,20 +779,24 @@ impl<M: InputModeKind> InputBaseState<M> {
     }
 
     /// The buffer lines a wrapping pass of a large document does exactly: the screen with a
-    /// margin of screens around it, and around the caret.
+    /// margin of screens around it, and around the carets.
     pub(super) fn wrap_focus(&self, line_height: Pixels, height: Pixels) -> Vec<Range<usize>> {
-        let rows = (f32::from(height) / f32::from(line_height)).ceil() as usize + 1;
-        let top = self.viewport_top_line(line_height);
-        let caret = self.text.offset_to_point(self.cursor()).row;
-        vec![
-            top.saturating_sub(rows)..top + 2 * rows,
-            caret.saturating_sub(rows)..caret + rows,
-        ]
+        let rows = (f32::from(height) / f32::from(line_height.max(px(1.)))).ceil() as usize + 1;
+        let top = match self.pending_scroll {
+            Some(PendingScroll::TopLine(line, _)) => line,
+            _ => self.viewport_top_line(line_height.max(px(1.))),
+        };
+        let mut focus = vec![top.saturating_sub(rows)..top.saturating_add(rows.saturating_mul(2))];
+        focus.extend(self.selections.iter().map(|selection| {
+            let line = self.text.offset_to_point(selection.cursor_offset()).row;
+            line.saturating_sub(rows)..line.saturating_add(rows)
+        }));
+        focus
     }
 
     /// Wraps the estimated lines in `lines` exactly (see `DisplayMap::refine_lines`), and moves
     /// the scroll offset by the rows that lines above the viewport gained or lost, so the text
-    /// on screen stays where it is.
+    /// on screen stays where it is. The scroll size follows the rows.
     pub(super) fn refine_wrap(
         &mut self,
         lines: Range<usize>,
@@ -794,19 +809,122 @@ impl<M: InputModeKind> InputBaseState<M> {
         }
         let anchor = self.viewport_top_line(line_height);
         let before = self.display_map.buffer_line_to_display_row(anchor);
+        let rows_before = self.display_map.display_row_count();
         let refined = self.display_map.refine_lines(lines, deadline, cx)?;
         let after = self.display_map.buffer_line_to_display_row(anchor);
+        let rows_after = self.display_map.display_row_count();
+        self.scroll_size.height = (self.scroll_size.height
+            + line_height * (rows_after as f32 - rows_before as f32))
+            .max(px(0.));
         if after != before {
             let shift = line_height * (after as f32 - before as f32);
-            let offset = self.scroll_handle.offset();
-            self.scroll_handle
-                .set_offset(point(offset.x, offset.y - shift));
             if let Some(deferred) = self.deferred_scroll_offset.as_mut() {
-                deferred.y -= shift;
+                deferred.y = (deferred.y - shift).min(px(0.));
+            } else {
+                let offset = self.scroll_handle.offset();
+                self.scroll_handle
+                    .set_offset(point(offset.x, (offset.y - shift).min(px(0.))));
             }
-            cx.notify();
         }
         Some(refined)
+    }
+
+    /// Wraps `lines` buffer lines each side of every caret, so that moving them reads exact rows.
+    pub(super) fn refine_around_cursors(
+        &mut self,
+        lines: usize,
+        line_height: Pixels,
+        cx: &mut Context<Self>,
+    ) {
+        let rows: Vec<usize> = self
+            .selections
+            .iter()
+            .map(|selection| self.text.offset_to_point(selection.cursor_offset()).row)
+            .collect();
+        for row in rows {
+            self.refine_wrap(
+                row.saturating_sub(lines)..row.saturating_add(lines),
+                None,
+                line_height,
+                cx,
+            );
+        }
+    }
+
+    /// The buffer line at the top of the viewport and the pixels of that line above it. Unlike a
+    /// pixel offset, it means the same text whether or not the rows above are exact yet.
+    pub fn scroll_top_line(&self) -> Option<(usize, Pixels)> {
+        let line_height = self.last_layout.as_ref()?.line_height;
+        let top = self.viewport_top_line(line_height);
+        let scroll_top = -self
+            .deferred_scroll_offset
+            .map_or_else(|| self.scroll_handle.offset().y, |offset| offset.y)
+            .min(px(0.));
+        let row = self.display_map.buffer_line_to_display_row(top);
+        Some((top, (scroll_top - line_height * row).max(px(0.))))
+    }
+
+    /// Scrolls so that buffer line `line` is at the top, `within` pixels scrolled into it. It
+    /// resolves at the next layout, when the rows are known.
+    pub fn set_scroll_top_line(&mut self, line: usize, within: Pixels, cx: &mut Context<Self>) {
+        self.pending_scroll = Some(PendingScroll::TopLine(line, within));
+        cx.notify();
+    }
+
+    /// Like [`Self::set_scroll_offset`] for an offset measured in exact rows, such as one saved
+    /// before lines were saved by number: the rows above it are wrapped before it is applied.
+    pub fn set_scroll_offset_exact(
+        &mut self,
+        offset: gpui::Point<gpui::Pixels>,
+        cx: &mut Context<Self>,
+    ) {
+        self.pending_scroll = Some(PendingScroll::Offset(offset));
+        cx.notify();
+    }
+
+    /// Resolves a scroll position that waited for the rows, as the next layout begins.
+    pub(super) fn apply_pending_scroll(
+        &mut self,
+        line_height: Pixels,
+        height: Pixels,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(pending) = self.pending_scroll.take() else {
+            return;
+        };
+        let rows = (f32::from(height) / f32::from(line_height.max(px(1.)))).ceil() as usize + 1;
+        let offset = match pending {
+            PendingScroll::TopLine(line, within) => {
+                let line = line.min(self.display_map.buffer_line_count().saturating_sub(1));
+                self.display_map.refine_lines(
+                    line.saturating_sub(rows)..line.saturating_add(rows),
+                    None,
+                    cx,
+                );
+                let row = self.display_map.buffer_line_to_display_row(line);
+                point(px(0.), -(line_height * row + within))
+            }
+            PendingScroll::Offset(offset) => {
+                loop {
+                    let count = self.display_map.display_row_count().max(1);
+                    let first =
+                        (f32::from((-offset.y).max(px(0.))) / f32::from(line_height)) as usize;
+                    let top = self
+                        .display_map
+                        .display_row_to_buffer_line(first.min(count - 1));
+                    if self
+                        .display_map
+                        .refine_lines(0..top.saturating_add(rows), None, cx)
+                        .is_none()
+                    {
+                        break;
+                    }
+                }
+                offset
+            }
+        };
+        self.deferred_scroll_offset = Some(offset);
+        cx.notify();
     }
 
     /// Starts wrapping the rest of the estimated lines in slices between frames, if that is not
@@ -1131,6 +1249,7 @@ impl<M: InputModeKind> InputBaseState<M> {
             last_layout: None,
             wrap_refinement: None,
             last_wrap_notify: std::time::Instant::now(),
+            pending_scroll: None,
             prepaint_caret_geometry: None,
             last_bounds: None,
             revealed_viewport: None,

@@ -536,6 +536,20 @@ impl<'a> sum_tree::Dimension<'a, LineSummary> for BufferRows {
     }
 }
 
+/// Cursor dimension counting lines whose rows are estimated.
+#[derive(Clone, Copy, Default, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) struct EstimatedLines(pub usize);
+
+impl<'a> sum_tree::Dimension<'a, LineSummary> for EstimatedLines {
+    fn zero(_: &()) -> Self {
+        EstimatedLines(0)
+    }
+
+    fn add_summary(&mut self, summary: &'a LineSummary, _: &()) {
+        self.0 += summary.estimated_lines;
+    }
+}
+
 /// Cursor dimension counting wrap rows.
 #[derive(Clone, Copy, Default, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) struct WrapRows(pub usize);
@@ -706,6 +720,7 @@ impl TextWrapper {
 
         let width_only = self.wrap_width.is_some() && wrap_width.is_some();
         self.wrap_width = wrap_width;
+        self.bytes_per_row = 0;
         if width_only
             && self
                 .lines
@@ -735,6 +750,7 @@ impl TextWrapper {
         }
 
         self.tab_size = tab_size;
+        self.bytes_per_row = 0;
         self.update_all(&self.text.clone(), cx);
         true
     }
@@ -746,6 +762,7 @@ impl TextWrapper {
 
         self.font = font;
         self.font_size = font_size;
+        self.bytes_per_row = 0;
         self.update_all(&self.text.clone(), cx);
     }
 
@@ -949,10 +966,12 @@ impl TextWrapper {
         for row in rows {
             let start = text.line_start_offset(row);
             let end = text.line_end_offset(row);
-            self.update(
+            self.update_wrapped(
                 &text,
                 &(start..end),
                 &Rope::from(text.slice(start..end).to_string()),
+                false,
+                false,
                 cx,
             );
         }
@@ -1014,10 +1033,12 @@ impl TextWrapper {
         for row in rows {
             let start = text.line_start_offset(row);
             let end = text.line_end_offset(row);
-            self.update(
+            self.update_wrapped(
                 &text,
                 &(start..end),
                 &Rope::from(text.slice(start..end).to_string()),
+                false,
+                false,
                 cx,
             );
         }
@@ -1261,6 +1282,7 @@ impl TextWrapper {
                 }
             }
             if wrap_width.is_some()
+                && changed_text.slice_line(row).len() > 0
                 && exact.is_some_and(|ranges| !ranges.iter().any(|lines| lines.contains(&row)))
             {
                 slots.push(None);
@@ -1336,22 +1358,24 @@ impl TextWrapper {
         self.progressive_min_bytes = bytes;
     }
 
-    /// The first estimated line in `lines`, if any.
-    fn first_estimated(&self, lines: &Range<usize>) -> Option<usize> {
+    /// The first estimated line at or after `from`, below `end`, found through the summary
+    /// counts of the tree.
+    fn first_estimated(&self, from: usize, end: usize) -> Option<usize> {
         if !self.has_estimated() {
             return None;
         }
-        let mut cursor = self.lines.cursor::<BufferRows>(&());
-        cursor.seek(&BufferRows(lines.start), Bias::Right);
-        let mut row = lines.start;
-        while row < lines.end {
-            if cursor.item()?.estimated {
-                return Some(row);
-            }
-            cursor.next();
-            row += 1;
-        }
-        None
+        let mut before = self
+            .lines
+            .cursor::<Dimensions<BufferRows, EstimatedLines>>(&());
+        before.seek(&BufferRows(from), Bias::Right);
+        let skipped = before.start().1.0;
+        let mut found = self
+            .lines
+            .cursor::<Dimensions<EstimatedLines, BufferRows>>(&());
+        found.seek(&EstimatedLines(skipped + 1), Bias::Left);
+        found.item()?;
+        let row = found.start().1.0;
+        (row < end).then_some(row)
     }
 
     /// Wraps the estimated lines in `lines` exactly, replacing their guessed rows. With a
@@ -1380,35 +1404,41 @@ impl TextWrapper {
     where
         F: FnMut(&str, Pixels, usize, Option<&Prior>) -> MeasuredWrap,
     {
-        let lines = lines.start..lines.end.min(self.lines_count());
-        let first = self.first_estimated(&lines)?;
-        let mut refined = Vec::new();
-        let mut row = first;
-        {
-            let mut cursor = self.lines.cursor::<BufferRows>(&());
-            cursor.seek(&BufferRows(first), Bias::Right);
-            while row < lines.end {
-                let Some(item) = cursor.item() else { break };
-                refined.push(if item.estimated {
-                    self.wrapped_line_item(&self.text, row, None, wrap_line)
-                } else {
-                    item.clone()
-                });
-                cursor.next();
-                row += 1;
-                if deadline.is_some_and(|deadline| std::time::Instant::now() >= deadline) {
-                    break;
+        let end = lines.end.min(self.lines_count());
+        let mut from = lines.start;
+        let mut covered: Option<Range<usize>> = None;
+        while let Some(first) = self.first_estimated(from, end) {
+            let mut refined = Vec::new();
+            let mut row = first;
+            {
+                let mut cursor = self.lines.cursor::<BufferRows>(&());
+                cursor.seek(&BufferRows(first), Bias::Right);
+                while row < end {
+                    if !cursor.item().is_some_and(|item| item.estimated) {
+                        break;
+                    }
+                    refined.push(self.wrapped_line_item(&self.text, row, None, wrap_line));
+                    cursor.next();
+                    row += 1;
+                    if deadline.is_some_and(|deadline| std::time::Instant::now() >= deadline) {
+                        break;
+                    }
                 }
             }
+            let mut cursor = self.lines.cursor::<BufferRows>(&());
+            let mut tree = cursor.slice(&BufferRows(first), Bias::Right);
+            cursor.seek_forward(&BufferRows(row), Bias::Right);
+            tree.extend(refined, &());
+            tree.append(cursor.suffix(), &());
+            drop(cursor);
+            self.lines = tree;
+            covered = Some(covered.map_or(first..row, |covered| covered.start..row));
+            from = row;
+            if deadline.is_some_and(|deadline| std::time::Instant::now() >= deadline) {
+                break;
+            }
         }
-        let mut cursor = self.lines.cursor::<BufferRows>(&());
-        let mut tree = cursor.slice(&BufferRows(first), Bias::Right);
-        cursor.seek_forward(&BufferRows(row), Bias::Right);
-        tree.extend(refined, &());
-        tree.append(cursor.suffix(), &());
-        drop(cursor);
-        self.lines = tree;
-        Some(first..row)
+        covered
     }
 
     /// Update the text wrapper and recalculate the wrapped lines.

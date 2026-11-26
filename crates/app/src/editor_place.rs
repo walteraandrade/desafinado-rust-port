@@ -1,5 +1,5 @@
 use desafinado_ai::editor::place::{
-    PlaceInput, PlaceMode, PlaceSelection, RestoredPlace, SavedPlace, take_place,
+    PlaceInput, PlaceMode, PlaceSelection, RestoredPlace, SavedPlace, ScrollTop, take_place,
 };
 use gpui_kit::*;
 
@@ -33,6 +33,10 @@ impl EditorPane {
                 reversed: state.is_selection_reversed(),
             },
             scroll_y: f32::from(-state.scroll_offset().y),
+            scroll_top: state.scroll_top_line().map(|(line, within)| ScrollTop {
+                line,
+                within: f32::from(within),
+            }),
             suggestions: &self.suggestions,
             notes: self.notes.as_ref(),
             note_rewrites: &self.note_rewrites,
@@ -65,10 +69,14 @@ impl EditorPane {
             end,
             reversed,
         } = place.selection;
-        let scroll = point(px(0.), px(-place.scroll_y));
         self.editor.update(cx, |state, cx| {
             state.set_selected_range_with_direction(start..end, reversed, cx);
-            state.set_scroll_offset(scroll, cx);
+            match place.scroll_top {
+                Some(top) => state.set_scroll_top_line(top.line, px(top.within), cx),
+                None => {
+                    state.set_scroll_offset_exact(point(px(0.), px(-place.scroll_y)), cx);
+                }
+            }
         });
         self.last_selection = self.editor.read(cx).selected_range();
         self.refresh_decorations(cx);

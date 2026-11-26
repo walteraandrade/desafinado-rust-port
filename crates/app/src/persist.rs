@@ -212,6 +212,7 @@ mod tests {
                 text: "",
                 selection: desafinado_ai::editor::place::PlaceSelection::default(),
                 scroll_y: 3.,
+                scroll_top: None,
                 suggestions: &desafinado_core::suggestions::SuggestionsState::default(),
                 notes: None,
                 note_rewrites: &[],
