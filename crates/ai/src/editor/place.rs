@@ -4,7 +4,7 @@
 
 use desafinado_core::{
     blocks::find_frontmatter,
-    change_set::{Assoc, changes_between},
+    change_set::{Assoc, ChangeSet, changes_between},
     diff::adaptive_diff,
     suggestions::{
         ReadySuggestion, RefineState, RefineStep, Suggestion, SuggestionBase, SuggestionsState,
@@ -131,6 +131,17 @@ pub fn take_place(input: &PlaceInput) -> SavedPlace {
     }
 }
 
+/// The line of `text` that holds what line `line` of `saved` held, through the changes made
+/// outside the app.
+fn mapped_line(line: usize, saved: &str, text: &str, changes: &ChangeSet) -> usize {
+    let start: usize = saved.split_inclusive('\n').take(line).map(str::len).sum();
+    let at = floor_boundary(text, changes.map_pos(start, Assoc::After).min(text.len()));
+    text.as_bytes()[..at]
+        .iter()
+        .filter(|&&b| b == b'\n')
+        .count()
+}
+
 fn kept_rewrites<'a>(
     rewrites: &[(String, usize)],
     ids: impl Iterator<Item = &'a str>,
@@ -247,8 +258,10 @@ pub fn restore_place(saved: &SavedPlace, text: &str) -> Option<RestoredPlace> {
         },
         scroll_y: saved.scroll_y.max(0.),
         scroll_top: saved.scroll_top.map(|top| ScrollTop {
+            line: changes.as_ref().map_or(top.line, |changes| {
+                mapped_line(top.line, &saved.text, text, changes)
+            }),
             within: top.within.max(0.),
-            ..top
         }),
         dropped: saved.suggestions.len() - items.len(),
         suggestions: SuggestionsState {
@@ -667,6 +680,32 @@ mod tests {
             Some(ScrollTop {
                 line: 40,
                 within: 6.
+            })
+        );
+    }
+
+    #[test]
+    fn the_top_line_follows_lines_added_above_it_outside_the_app() {
+        let saved = SavedPlace {
+            version: PLACE_VERSION,
+            text: "a\nb\nc\nd\n".to_string(),
+            selection: PlaceSelection::default(),
+            scroll_y: 0.,
+            scroll_top: Some(ScrollTop {
+                line: 2,
+                within: 4.,
+            }),
+            suggestions: Vec::new(),
+            notes: None,
+            note_rewrites: Vec::new(),
+            mode: None,
+        };
+        let restored = restore_place(&saved, "new\nnew2\na\nb\nc\nd\n").unwrap();
+        assert_eq!(
+            restored.scroll_top,
+            Some(ScrollTop {
+                line: 4,
+                within: 4.
             })
         );
     }

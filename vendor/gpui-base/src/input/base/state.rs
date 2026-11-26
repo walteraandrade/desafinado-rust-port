@@ -804,13 +804,24 @@ impl<M: InputModeKind> InputBaseState<M> {
         line_height: Pixels,
         cx: &mut Context<Self>,
     ) -> Option<Range<usize>> {
+        self.refine_wrap_ranges(&[lines], deadline, line_height, cx)
+    }
+
+    /// `refine_wrap` for several ranges at once.
+    pub(super) fn refine_wrap_ranges(
+        &mut self,
+        lines: &[Range<usize>],
+        deadline: Option<std::time::Instant>,
+        line_height: Pixels,
+        cx: &mut Context<Self>,
+    ) -> Option<Range<usize>> {
         if !self.display_map.has_estimated_rows() {
             return None;
         }
         let anchor = self.viewport_top_line(line_height);
         let before = self.display_map.buffer_line_to_display_row(anchor);
         let rows_before = self.display_map.display_row_count();
-        let refined = self.display_map.refine_lines(lines, deadline, cx)?;
+        let refined = self.display_map.refine_ranges(lines, deadline, cx)?;
         let after = self.display_map.buffer_line_to_display_row(anchor);
         let rows_after = self.display_map.display_row_count();
         self.scroll_size.height = (self.scroll_size.height
@@ -836,24 +847,23 @@ impl<M: InputModeKind> InputBaseState<M> {
         line_height: Pixels,
         cx: &mut Context<Self>,
     ) {
-        let rows: Vec<usize> = self
+        let ranges: Vec<Range<usize>> = self
             .selections
             .iter()
-            .map(|selection| self.text.offset_to_point(selection.cursor_offset()).row)
+            .map(|selection| {
+                let row = self.text.offset_to_point(selection.cursor_offset()).row;
+                row.saturating_sub(lines)..row.saturating_add(lines)
+            })
             .collect();
-        for row in rows {
-            self.refine_wrap(
-                row.saturating_sub(lines)..row.saturating_add(lines),
-                None,
-                line_height,
-                cx,
-            );
-        }
+        self.refine_wrap_ranges(&ranges, None, line_height, cx);
     }
 
     /// The buffer line at the top of the viewport and the pixels of that line above it. Unlike a
     /// pixel offset, it means the same text whether or not the rows above are exact yet.
     pub fn scroll_top_line(&self) -> Option<(usize, Pixels)> {
+        if let Some(PendingScroll::TopLine(line, within)) = self.pending_scroll {
+            return Some((line, within));
+        }
         let line_height = self.last_layout.as_ref()?.line_height;
         let top = self.viewport_top_line(line_height);
         let scroll_top = -self
@@ -905,22 +915,26 @@ impl<M: InputModeKind> InputBaseState<M> {
                 point(px(0.), -(line_height * row + within))
             }
             PendingScroll::Offset(offset) => {
-                loop {
-                    let count = self.display_map.display_row_count().max(1);
-                    let first =
-                        (f32::from((-offset.y).max(px(0.))) / f32::from(line_height)) as usize;
-                    let top = self
+                let count = self.display_map.display_row_count().max(1);
+                let first = (f32::from((-offset.y).max(px(0.))) / f32::from(line_height)) as usize;
+                let line = self
+                    .display_map
+                    .display_row_to_buffer_line(first.min(count - 1));
+                self.display_map.refine_lines(
+                    line.saturating_sub(rows)..line.saturating_add(rows),
+                    None,
+                    cx,
+                );
+                let row = self.display_map.buffer_line_to_display_row(line);
+                let height = line_height
+                    * self
                         .display_map
-                        .display_row_to_buffer_line(first.min(count - 1));
-                    if self
-                        .display_map
-                        .refine_lines(0..top.saturating_add(rows), None, cx)
-                        .is_none()
-                    {
-                        break;
-                    }
-                }
-                offset
+                        .buffer_line_to_display_row_range(line)
+                        .map_or(1, |rows| rows.len());
+                let within = (-offset.y - line_height * row)
+                    .max(px(0.))
+                    .min((height - px(1.)).max(px(0.)));
+                point(offset.x, -(line_height * row + within))
             }
         };
         self.deferred_scroll_offset = Some(offset);
@@ -1671,9 +1685,8 @@ impl<M: InputModeKind> InputBaseState<M> {
         // override the cursor-follow scroll for the next painted frame to keep
         // the start visible; the deferred offset is consumed during that paint.
         self.scroll_handle.set_offset(point(px(0.), px(0.)));
-        if self.is_single_line() {
-            self.deferred_scroll_offset = Some(point(px(0.), px(0.)));
-        }
+        self.pending_scroll = None;
+        self.deferred_scroll_offset = self.is_single_line().then_some(point(px(0.), px(0.)));
     }
 
     /// Set with disabled mode.
@@ -3800,7 +3813,10 @@ impl<M: InputModeKind> InputBaseState<M> {
 
     /// Current scroll offset of the editor viewport.
     pub fn scroll_offset(&self) -> gpui::Point<gpui::Pixels> {
-        self.scroll_handle.offset()
+        match self.pending_scroll {
+            Some(PendingScroll::Offset(offset)) => offset,
+            _ => self.scroll_handle.offset(),
+        }
     }
 
     /// Set scroll offset of the editor viewport.

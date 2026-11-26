@@ -97,10 +97,29 @@ pub(crate) fn write_unsaved(
 }
 
 /// Everything a place keeps but the text, and the text as a Rope.
-#[derive(Clone, PartialEq)]
+#[derive(Clone)]
 pub(crate) struct PlaceSnapshot {
     pub text: Rope,
     pub rest: SavedPlace,
+}
+
+impl PartialEq for PlaceSnapshot {
+    /// Equal places are not written again. Once the top line is known, `scroll_y` follows
+    /// from it and from the wrapping, which refines for a while after a large Document
+    /// opens, so it does not count.
+    fn eq(&self, other: &Self) -> bool {
+        let same_scroll =
+            self.rest.scroll_top.is_some() && self.rest.scroll_top == other.rest.scroll_top;
+        let rest = |snapshot: &Self| SavedPlace {
+            scroll_y: if same_scroll {
+                0.
+            } else {
+                snapshot.rest.scroll_y
+            },
+            ..snapshot.rest.clone()
+        };
+        self.text == other.text && rest(self) == rest(other)
+    }
 }
 
 impl PlaceSnapshot {
@@ -226,5 +245,40 @@ mod tests {
         let json = db.load_place("a.md").expect("load").expect("stored");
         let place = desafinado_ai::editor::place::place_from_json(&json).expect("json");
         assert_eq!((place.text.as_str(), place.scroll_y), ("the text", 3.));
+    }
+
+    fn place_at(scroll_y: f32, line: Option<usize>) -> PlaceSnapshot {
+        let rest =
+            desafinado_ai::editor::place::take_place(&desafinado_ai::editor::place::PlaceInput {
+                text: "",
+                selection: desafinado_ai::editor::place::PlaceSelection::default(),
+                scroll_y,
+                scroll_top: line
+                    .map(|line| desafinado_ai::editor::place::ScrollTop { line, within: 2. }),
+                suggestions: &desafinado_core::suggestions::SuggestionsState::default(),
+                notes: None,
+                note_rewrites: &[],
+                mode: None,
+            });
+        PlaceSnapshot {
+            text: Rope::from_str("the text"),
+            rest,
+        }
+    }
+
+    #[test]
+    fn a_place_whose_pixels_moved_but_not_its_top_line_is_the_same_place() {
+        assert!(place_at(100., Some(7)) == place_at(140., Some(7)));
+    }
+
+    #[test]
+    fn a_new_top_line_is_a_new_place() {
+        assert!(place_at(100., Some(7)) != place_at(100., Some(8)));
+    }
+
+    #[test]
+    fn without_a_top_line_the_pixels_count() {
+        assert!(place_at(100., None) != place_at(140., None));
+        assert!(place_at(100., None) == place_at(100., None));
     }
 }

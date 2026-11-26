@@ -1387,9 +1387,7 @@ impl TextWrapper {
         deadline: Option<std::time::Instant>,
         cx: &mut App,
     ) -> Option<Range<usize>> {
-        if !self.has_estimated() {
-            return None;
-        }
+        self.first_estimated(lines.start, lines.end.min(self.lines_count()))?;
         let mut wrap_line = self.make_wrap_line(true, cx);
         self.refine_lines_with(lines, deadline, &mut wrap_line)
     }
