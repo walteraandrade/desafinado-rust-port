@@ -3265,10 +3265,16 @@ fn open_start(launch: Option<PathBuf>, user_data: &Path) -> Start {
         (None, None) => Reopened::default(),
     };
     let notice = from_launch.notice.clone().or(reopened.notice.clone());
+    let untitled_unsaved = reopened
+        .text
+        .is_none()
+        .then(|| load_unsaved(db.as_deref(), SCRATCH_KEY).map(|unsaved| unsaved.text))
+        .flatten();
+    let continues_untitled = untitled_unsaved.is_some();
     let initial = reopened
         .text
         .clone()
-        .or_else(|| load_unsaved(db.as_deref(), SCRATCH_KEY).map(|unsaved| unsaved.text))
+        .or(untitled_unsaved)
         .unwrap_or_else(|| SAMPLE_DOCUMENT.to_string());
     if reopened.gone
         && let Some(path) = &last_file
@@ -3283,9 +3289,15 @@ fn open_start(launch: Option<PathBuf>, user_data: &Path) -> Start {
     }
     let start = reopened.start.clone();
     let start_path = start.as_ref().map(|start| start.path.clone());
+    // An Untitled Document that is not the one left unsaved last time is a new one: a `Started`
+    // version begins its own Timeline (`current_untitled`).
     let first_record = RecordInput {
         at: now_ms(),
-        cause: VersionCause::Edited,
+        cause: if start.is_none() && !continues_untitled {
+            VersionCause::Started
+        } else {
+            VersionCause::Edited
+        },
         text: initial.clone(),
     };
     let remembered = if reopened.gone {
