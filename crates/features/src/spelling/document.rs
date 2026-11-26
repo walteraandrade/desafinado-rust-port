@@ -143,24 +143,24 @@ pub fn keep_only(checked: &mut Checked, blocks: &[(usize, String)]) {
     checked.retain(|text, _| current.contains(text.as_str()));
 }
 
-/// Issues after an edit that replaced `start..old_end` with text ending at `new_end`: the ones
-/// the edit touched are gone until the next check, the ones after it move.
-pub fn map_issues(issues: &[Issue], start: usize, old_end: usize, new_end: usize) -> Vec<Issue> {
-    issues
-        .iter()
-        .filter(|issue| issue.range.end < start || issue.range.start > old_end)
-        .map(|issue| {
-            if issue.range.start > old_end {
-                Issue {
-                    range: issue.range.start + new_end - old_end
-                        ..issue.range.end + new_end - old_end,
-                    ..issue.clone()
-                }
-            } else {
-                issue.clone()
-            }
-        })
-        .collect()
+/// Moves `issues`, which are in Document order, through an edit that replaced `start..old_end`
+/// with text ending at `new_end`: the ones the edit touched are gone until the next check, the
+/// ones after it move. Works in place, so an edit costs a pass over plain numbers and no
+/// copy of any issue.
+pub fn map_issues(issues: &mut Vec<Issue>, start: usize, old_end: usize, new_end: usize) {
+    let after = issues.partition_point(|issue| issue.range.start <= old_end);
+    if issues[..after].iter().any(|issue| issue.range.end >= start) {
+        let mut index = 0;
+        issues.retain(|issue| {
+            index += 1;
+            index > after || issue.range.end < start
+        });
+    }
+    let after = issues.partition_point(|issue| issue.range.start <= old_end);
+    for issue in &mut issues[after..] {
+        issue.range.start = issue.range.start + new_end - old_end;
+        issue.range.end = issue.range.end + new_end - old_end;
+    }
 }
 
 /// What "Ignore" remembers: a misspelled word everywhere, a grammar issue only for the same
@@ -513,6 +513,15 @@ mod tests {
         assert_eq!(checked.keys().collect::<Vec<_>>(), vec!["new"]);
     }
 
+    fn mapped(mut issues: Vec<Issue>, start: usize, old_end: usize, new_end: usize) -> Vec<Issue> {
+        map_issues(&mut issues, start, old_end, new_end);
+        issues
+    }
+
+    fn ranges(issues: Vec<Issue>) -> Vec<Range<usize>> {
+        issues.into_iter().map(|i| i.range).collect()
+    }
+
     #[test]
     fn an_edit_drops_touched_issues_and_moves_later_ones() {
         let issues = vec![
@@ -520,11 +529,7 @@ mod tests {
             issue(10..14, IssueKind::Spelling),
             issue(20..25, IssueKind::Grammar),
         ];
-        let mapped: Vec<_> = map_issues(&issues, 12, 13, 16)
-            .into_iter()
-            .map(|i| i.range)
-            .collect();
-        assert_eq!(mapped, vec![0..3, 23..28]);
+        assert_eq!(ranges(mapped(issues, 12, 13, 16)), vec![0..3, 23..28]);
     }
 
     #[test]
@@ -533,23 +538,57 @@ mod tests {
             issue(10..14, IssueKind::Spelling),
             issue(20..25, IssueKind::Grammar),
         ];
-        let mapped: Vec<_> = map_issues(&issues, 2, 5, 2)
-            .into_iter()
-            .map(|i| i.range)
-            .collect();
-        assert_eq!(mapped, vec![7..11, 17..22]);
+        assert_eq!(ranges(mapped(issues, 2, 5, 2)), vec![7..11, 17..22]);
     }
 
     #[test]
     fn typing_right_before_a_word_drops_its_issue() {
         let issues = vec![issue(4..7, IssueKind::Spelling)];
-        assert_eq!(map_issues(&issues, 4, 4, 5), vec![]);
+        assert_eq!(mapped(issues, 4, 4, 5), vec![]);
     }
 
     #[test]
     fn typing_right_after_a_word_drops_its_issue() {
         let issues = vec![issue(4..7, IssueKind::Spelling)];
-        assert_eq!(map_issues(&issues, 7, 7, 8), vec![]);
+        assert_eq!(mapped(issues, 7, 7, 8), vec![]);
+    }
+
+    fn reference(issues: &[Issue], start: usize, old_end: usize, new_end: usize) -> Vec<Issue> {
+        issues
+            .iter()
+            .filter(|issue| issue.range.end < start || issue.range.start > old_end)
+            .map(|issue| {
+                if issue.range.start > old_end {
+                    Issue {
+                        range: issue.range.start + new_end - old_end
+                            ..issue.range.end + new_end - old_end,
+                        ..issue.clone()
+                    }
+                } else {
+                    issue.clone()
+                }
+            })
+            .collect()
+    }
+
+    #[test]
+    fn mapping_in_place_matches_the_copying_version_for_every_edit() {
+        let mut issues: Vec<Issue> = (0..12)
+            .map(|n| issue(n * 5..n * 5 + 2 + n % 4, IssueKind::Spelling))
+            .collect();
+        issues.insert(3, issue(8..30, IssueKind::Grammar));
+        issues.sort_by_key(|i| (i.range.start, i.range.end));
+        for start in 0..70 {
+            for old_end in start..70 {
+                for new_end in [start, start + 1, start + 4] {
+                    assert_eq!(
+                        mapped(issues.clone(), start, old_end, new_end),
+                        reference(&issues, start, old_end, new_end),
+                        "edit {start}..{old_end} -> {new_end}"
+                    );
+                }
+            }
+        }
     }
 
     #[test]

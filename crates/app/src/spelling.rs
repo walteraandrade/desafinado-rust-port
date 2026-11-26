@@ -404,12 +404,12 @@ impl EditorPane {
 
     /// Moves the marks with an edit; the ones it touched wait for the next check.
     pub(crate) fn map_spelling(&mut self, start: usize, old_end: usize, new_end: usize) {
-        self.spelling.issues = Arc::new(document::map_issues(
-            &self.spelling.issues,
+        document::map_issues(
+            Arc::make_mut(&mut self.spelling.issues),
             start,
             old_end,
             new_end,
-        ));
+        );
         self.spelling.menu = None;
         self.spelling.dismissed = None;
     }
