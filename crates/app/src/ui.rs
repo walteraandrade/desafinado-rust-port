@@ -1535,32 +1535,35 @@ pub struct SpellMark {
     pub color: Hsla,
 }
 
+/// Builds the marks that reach a byte range of the Document, from what the editor shows now.
+pub type MarksIn =
+    Rc<dyn Fn(&gpui_kit::base::input::EditorState, std::ops::Range<usize>) -> Vec<SpellMark>>;
+
 /// Paints the spell checker's dots under the editor's text, after the editor has laid out
 /// this frame. Each word is measured on its own, so a mark that wraps keeps its dots on
-/// every row it reaches.
+/// every row it reaches. Only the marks on rows in view are built and measured, however long
+/// the line is.
 pub fn spelling_layer(
     editor: Entity<gpui_kit::base::input::EditorState>,
-    marks: Vec<SpellMark>,
+    marks_in: MarksIn,
 ) -> AnyElement {
     canvas(
         |_, _, _| (),
         move |_, (), window, cx| {
             perf_span!("spelling.paint");
             let state = editor.read(cx);
-            let mask = ContentMask {
-                bounds: state.input_bounds(),
-            };
+            let screen = state.input_bounds();
+            let mask = ContentMask { bounds: screen };
             window.with_content_mask(Some(mask), |window| {
                 let view = state.visible_row_range().map(|rows| {
                     use gpui_kit::base::input::RopeExt as _;
                     let from = state.text().line_start_offset(rows.start.saturating_sub(1));
                     from..state.text().line_start_offset(rows.end + 1).max(from)
                 });
-                let near: Box<dyn Iterator<Item = &SpellMark>> = match &view {
-                    Some(view) => Box::new(marks_near(&marks, view)),
-                    None => Box::new(marks.iter()),
-                };
-                for mark in near {
+                let bytes = view.map_or(0..usize::MAX, |view| {
+                    bytes_on_screen(view, |offset| row_span(state, offset), screen)
+                });
+                for mark in marks_in(state, bytes) {
                     for (left, right, line) in mark_rows(state, &mark.range) {
                         let top = line.top() + line.size.height * 0.5 + px(SPELL_DOT_DROP);
                         for dot in dotted_line(left, right, top) {
@@ -1578,16 +1581,46 @@ pub fn spelling_layer(
     .into_any_element()
 }
 
-/// The marks that can reach `view`, from `marks` in Document order: the ones starting after it
-/// are cut by a search, the ones that end before it are skipped by comparing offsets only.
-fn marks_near<'a>(
-    marks: &'a [SpellMark],
-    view: &std::ops::Range<usize>,
-) -> impl Iterator<Item = &'a SpellMark> {
-    let until = marks.partition_point(|mark| mark.range.start < view.end);
-    marks[..until]
-        .iter()
-        .filter(|mark| mark.range.end >= view.start)
+/// The top and bottom of the row that holds `offset`, when it is laid out.
+fn row_span(state: &gpui_kit::base::input::EditorState, offset: usize) -> Option<(Pixels, Pixels)> {
+    let text = state.text();
+    let offset = text.floor_char_boundary(offset.min(text.len()));
+    state
+        .range_to_bounds(&(offset..offset))
+        .map(|bounds| (bounds.top(), bounds.bottom()))
+}
+
+/// The bytes of `within` whose rows can show on `screen`, found by searching the rows by
+/// position instead of measuring every mark: a mark outside them has all its dots off screen.
+/// `row_of` gives the top and bottom of an offset's row, or `None` where it is not laid out,
+/// which the search treats as in view.
+fn bytes_on_screen(
+    within: std::ops::Range<usize>,
+    row_of: impl Fn(usize) -> Option<(Pixels, Pixels)>,
+    screen: Bounds<Pixels>,
+) -> std::ops::Range<usize> {
+    let first_in_view = first_where(&within, |offset| {
+        !row_of(offset).is_some_and(|(_, bottom)| bottom < screen.top())
+    });
+    let first_below = first_where(&within, |offset| {
+        row_of(offset).is_some_and(|(top, _)| top > screen.bottom())
+    });
+    first_in_view..first_below.max(first_in_view)
+}
+
+/// The first offset in `within` where `holds` is true, or its end: `holds` must stay true once
+/// it turns true.
+fn first_where(within: &std::ops::Range<usize>, holds: impl Fn(usize) -> bool) -> usize {
+    let (mut low, mut high) = (within.start, within.end);
+    while low < high {
+        let middle = low + (high - low) / 2;
+        if holds(middle) {
+            high = middle;
+        } else {
+            low = middle + 1;
+        }
+    }
+    low
 }
 
 /// How far below the middle of a line the dots sit: under the letters, above the next line.
@@ -1732,7 +1765,7 @@ fn next_character(
 #[cfg(test)]
 mod tests {
     use super::{
-        CaretInk, CaretSpot, SPELL_DOT, SpellMark, caret_quads, dotted_line, marks_near, word_spans,
+        CaretInk, CaretSpot, SPELL_DOT, bytes_on_screen, caret_quads, dotted_line, word_spans,
     };
     use super::{
         Enter, cascade_delay, column_share, delayed, dot_opacity, ease_in_out_sine, ease_out_expo,
@@ -1918,22 +1951,40 @@ mod tests {
         assert!(word_spans("   ").is_empty());
     }
 
+    fn rows_of_20_bytes(
+        line: f32,
+    ) -> impl Fn(usize) -> Option<(gpui_kit::Pixels, gpui_kit::Pixels)> {
+        move |offset| {
+            let top = (offset / 20) as f32 * line;
+            Some((px(top), px(top + line)))
+        }
+    }
+
+    fn screen(top: f32, bottom: f32) -> gpui_kit::Bounds<gpui_kit::Pixels> {
+        gpui_kit::Bounds::from_corners(point(px(0.), px(top)), point(px(100.), px(bottom)))
+    }
+
     #[test]
-    fn only_marks_reaching_the_view_are_painted() {
-        let mark = |range: std::ops::Range<usize>| SpellMark {
-            range,
-            color: gpui_kit::Hsla::default(),
-        };
-        let marks = vec![
-            mark(0..5),
-            mark(8..40),
-            mark(20..24),
-            mark(60..64),
-            mark(90..95),
-        ];
-        let near: Vec<_> = marks_near(&marks, &(18..70))
-            .map(|mark| mark.range.clone())
-            .collect();
-        assert_eq!(near, vec![8..40, 20..24, 60..64]);
+    fn a_long_line_is_cut_to_the_rows_on_screen() {
+        let bytes = bytes_on_screen(0..55_000, rows_of_20_bytes(20.), screen(2_000., 2_400.));
+        assert_eq!(bytes, 1_980..2_420);
+    }
+
+    #[test]
+    fn rows_not_laid_out_count_as_in_view() {
+        let bytes = bytes_on_screen(0..100, |_| None, screen(0., 100.));
+        assert_eq!(bytes, 0..100);
+    }
+
+    #[test]
+    fn the_whole_range_stays_when_everything_is_on_screen() {
+        let bytes = bytes_on_screen(0..100, rows_of_20_bytes(20.), screen(0., 500.));
+        assert_eq!(bytes, 0..100);
+    }
+
+    #[test]
+    fn an_empty_range_when_every_row_is_above_the_screen() {
+        let bytes = bytes_on_screen(0..100, rows_of_20_bytes(20.), screen(1_000., 1_200.));
+        assert_eq!(bytes, 100..100);
     }
 }
