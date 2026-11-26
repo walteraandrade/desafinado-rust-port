@@ -861,8 +861,11 @@ impl<M: InputModeKind> InputBaseState<M> {
     /// The buffer line at the top of the viewport and the pixels of that line above it. Unlike a
     /// pixel offset, it means the same text whether or not the rows above are exact yet.
     pub fn scroll_top_line(&self) -> Option<(usize, Pixels)> {
-        if let Some(PendingScroll::TopLine(line, within)) = self.pending_scroll {
-            return Some((line, within));
+        match self.pending_scroll {
+            Some(PendingScroll::TopLine(line, within)) => return Some((line, within)),
+            // An old pixel place still waits for a layout: keep it, not the stale handle's line.
+            Some(PendingScroll::Offset(_)) => return None,
+            None => {}
         }
         let line_height = self.last_layout.as_ref()?.line_height;
         let top = self.viewport_top_line(line_height);
