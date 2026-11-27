@@ -254,7 +254,7 @@ pub struct EditorPane {
     bubble_shown: bool,
     typing_in_bubble: bool,
     last_bubble: RefCell<Option<BubbleGhost>>,
-    bubble_leaving: Option<(BubbleGhost, Task<()>)>,
+    bubble_leaving: ui::Presence<BubbleGhost>,
     pointer_down: Rc<Cell<bool>>,
     pub(crate) last_selection: Range<usize>,
     refine: Option<RefineInput>,
@@ -367,7 +367,7 @@ impl EditorPane {
             bubble_shown: false,
             typing_in_bubble: false,
             last_bubble: RefCell::new(None),
-            bubble_leaving: None,
+            bubble_leaving: ui::Presence::absent(),
             pointer_down: Rc::new(Cell::new(false)),
             last_selection: 0..0,
             refine: None,
@@ -971,7 +971,7 @@ impl EditorPane {
     pub fn forget_bubble(&mut self) {
         self.bubble_shown = false;
         self.last_bubble.replace(None);
-        self.bubble_leaving = None;
+        self.bubble_leaving = ui::Presence::absent();
     }
 
     pub fn put_away(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -2865,23 +2865,12 @@ impl EditorPane {
         }));
     }
 
-    fn start_bubble_leave(&mut self, cx: &mut Context<Self>) {
-        if cx.reduce_motion() {
-            self.last_bubble.replace(None);
-            return;
-        }
+    fn start_bubble_leave(&mut self, cx: &App) {
         let Some(ghost) = self.last_bubble.take() else {
             return;
         };
-        let done = cx.spawn(async move |this, cx| {
-            cx.background_executor().timer(ui::MOTION_LEAVE).await;
-            this.update(cx, |this, cx| {
-                this.bubble_leaving = None;
-                cx.notify();
-            })
-            .log_warn();
-        });
-        self.bubble_leaving = Some((ghost, done));
+        self.bubble_leaving = ui::Presence::present(ghost);
+        self.bubble_leaving.hide(ui::bubble_out(), cx);
     }
 
     fn render_ask_row(
@@ -3026,7 +3015,7 @@ impl EditorPane {
             self.start_bubble_leave(cx);
         }
         if shown {
-            self.bubble_leaving = None;
+            self.bubble_leaving = ui::Presence::absent();
         }
         self.bubble_shown = shown;
         bubble
@@ -3047,8 +3036,8 @@ impl Render for EditorPane {
             .and_then(|anchor| self.render_bubble(anchor, roles, cx))
             .or_else(|| {
                 self.bubble_leaving
-                    .as_ref()
-                    .map(|(ghost, _)| render_bubble_ghost(ghost, roles))
+                    .frame(window, cx)
+                    .map(|shown| render_bubble_ghost(shown.content, shown.progress, roles))
             });
         let press = Rc::clone(&self.pointer_down);
         let marks = self.render_note_marks(roles, cx);
@@ -3192,7 +3181,7 @@ fn bubble_body<E: ParentElement + Styled>(
     frame.children(rows)
 }
 
-fn render_bubble_ghost(ghost: &BubbleGhost, roles: Roles) -> AnyElement {
+fn render_bubble_ghost(ghost: &BubbleGhost, progress: f32, roles: Roles) -> AnyElement {
     let rows = ghost
         .rows
         .iter()
@@ -3220,12 +3209,7 @@ fn render_bubble_ghost(ghost: &BubbleGhost, roles: Roles) -> AnyElement {
         rows,
         roles,
     );
-    ui::leave(
-        "bubble-out",
-        frame,
-        ui::Enter::Rise(if ghost.above { 6. } else { -6. }),
-    )
-    .into_any_element()
+    ui::risen(frame, if ghost.above { 6. } else { -6. }, progress).into_any_element()
 }
 
 fn bubble_in(bubble: Stateful<Div>, above: bool) -> AnyElement {

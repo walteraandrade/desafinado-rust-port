@@ -1312,6 +1312,20 @@ pub fn toast_in_out() -> ginga_gpui::InOut {
     )
 }
 
+/// How the Ask bubble leaves.
+pub fn bubble_out() -> ginga_gpui::Tween {
+    ginga_gpui::Tween::new(MOTION_LEAVE, ginga_gpui::Easing::OutQuart)
+}
+
+/// `element` as much on screen as `progress` says: it fades in and rises
+/// `rise` pixels into its place, by its top margin, so an absolutely placed
+/// element keeps its place.
+pub fn risen<E: Styled>(element: E, rise: f32, progress: f32) -> E {
+    element
+        .opacity(progress.clamp(0., 1.))
+        .mt(px(rise * (1. - progress)))
+}
+
 /// `element` as much on screen as `progress` says: it fades in and lifts
 /// `lift` pixels into its place. Entering, leaving and the toast all lift
 /// with it.
