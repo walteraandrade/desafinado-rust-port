@@ -1,0 +1,63 @@
+//! The breathing marks of the requests the tray shows as working, drawn by a
+//! view of their own over the editor pane, as the AI caret is. A mark breathes
+//! for as long as its request runs; drawn inside the pane, each of its frames
+//! would render the pane again too. The tray leaves an empty spot for each
+//! mark and records where it is laid out (`EditorPane::tray_mark_spots`).
+//!
+//! The pane is cached and lays out after this view has drawn, so the marks
+//! follow their spots one frame late: when a spot appears, moves or goes, the
+//! pane has this view, and only this view, drawn again on the next frame. For
+//! that frame a mark can sit where its row was, or over the pass mark of a
+//! request that has just answered.
+//!
+//! Like the AI caret, the marks are painted above everything the pane draws
+//! over its text: a Suggestion Card, the bubble or the spelling menu that
+//! overlaps the tray's corner, which happens in a narrow window, no longer
+//! covers them.
+
+use ginga_gpui::Island;
+use gpui_kit::*;
+
+use crate::{editor_pane::EditorPane, theme, ui};
+
+pub struct TrayMarks {
+    pane: WeakEntity<EditorPane>,
+}
+
+pub type TrayMarksView = Island<TrayMarks>;
+
+pub fn new(pane: &Entity<EditorPane>, cx: &mut App) -> Entity<TrayMarksView> {
+    let marks = TrayMarks {
+        pane: pane.downgrade(),
+    };
+    let view = cx.new(|_| Island::new(marks, draw));
+    let weak = view.downgrade();
+    pane.update(cx, |pane, _| pane.jobs.marks_view = Some(weak));
+    view
+}
+
+fn draw(marks: &mut TrayMarks, _: &mut Window, cx: &mut Context<TrayMarksView>) -> AnyElement {
+    let Some(pane) = marks.pane.upgrade() else {
+        return Empty.into_any_element();
+    };
+    let pane = pane.read(cx);
+    let spots = pane.tray_mark_spots();
+    if spots.is_empty() {
+        return Empty.into_any_element();
+    }
+    let area = pane.pane_bounds().size;
+    let roles = theme::roles(cx);
+    ui::over_pane(area)
+        .children(spots.into_iter().map(|(id, spot)| {
+            div()
+                .absolute()
+                .left(spot.x)
+                .top(spot.y)
+                .child(ui::job_mark(
+                    SharedString::from(format!("job-mark-{id}")),
+                    true,
+                    roles,
+                ))
+        }))
+        .into_any_element()
+}

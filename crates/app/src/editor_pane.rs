@@ -3067,7 +3067,7 @@ impl Render for EditorPane {
         let note_card = self.render_note_card(roles, cx);
         let panel = self.render_notes_panel(roles, cx);
         let map = self.render_map_and_chips(roles, cx);
-        let tray = self.render_jobs_tray(roles, cx);
+        let tray = self.render_jobs_tray(roles, window, cx);
         let (spell_layer, spell_menu) = self.render_spelling(window, roles, cx);
         let text = div()
             .id("editor-pane")
