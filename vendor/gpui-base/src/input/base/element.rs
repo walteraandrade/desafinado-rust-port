@@ -3936,10 +3936,15 @@ impl<M: InputModeKind> Element for TextElement<M> {
         // screen to move with it. Whatever read the old layout this frame (a card
         // placed at a line, say) is drawn again on the next one: a notify made
         // while drawing schedules no frame, so the next frame is asked for.
-        let scrolled = self.state.read(cx).last_layout.as_ref().is_some_and(|layout| {
-            layout.visible_top != last_layout.visible_top
-                || layout.visible_range_offset != last_layout.visible_range_offset
-        });
+        let scrolled = self
+            .state
+            .read(cx)
+            .last_layout
+            .as_ref()
+            .is_some_and(|layout| {
+                layout.visible_top != last_layout.visible_top
+                    || layout.visible_range_offset != last_layout.visible_range_offset
+            });
         if scrolled {
             let state = self.state.clone();
             window.on_next_frame(move |_, cx| state.update(cx, |_, cx| cx.notify()));
