@@ -3187,7 +3187,7 @@ fn render_bubble_ghost(ghost: &BubbleGhost, progress: f32, roles: Roles) -> AnyE
         .iter()
         .enumerate()
         .map(|(index, row)| {
-            ui::ask_option_row(("ghost-row", index), index == ghost.active, roles)
+            ui::leaving_ask_option_row(("ghost-row", index), index == ghost.active, roles)
                 .child(ui::ask_option_label(row.label.clone()))
                 .when(row.skill, |this| this.child(ui::meta("Skill", roles)))
                 .into_any_element()

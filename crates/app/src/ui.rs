@@ -345,6 +345,16 @@ pub fn ask_option_row(id: impl Into<ElementId>, active: bool, roles: Roles) -> S
         .justify_between()
 }
 
+/// An Ask AI row in a bubble on its way out: drawn the same, with no pointer,
+/// since it takes no clicks.
+pub fn leaving_ask_option_row(
+    id: impl Into<ElementId>,
+    active: bool,
+    roles: Roles,
+) -> Stateful<Div> {
+    ask_option_row(id, active, roles).cursor_default()
+}
+
 /// The label of an Ask AI row: wraps inside the bubble, up to three lines, then an ellipsis.
 pub fn ask_option_label(text: impl IntoElement) -> Div {
     div()
