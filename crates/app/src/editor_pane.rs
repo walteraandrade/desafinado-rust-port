@@ -279,6 +279,9 @@ pub struct EditorPane {
     /// has rested on it for `ui::MOTION_HOVER_DELAY`.
     hover_card: Option<String>,
     hover_wait: Option<Task<()>>,
+    /// The working dots of a Suggestion being refined, and their levels this frame.
+    refining: ui::Looping<2>,
+    refine_dots: [f32; 3],
     pub review: Option<ReviewRun>,
     pub(crate) pending: Option<crate::comment_review::PendingReview>,
     pub(crate) mode: Option<crate::comment_review::ReviewModeState>,
@@ -393,6 +396,8 @@ impl EditorPane {
             hovered: None,
             hover_card: None,
             hover_wait: None,
+            refining: ui::dots_round(),
+            refine_dots: [1.; 3],
             review: None,
             pending: None,
             mode: None,
@@ -972,6 +977,14 @@ impl EditorPane {
                 .refine
                 .as_ref()
                 .is_some_and(|refine| refine.input.read(cx).focus_handle(cx).is_focused(window))
+    }
+
+    /// The pane is not on screen: its loops start over when it is again.
+    pub fn loops_away(&mut self, cx: &mut App) {
+        self.refining.away();
+        if let Some(marks) = self.jobs.marks_view.as_ref().and_then(WeakEntity::upgrade) {
+            crate::tray_marks_view::away(&marks, cx);
+        }
     }
 
     pub fn forget_bubble(&mut self) {
@@ -2440,7 +2453,7 @@ impl EditorPane {
                     SharedString::from(format!("refine-{id}")),
                     "Refining",
                     roles,
-                    cx.reduce_motion(),
+                    self.refine_dots,
                 )
             } else {
                 ui::sized_button(
@@ -2950,6 +2963,20 @@ fn accepted_change(ready: &ReadySuggestion) -> AcceptedChange {
 }
 
 impl EditorPane {
+    /// The Refining dots' levels this frame, while a card that shows them is drawn.
+    fn step_refine_dots(&mut self, shown: &HashMap<String, CardKind>, window: &Window, cx: &App) {
+        let refining = self.suggestions.items.iter().map(|item| {
+            let working = matches!(item, Suggestion::Ready(ready) if matches!(ready.refine, RefineState::Working { .. }));
+            (item.id.as_str(), working)
+        });
+        self.refine_dots = if refining_on_screen(refining, shown) {
+            ui::dot_levels(self.refining.frame(window, cx), cx.reduce_motion())
+        } else {
+            self.refining.away();
+            [1.; 3]
+        };
+    }
+
     fn render_cards(
         &mut self,
         window: &Window,
@@ -2970,6 +2997,7 @@ impl EditorPane {
         .into_iter()
         .map(|(id, kind)| (id.to_string(), kind))
         .collect();
+        self.step_refine_dots(&shown, window, cx);
         self.card_rects.borrow_mut().clear();
         self.drawn_cards.borrow_mut().clear();
         let mut cards: Vec<AnyElement> = Vec::new();
@@ -3270,10 +3298,32 @@ pub(crate) fn hits_text_range(
     x >= start && x <= end
 }
 
+/// Whether a Suggestion being refined has its card among the `shown` ones.
+fn refining_on_screen<'a>(
+    mut suggestions: impl Iterator<Item = (&'a str, bool)>,
+    shown: &HashMap<String, CardKind>,
+) -> bool {
+    suggestions.any(|(id, working)| working && shown.contains_key(id))
+}
+
 #[cfg(test)]
 mod tests {
-    use super::key_bindings;
+    use super::{CardKind, HashMap, key_bindings, refining_on_screen};
     use gpui_kit::{KeyContext, Keymap, Keystroke};
+
+    #[test]
+    fn the_refining_dots_run_only_while_a_refining_card_shows() {
+        let shown = HashMap::from([("b".to_string(), CardKind::Active)]);
+        assert!(refining_on_screen(
+            [("a", false), ("b", true)].into_iter(),
+            &shown
+        ));
+        assert!(!refining_on_screen(
+            [("a", true), ("b", false)].into_iter(),
+            &shown
+        ));
+        assert!(!refining_on_screen(std::iter::empty(), &shown));
+    }
 
     fn stack(names: &[&str]) -> Vec<KeyContext> {
         names

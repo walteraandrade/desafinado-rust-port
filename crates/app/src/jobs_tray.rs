@@ -277,11 +277,7 @@ impl EditorPane {
         .child(if working {
             self.mark_spot(job.id.clone()).into_any_element()
         } else {
-            ui::job_mark(
-                SharedString::from(format!("job-mark-{}", job.id)),
-                false,
-                roles,
-            )
+            ui::job_mark(ui::JobMark::Answered, roles)
         })
         .child(ui::job_text(job.label, job.detail, roles))
         .child(button)

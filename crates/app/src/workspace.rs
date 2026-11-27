@@ -3521,7 +3521,10 @@ impl Render for Workspace {
             && self.spend.is_none()
             && self.visible_mode() == HistoryMode::Editing;
         if !text_shown {
-            self.pane.update(cx, |pane, _| pane.forget_bubble());
+            self.pane.update(cx, |pane, cx| {
+                pane.forget_bubble();
+                pane.loops_away(cx);
+            });
             crate::ai_caret_view::land(&self.ai_caret, cx);
         }
         let mode = if evals_shown {
@@ -3529,9 +3532,13 @@ impl Render for Workspace {
         } else {
             self.visible_mode()
         };
+        let shown = open_skill.is_some();
+        let gauge = self
+            .evals
+            .update(cx, |evals, cx| evals.gauge(shown, window, cx));
         let evals_button = open_skill.as_ref().map(|_| EvalsButton {
             pressed: evals_shown,
-            busy: self.evals.read(cx).going().is_some(),
+            gauge,
         });
         let main = self.render_main(mode, evals_shown, evals_button, roles, window, cx);
         let root = self
