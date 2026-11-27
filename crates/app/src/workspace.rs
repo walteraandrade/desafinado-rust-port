@@ -58,6 +58,7 @@ use gpui_kit::{component::TitleBar, prelude::FluentBuilder as _, *};
 
 use crate::spelling::{NextIssue, PreviousIssue};
 use crate::{
+    ai_caret_view::AiCaretView,
     caret,
     document::{
         Conflict, DiskReads, DiskState, ExternalFacts, ExternalVerdict, FileSession, ReadVerdict,
@@ -435,6 +436,7 @@ enum Watching {
 
 pub struct Workspace {
     pane: Entity<EditorPane>,
+    ai_caret: Entity<AiCaretView>,
     services: Arc<Services>,
     db: Option<Arc<HistoryDb>>,
     session: Option<FileSession>,
@@ -528,6 +530,7 @@ impl Workspace {
         let subscriptions = Self::subscribe(&pane, &library, &frontmatter, &evals, window, cx);
         let (session, conflict) = session_of(start.as_ref(), &initial);
         let mut workspace = Self {
+            ai_caret: crate::ai_caret_view::new(&pane, cx),
             pane,
             services,
             db,
@@ -1989,7 +1992,10 @@ impl Workspace {
                 folder_name: folder_name.as_deref(),
             },
         );
-        self.pane.update(cx, |pane, _| pane.is_skill = is_skill);
+        self.pane.update(cx, |pane, cx| {
+            pane.is_skill = is_skill;
+            cx.notify();
+        });
         self.frontmatter
             .update(cx, |view, cx| view.refresh(text, report, window, cx));
     }
@@ -3545,7 +3551,18 @@ impl Workspace {
                         ),
                 )
             })
-            .child(div().flex_1().min_h_0().child(self.pane.clone()))
+            .child(
+                div()
+                    .flex_1()
+                    .min_h_0()
+                    .relative()
+                    .child(
+                        self.pane
+                            .clone()
+                            .cached(StyleRefinement::default().size_full()),
+                    )
+                    .child(self.ai_caret.clone()),
+            )
             .child(
                 canvas(
                     |_, _, _| {},

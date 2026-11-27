@@ -19,6 +19,7 @@ use desafinado_ai::{
         },
         ask_menu::{self, AskMenu, AskRow},
         card_placement::{CardPlacement, MARGIN_CARD_WIDTH, margin_card_left, placement_for},
+        caret_travel::Spot,
         focus_cycle::cycle_index,
         geometry::{Rect, Viewport},
         inline_diff::{block_replacement, inline_inserts, rows_before, zone_rows},
@@ -2664,45 +2665,35 @@ impl EditorPane {
         }
     }
 
-    fn render_caret(&self, roles: Roles, cx: &App) -> Option<AnyElement> {
-        let caret = ai_caret_of(&self.suggestions, self.busy().is_some())?;
+    /// Where the AI caret belongs this frame, for the view that draws it.
+    pub(crate) fn ai_caret_place(&self, cx: &App) -> AiCaretPlace {
+        let Some(caret) = ai_caret_of(&self.suggestions, self.busy().is_some()) else {
+            return AiCaretPlace::Gone;
+        };
         if self.above_view(caret.pos, cx) {
-            return None;
+            return AiCaretPlace::Hidden;
         }
-        let bounds = self
-            .editor
-            .read(cx)
-            .range_to_bounds(&(caret.pos..caret.pos))?;
-        let origin = self.origin();
+        let editor = self.editor.read(cx);
+        let Some(bounds) = editor.range_to_bounds(&(caret.pos..caret.pos)) else {
+            return AiCaretPlace::Hidden;
+        };
         let pane = self.bounds.get();
+        let spot = |bounds: Bounds<Pixels>| {
+            let place = bounds.origin - pane.origin;
+            (f32::from(place.x), f32::from(place.y))
+        };
+        let head = editor.cursor();
         let flag_width =
             px(40. + 7. * caret.label.chars().count() as f32).min(ui::AI_CARET_FLAG_MAX_WIDTH);
-        let flipped = bounds.left() + flag_width > pane.origin.x + pane.size.width;
-        let flag = ui::ai_caret_flag(caret.label.clone(), roles, cx.reduce_motion())
-            .absolute()
-            .top(px(-16.))
-            .when(flipped, |this| this.right(px(0.)))
-            .when(!flipped, |this| this.left(px(0.)));
-        let bar = ui::breathe(
-            "ai-caret-bar",
-            div().absolute().top_0().left_0().size_full().bg(roles.ai),
-        );
-        Some(
-            div()
-                .absolute()
-                .left(bounds.left() - origin.x)
-                .top(bounds.top() - origin.y)
-                .w(px(2.))
-                .h(bounds.size.height)
-                .child(bar)
-                .child(ui::enter(
-                    "ai-flag",
-                    flag,
-                    ui::Enter::Rise(3.),
-                    ui::MOTION_ENTER,
-                ))
-                .into_any_element(),
-        )
+        AiCaretPlace::At(AiCaretAt {
+            pos: caret.pos,
+            spot: spot(bounds),
+            takeoff: editor.range_to_bounds(&(head..head)).map(spot),
+            height: bounds.size.height,
+            flipped: bounds.left() + flag_width > pane.origin.x + pane.size.width,
+            label: caret.label,
+            area: pane.size,
+        })
     }
 
     fn bubble_view(&self, window: &Window, cx: &App) -> Option<BubbleAnchor> {
@@ -3047,7 +3038,6 @@ impl Render for EditorPane {
         let bubble = self.settle_bubble(window, cx);
         let zones = self.render_zones(roles, cx);
         let cards = self.render_cards(window, roles, cx);
-        let caret = self.render_caret(roles, cx);
         let bubble = bubble
             .and_then(|anchor| self.render_bubble(anchor, roles, cx))
             .or_else(|| {
@@ -3120,7 +3110,6 @@ impl Render for EditorPane {
                 ),
                 roles,
             ))
-            .children(caret)
             .children(map)
             .children(marks)
             .children(note_card)
@@ -3135,6 +3124,28 @@ impl Render for EditorPane {
             .child(text)
             .children(panel)
     }
+}
+
+/// Where the AI caret belongs in the pane this frame.
+pub(crate) enum AiCaretPlace {
+    /// There is no AI caret.
+    Gone,
+    /// There is one, out of view.
+    Hidden,
+    At(AiCaretAt),
+}
+
+pub(crate) struct AiCaretAt {
+    pub pos: usize,
+    pub spot: Spot,
+    /// The writer's caret, where a new AI caret takes off from.
+    pub takeoff: Option<Spot>,
+    pub height: Pixels,
+    pub label: String,
+    /// The flag opens to the left, at the pane's right edge.
+    pub flipped: bool,
+    /// The pane's size: the caret is clipped to it.
+    pub area: Size<Pixels>,
 }
 
 pub(crate) fn to_f64(value: Pixels) -> f64 {

@@ -1121,6 +1121,7 @@ pub const MOTION_TOAST: std::time::Duration = std::time::Duration::from_millis(3
 pub const MOTION_HOVER_DELAY: std::time::Duration = std::time::Duration::from_millis(160);
 pub const MOTION_LEAVE: std::time::Duration = std::time::Duration::from_millis(180);
 pub const MOTION_GROW: std::time::Duration = std::time::Duration::from_millis(420);
+pub const MOTION_TRAVEL: std::time::Duration = std::time::Duration::from_millis(560);
 const CASCADE_STEP_MS: u64 = 30;
 const CASCADE_MAX_STEPS: usize = 8;
 const GROW_STEP_MS: u64 = 24;
@@ -1264,6 +1265,9 @@ pub fn glide<E: Styled + IntoElement + 'static>(
     )
 }
 
+/// The clock a view keeps for motion that lives in the plain crates.
+pub type MotionClock = ginga_gpui::Clock;
+
 /// A surface that comes and goes, kept to be drawn while it leaves.
 pub type Presence<T> = ginga_gpui::Presence<T>;
 
@@ -1282,6 +1286,13 @@ pub fn lifted<E: Styled>(element: E, lift: f32, progress: f32) -> E {
         .opacity(progress.clamp(0., 1.))
         .relative()
         .top(px(lift * (1. - progress)))
+}
+
+/// A trip between two places in the text, and the time of this frame on
+/// `clock`. The trip is no motion at all when the desktop asks for less of it.
+pub fn travel(clock: &mut MotionClock, cx: &App) -> (ginga_gpui::Transition, std::time::Duration) {
+    let trip = ginga_gpui::Tween::new(MOTION_TRAVEL, ginga_gpui::Easing::OutExpo);
+    (ginga_gpui::unless_reduced(trip, cx), clock.now(cx))
 }
 
 pub fn collapse(id: impl Into<ElementId>, row: Div, full: Pixels) -> AnimationElement<Div> {
