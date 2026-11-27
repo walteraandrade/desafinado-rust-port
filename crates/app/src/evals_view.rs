@@ -156,6 +156,7 @@ pub struct EvalsView {
     scroll: ScrollHandle,
     poll: Option<Task<()>>,
     utc_offset: i64,
+    gauge_breath: ui::Looping<2>,
     _dialog_events: Option<Subscription>,
 }
 
@@ -318,6 +319,7 @@ impl EvalsView {
             scroll: ScrollHandle::new(),
             poll: None,
             utc_offset,
+            gauge_breath: ui::gauge_breath(),
             _dialog_events: None,
         }
     }
@@ -332,6 +334,17 @@ impl EvalsView {
 
     pub fn going(&self) -> Option<&str> {
         self.going.as_deref()
+    }
+
+    /// The Evals icon's opacity this frame: its breath while a run goes on
+    /// and the icon is `shown`, 1 otherwise.
+    pub fn gauge(&mut self, shown: bool, window: &Window, cx: &App) -> f32 {
+        if shown && self.going.is_some() {
+            self.gauge_breath.frame(window, cx)
+        } else {
+            self.gauge_breath.away();
+            1.
+        }
     }
 
     pub fn dialog(&self) -> Option<Entity<EvalRunDialog>> {

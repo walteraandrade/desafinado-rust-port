@@ -3529,9 +3529,13 @@ impl Render for Workspace {
         } else {
             self.visible_mode()
         };
+        let shown = open_skill.is_some();
+        let gauge = self
+            .evals
+            .update(cx, |evals, cx| evals.gauge(shown, window, cx));
         let evals_button = open_skill.as_ref().map(|_| EvalsButton {
             pressed: evals_shown,
-            busy: self.evals.read(cx).going().is_some(),
+            gauge,
         });
         let main = self.render_main(mode, evals_shown, evals_button, roles, window, cx);
         let root = self

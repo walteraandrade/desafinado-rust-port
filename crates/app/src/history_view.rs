@@ -51,10 +51,11 @@ fn mark(cause: &VersionCause, roles: Roles) -> Div {
     )
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct EvalsButton {
     pub pressed: bool,
-    pub busy: bool,
+    /// The Evals icon's opacity: its breath while a run goes on.
+    pub gauge: f32,
 }
 
 fn is_heading(line: &str) -> bool {
@@ -338,7 +339,7 @@ impl Workspace {
                             component::tooltip::Tooltip::new("How this Skill performs")
                                 .build(window, cx)
                         })
-                        .child(ui::gauge_icon(evals.busy, roles))
+                        .child(ui::gauge_icon(evals.gauge, roles))
                         .on_click(cx.listener(|this, _, window, cx| this.toggle_evals(window, cx))),
                     )
                 }),

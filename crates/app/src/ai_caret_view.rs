@@ -22,6 +22,8 @@ pub struct AiCaret {
     pane: WeakEntity<EditorPane>,
     travel: CaretTravel,
     clock: ui::MotionClock,
+    breath: ui::Looping<2>,
+    dots: ui::Looping<2>,
 }
 
 pub type AiCaretView = Island<AiCaret>;
@@ -31,6 +33,8 @@ pub fn new(pane: &Entity<EditorPane>, cx: &mut App) -> Entity<AiCaretView> {
         pane: pane.downgrade(),
         travel: CaretTravel::default(),
         clock: ui::MotionClock::default(),
+        breath: ui::breath(),
+        dots: ui::dots_round(),
     };
     cx.new(|_| Island::new(caret, draw))
 }
@@ -49,10 +53,12 @@ fn draw(caret: &mut AiCaret, window: &mut Window, cx: &mut Context<AiCaretView>)
     let at = match place {
         AiCaretPlace::Gone => {
             caret.travel.land();
+            caret.away();
             return Empty.into_any_element();
         }
         AiCaretPlace::Hidden => {
             caret.travel.hide();
+            caret.away();
             return Empty.into_any_element();
         }
         AiCaretPlace::At(at) => at,
@@ -68,21 +74,33 @@ fn draw(caret: &mut AiCaret, window: &mut Window, cx: &mut Context<AiCaretView>)
     if frame.moving {
         window.request_animation_frame();
     }
-    caret_over_pane(&at, frame.spot, cx)
+    let breath = caret.breath.frame(window, cx);
+    let dots = ui::dot_levels(caret.dots.frame(window, cx), cx.reduce_motion());
+    caret_over_pane(&at, frame.spot, Pulse { breath, dots }, cx)
+}
+
+impl AiCaret {
+    fn away(&mut self) {
+        self.breath.away();
+        self.dots.away();
+    }
+}
+
+/// Where the caret's loops are this frame: the bar's opacity and the flag's dots.
+struct Pulse {
+    breath: f32,
+    dots: [f32; 3],
 }
 
 /// The caret at `spot`, on a layer the size of the pane that clips it.
-fn caret_over_pane(at: &AiCaretAt, spot: Spot, cx: &App) -> AnyElement {
+fn caret_over_pane(at: &AiCaretAt, spot: Spot, pulse: Pulse, cx: &App) -> AnyElement {
     let roles = theme::roles(cx);
-    let flag = ui::ai_caret_flag(at.label.clone(), roles, cx.reduce_motion())
+    let flag = ui::ai_caret_flag(at.label.clone(), roles, pulse.dots)
         .absolute()
         .top(px(-16.))
         .when(at.flipped, |this| this.right(px(0.)))
         .when(!at.flipped, |this| this.left(px(0.)));
-    let bar = ui::breathe(
-        "ai-caret-bar",
-        div().absolute().top_0().left_0().size_full().bg(roles.ai),
-    );
+    let bar = ui::ai_caret_bar(roles, pulse.breath);
     ui::over_pane(at.area)
         .child(
             div()

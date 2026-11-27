@@ -279,6 +279,9 @@ pub struct EditorPane {
     /// has rested on it for `ui::MOTION_HOVER_DELAY`.
     hover_card: Option<String>,
     hover_wait: Option<Task<()>>,
+    /// The working dots of a Suggestion being refined, and their levels this frame.
+    refining: ui::Looping<2>,
+    refine_dots: [f32; 3],
     pub review: Option<ReviewRun>,
     pub(crate) pending: Option<crate::comment_review::PendingReview>,
     pub(crate) mode: Option<crate::comment_review::ReviewModeState>,
@@ -393,6 +396,8 @@ impl EditorPane {
             hovered: None,
             hover_card: None,
             hover_wait: None,
+            refining: ui::dots_round(),
+            refine_dots: [1.; 3],
             review: None,
             pending: None,
             mode: None,
@@ -2440,7 +2445,7 @@ impl EditorPane {
                     SharedString::from(format!("refine-{id}")),
                     "Refining",
                     roles,
-                    cx.reduce_motion(),
+                    self.refine_dots,
                 )
             } else {
                 ui::sized_button(
@@ -2950,12 +2955,25 @@ fn accepted_change(ready: &ReadySuggestion) -> AcceptedChange {
 }
 
 impl EditorPane {
+    fn step_refine_dots(&mut self, window: &Window, cx: &App) {
+        let refining = self.suggestions.items.iter().any(|item| {
+            matches!(item, Suggestion::Ready(ready) if matches!(ready.refine, RefineState::Working { .. }))
+        });
+        self.refine_dots = if refining {
+            ui::dot_levels(self.refining.frame(window, cx), cx.reduce_motion())
+        } else {
+            self.refining.away();
+            [1.; 3]
+        };
+    }
+
     fn render_cards(
         &mut self,
         window: &Window,
         roles: Roles,
         cx: &mut Context<Self>,
     ) -> Vec<AnyElement> {
+        self.step_refine_dots(window, cx);
         let active_id = self.active(cx).map(|item| item.id.clone());
         let card_focused = self.card_focus.is_focused(window);
         let mut items = self.suggestions.items.clone();

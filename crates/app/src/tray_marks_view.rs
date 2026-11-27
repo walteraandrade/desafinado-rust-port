@@ -22,6 +22,7 @@ use crate::{editor_pane::EditorPane, theme, ui};
 
 pub struct TrayMarks {
     pane: WeakEntity<EditorPane>,
+    breath: ui::Looping<2>,
 }
 
 pub type TrayMarksView = Island<TrayMarks>;
@@ -29,6 +30,7 @@ pub type TrayMarksView = Island<TrayMarks>;
 pub fn new(pane: &Entity<EditorPane>, cx: &mut App) -> Entity<TrayMarksView> {
     let marks = TrayMarks {
         pane: pane.downgrade(),
+        breath: ui::breath(),
     };
     let view = cx.new(|_| Island::new(marks, draw));
     let weak = view.downgrade();
@@ -36,28 +38,27 @@ pub fn new(pane: &Entity<EditorPane>, cx: &mut App) -> Entity<TrayMarksView> {
     view
 }
 
-fn draw(marks: &mut TrayMarks, _: &mut Window, cx: &mut Context<TrayMarksView>) -> AnyElement {
+fn draw(marks: &mut TrayMarks, window: &mut Window, cx: &mut Context<TrayMarksView>) -> AnyElement {
     let Some(pane) = marks.pane.upgrade() else {
+        marks.breath.away();
         return Empty.into_any_element();
     };
     let pane = pane.read(cx);
     let spots = pane.tray_mark_spots();
     if spots.is_empty() {
+        marks.breath.away();
         return Empty.into_any_element();
     }
     let area = pane.pane_bounds().size;
+    let opacity = marks.breath.frame(window, cx);
     let roles = theme::roles(cx);
     ui::over_pane(area)
-        .children(spots.into_iter().map(|(id, spot)| {
+        .children(spots.into_iter().map(|(_, spot)| {
             div()
                 .absolute()
                 .left(spot.x)
                 .top(spot.y)
-                .child(ui::job_mark(
-                    SharedString::from(format!("job-mark-{id}")),
-                    true,
-                    roles,
-                ))
+                .child(ui::job_mark(ui::JobMark::Working { opacity }, roles))
         }))
         .into_any_element()
 }

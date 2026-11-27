@@ -109,7 +109,7 @@ Every `ui::enter`, `ui::enter_after` and `ui::enter_in_turn` (the Ask bubble and
 
 ### 10. What got simpler
 
-- A delay is `Tween::delay`, which holds the start look until it is over: the `lead_of`/`delayed` easing wrapper is no longer needed for entries (it is still used by the Spend bars, batch 3).
+- A delay is `Tween::delay`, which holds the start look until it is over: the `lead_of`/`delayed` easing wrapper is no longer needed for entries (it was still used by the Spend bars until batch 3).
 - Reduced motion: `Looked` takes a look at once when the desktop asks for less motion, as GPUI's `with_animation` already did. No change there.
 - But under reduced motion ginga's `unless_reduced` turns a delayed tween into `Transition::Instant`, which drops the delay too. The Suggestion card shown on hover used that 160 ms delay as its hover intent. That wait is now a timer in `EditorPane` (`hover_card`, `wait_for_hover_card`), so it no longer depends on motion at all; the card simply arrives 160 ms after the pointer rests on the text.
 - `Rise` and `Slide` moved the element with a margin, which also pushed what came after it in the layout; a look's offset is `relative`, so only the element moves. No visible difference on the surfaces that use them (checked in the recordings).
@@ -139,3 +139,41 @@ Reviewer: no bugs in placement, hit testing (the layer has no hitbox), paint ord
 
 7. A paint-only `translate` for looks, so an offset never replaces an element's own place (fixes item 8 for absolute and relative elements).
 8. Reduced motion keeps a transition's delay: `unless_reduced` should turn a delayed tween into an instant move *after* the delay, or document that it drops it.
+
+## Batch 3: what moves for as long as it is shown
+
+The breath of the AI caret's bar and of a working request's mark in the tray, the working dots (the AI caret's flag and the Refining button), and the Evals icon's breath now come from `ginga_gpui::Keyframes`; the Spend page's bars grow through a declared look (`Look::width` / `Look::height` with a delayed `Tween`). Desafinado's own `ease_out_expo`, `ease_in_out_sine`, `lead_of` and `delayed` are gone: `Easing::OutExpo` / `Easing::InOutSine` and `Tween::delay` replace them. No `with_animation` is left in the app. The cursor blink is a toggle, not an animation, and stays as it is.
+
+### 12. Keyframes are a view's state; there is no keyframes element
+
+- Wanted: what `look` is for a one-off change, for a loop: `mark.keyframes(id, breath, |mark, opacity| mark.opacity(opacity))`, kept under an id, so `ui::job_mark`, `ui::ai_dots`, `ui::gauge_icon` and the caret's bar stay plain functions of their state, as they were with `with_animation`.
+- Got: `ginga_gpui::Keyframes` must be owned by a view and called with `frame(window, cx)` while it renders.
+- Had to: give each owner a field (`AiCaret`: `breath`, `dots`; `TrayMarks`: `breath`; `EditorPane`: `refining`; `EvalsView`: `gauge_breath`) and turn the helpers into functions of a value (`JobMark::Working { opacity }`, `dot_levels`, `gauge_icon(opacity)`, `ai_caret_bar(opacity)`). `EditorPane` also keeps the dots' levels for the frame in `refine_dots`, because the card is drawn from `&self` methods. The Evals icon is drawn by `Workspace`, whose `new` is at the 100-line limit, so its breath lives in `EvalsView` and `Workspace` asks for it (`EvalsView::gauge`).
+
+### 13. A loop that leaves the screen does not start over when it comes back
+
+- `with_animation` keeps its start in the element's state, so a mark that is drawn again starts from the top of its breath. `Keyframes` start on the first frame that draws them and then run on: a caret that shows again comes back mid-breath, at whatever opacity the time gives.
+- Had to: `ui::Looping`, a wrapper with `frame` (restarts the keyframes on the first frame after an absence) and `away` (called on each frame that leaves the loop out). Every owner has to remember to call `away` on each path that does not draw.
+- Wanted: item 12 would fix this for free (state kept under an id dies when the element is not drawn), or a `Keyframes::restart_when_drawn()`.
+
+### 14. Staggered items cannot share one loop at different points of it
+
+- The three working dots run on one 1.2 s round, each 160 ms after the one before, and each dot's fall wraps over the end of the round into the next. The gallery's pulsing dots each wait inside the round, which only works when the rise and fall leave room; ours fill the whole round.
+- The engine's `Keyframes::starting_at` would at least start each dot later, but `ginga_gpui::Keyframes` does not mirror it (only `restart`), and before its start it rests on the first stop instead of being partway through a round.
+- Had to: one linear `0 → 1` round (`ui::dots_round`), and the dot curve stays in Desafinado (`dot_levels`, `dot_opacity`, now on `Easing::InOutSine`).
+- Wanted: a phase for keyframes (`.at_phase(0.13)` or `.offset(d)` that starts partway through a round), on both the engine and the adapter.
+
+### 15. ginga's `InOut` is not GPUI's `ease_in_out`
+
+- The Evals icon breathed with GPUI's `bounce(ease_in_out)`, a quadratic in-out. ginga's `Easing::InOut` is cubic. To keep the feel: `Easing::Custom(ease_in_out)` with GPUI's function, which works because it is a plain `fn`. A mirrored round of two stops is the same as `bounce`, so that part maps cleanly.
+
+### 16. `at_most_every` caps one set of keyframes, not a view
+
+- The tray's marks used to breathe each on its own, from when each appeared. One `Keyframes` per mark would give each its own frame timer, so the tray would ask for frames up to once per mark per 33 ms. They now share one breath and breathe together. A visible change, small: two marks that run at once are in step.
+- In `Workspace` and `EditorPane`, which are not islands, other motions ask for every frame anyway while they move, as the docs say.
+
+### 17. What got simpler
+
+- The ease curves and the delay arithmetic are ginga's now. The Spend bars are a look with a delayed tween, as the entries are; when the period changes, the bars now glide to their new length instead of jumping.
+- Reduced motion: GPUI's `with_animation` already rested a loop on its start and a one-shot on its end; `Keyframes` rest on their first stop and `Looked` jumps to its look. Same result on screen.
+

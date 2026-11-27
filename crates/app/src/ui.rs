@@ -575,12 +575,23 @@ pub fn job_row(id: impl Into<ElementId>, goes: bool, roles: Roles) -> Stateful<D
         })
 }
 
-/// A request's state: a breathing AI mark while the model works, a success mark once it answers.
-pub fn job_mark(id: impl Into<ElementId>, working: bool, roles: Roles) -> AnyElement {
-    if working {
-        breathe(id, div().flex_none().size(px(8.)).bg(roles.ai)).into_any_element()
-    } else {
-        pip(Pip::Pass, roles).into_any_element()
+/// A request's state: an AI mark at `opacity` of its [`breath`] while the
+/// model works, a success mark once it answers.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum JobMark {
+    Working { opacity: f32 },
+    Answered,
+}
+
+pub fn job_mark(mark: JobMark, roles: Roles) -> AnyElement {
+    match mark {
+        JobMark::Working { opacity } => div()
+            .flex_none()
+            .size(px(8.))
+            .bg(roles.ai)
+            .opacity(opacity)
+            .into_any_element(),
+        JobMark::Answered => pip(Pip::Pass, roles).into_any_element(),
     }
 }
 
@@ -928,8 +939,9 @@ pub fn column_text_width() -> Pixels {
 /// The widest the AI caret's flag grows; a longer instruction ends in an ellipsis.
 pub const AI_CARET_FLAG_MAX_WIDTH: Pixels = px(240.);
 
-/// The flag over the AI caret: "AI", the instruction on one line, and the working dots.
-pub fn ai_caret_flag(label: impl Into<SharedString>, roles: Roles, still: bool) -> Div {
+/// The flag over the AI caret: "AI", the instruction on one line, and the
+/// working dots at `dots`, their [`dot_levels`].
+pub fn ai_caret_flag(label: impl Into<SharedString>, roles: Roles, dots: [f32; 3]) -> Div {
     ai_flag(roles)
         .max_w(AI_CARET_FLAG_MAX_WIDTH)
         .gap(px(4.))
@@ -941,7 +953,7 @@ pub fn ai_caret_flag(label: impl Into<SharedString>, roles: Roles, still: bool) 
                 .weight_regular()
                 .child(label.into()),
         )
-        .child(div().flex_none().child(ai_dots(roles, still)))
+        .child(div().flex_none().child(ai_dots(roles, dots)))
 }
 
 pub fn kbd(text: impl Into<SharedString>, roles: Roles) -> Div {
@@ -1090,8 +1102,9 @@ pub fn measure(on_size: impl Fn(Size<Pixels>, &mut App) + 'static) -> impl IntoE
     .size_full()
 }
 
-/// The Evals icon: four bars of a meter. It breathes while a run goes on.
-pub fn gauge_icon(busy: bool, roles: Roles) -> AnyElement {
+/// The Evals icon: four bars of a meter, at `opacity`: while a run goes on it
+/// follows a [`gauge_breath`], otherwise it is 1.
+pub fn gauge_icon(opacity: f32, roles: Roles) -> Div {
     let bar = |height: f32| div().w(px(2.)).h(px(height)).bg(roles.ink);
     let icon = div()
         .w(px(12.))
@@ -1104,18 +1117,7 @@ pub fn gauge_icon(busy: bool, roles: Roles) -> AnyElement {
         .child(bar(9.))
         .child(bar(6.5))
         .child(bar(11.5));
-    if busy {
-        icon.with_animation(
-            "evals-breathe",
-            Animation::new(std::time::Duration::from_millis(3600))
-                .repeat()
-                .with_easing(bounce(ease_in_out)),
-            |icon, delta| icon.opacity(1. - 0.75 * delta),
-        )
-        .into_any_element()
-    } else {
-        icon.into_any_element()
-    }
+    icon.opacity(opacity)
 }
 
 pub fn list_icon(roles: Roles) -> Div {
@@ -1208,18 +1210,75 @@ pub enum Enter {
     Lift(f32),
 }
 
-const MOTION_LOOP_FPS: f32 = 30.;
+/// The least time between two frames of a slow loop: about 30 a second.
+const MOTION_LOOP_FRAME: std::time::Duration = std::time::Duration::from_millis(33);
+const DOTS_ROUND: std::time::Duration = std::time::Duration::from_millis(1200);
+const DOTS_STAGGER: f32 = 160. / 1200.;
 
-pub fn ease_in_out_sine(delta: f32) -> f32 {
-    0.5 - 0.5 * (std::f32::consts::PI * delta).cos()
+/// A loop a view draws, which plays from its first stop each time it comes
+/// back: [`Looping::frame`] while it is drawn, [`Looping::away`] on a frame
+/// that leaves it out. Under reduced motion it rests on its first stop.
+#[derive(Clone, Copy, Debug)]
+pub struct Looping<const N: usize> {
+    keys: ginga_gpui::Keyframes<f32, N>,
+    drawn: bool,
 }
 
-pub fn ease_out_expo(delta: f32) -> f32 {
-    if delta >= 1. {
-        1.
-    } else {
-        1. - 2f32.powf(-10. * delta)
+impl<const N: usize> Looping<N> {
+    fn new(keys: ginga_gpui::Keyframes<f32, N>) -> Self {
+        Self { keys, drawn: false }
     }
+
+    /// The value this frame, asking for the next one.
+    pub fn frame(&mut self, window: &Window, cx: &App) -> f32 {
+        if !self.drawn {
+            self.keys.restart(cx);
+            self.drawn = true;
+        }
+        self.keys.frame(window, cx)
+    }
+
+    /// The loop is not drawn this frame; it starts over when it is again.
+    pub fn away(&mut self) {
+        self.drawn = false;
+    }
+}
+
+fn round_trip(rest: f32, far: f32, half: u64, easing: ginga_gpui::Easing) -> Looping<2> {
+    let keys = ginga_gpui::Keyframes::new([
+        ginga_gpui::Stop::new(std::time::Duration::ZERO, rest, ginga_gpui::Easing::Linear),
+        ginga_gpui::Stop::new(std::time::Duration::from_millis(half), far, easing),
+    ])
+    .expect("two stops in order from zero")
+    .forever()
+    .mirrored()
+    .at_most_every(MOTION_LOOP_FRAME);
+    Looping::new(keys)
+}
+
+/// The opacity of a mark while the model works: down to 0.45 and back up,
+/// 1.6 s a round.
+pub fn breath() -> Looping<2> {
+    round_trip(1., 0.45, 800, ginga_gpui::Easing::InOutSine)
+}
+
+/// The opacity of the Evals icon while a run goes on: slower and deeper than
+/// a [`breath`], 3.6 s a round.
+pub fn gauge_breath() -> Looping<2> {
+    round_trip(1., 0.25, 1800, ginga_gpui::Easing::Custom(ease_in_out))
+}
+
+/// Where the working dots are in their round, from 0 to 1, 1.2 s a round;
+/// [`dot_levels`] turns it into each dot's opacity.
+pub fn dots_round() -> Looping<2> {
+    let keys = ginga_gpui::Keyframes::new([
+        ginga_gpui::Stop::new(std::time::Duration::ZERO, 0., ginga_gpui::Easing::Linear),
+        ginga_gpui::Stop::new(DOTS_ROUND, 1., ginga_gpui::Easing::Linear),
+    ])
+    .expect("two stops in order from zero")
+    .forever()
+    .at_most_every(MOTION_LOOP_FRAME);
+    Looping::new(keys)
 }
 
 pub fn enter<E: Styled + IntoElement + 'static>(
@@ -1487,49 +1546,43 @@ pub fn caret_trip(cx: &App) -> ginga_gpui::Transition {
     ginga_gpui::unless_reduced(trip, cx)
 }
 
-pub fn grow_height(
-    id: impl Into<ElementId>,
-    bar: Div,
-    full: Pixels,
-    index: usize,
-) -> AnimationElement<Div> {
-    growing(id, bar, index, move |bar, delta| bar.h(full * delta))
+/// A chart bar that grows from nothing to `full` high, the `index`th of its
+/// chart a little after the one before.
+pub fn grow_height(id: impl Into<ElementId>, bar: Div, full: Pixels, index: usize) -> AnyElement {
+    let (start, rest) = (
+        ginga_gpui::Look::new().height(0.),
+        ginga_gpui::Look::new().height(f32::from(full)),
+    );
+    growing(id, bar, start, rest, index)
 }
 
-pub fn grow_width(
-    id: impl Into<ElementId>,
-    bar: Div,
-    full: Pixels,
-    index: usize,
-) -> AnimationElement<Div> {
-    growing(id, bar, index, move |bar, delta| bar.w(full * delta))
+/// A bar that grows from nothing to `full` wide; see [`grow_height`].
+pub fn grow_width(id: impl Into<ElementId>, bar: Div, full: Pixels, index: usize) -> AnyElement {
+    let (start, rest) = (
+        ginga_gpui::Look::new().width(0.),
+        ginga_gpui::Look::new().width(f32::from(full)),
+    );
+    growing(id, bar, start, rest, index)
 }
 
 fn growing(
     id: impl Into<ElementId>,
     bar: Div,
+    start: ginga_gpui::Look,
+    rest: ginga_gpui::Look,
     index: usize,
-    size: impl Fn(Div, f32) -> Div + 'static,
-) -> AnimationElement<Div> {
-    let delay = cascade_delay(index, GROW_STEP_MS, GROW_MAX_STEPS);
-    let lead = lead_of(delay, MOTION_GROW);
-    bar.with_animation(
-        id,
-        Animation::new(delay + MOTION_GROW).with_easing(move |t| delayed(ease_out_expo, lead, t)),
-        size,
-    )
+) -> AnyElement {
+    bar.look(id, rest, grow_way(index))
+        .from(start)
+        .into_any_element()
 }
 
-pub fn lead_of(delay: std::time::Duration, duration: std::time::Duration) -> f32 {
-    delay.as_secs_f32() / (delay + duration).as_secs_f32()
-}
-
-pub fn delayed(easing: impl Fn(f32) -> f32, lead: f32, t: f32) -> f32 {
-    if t <= lead {
-        0.
-    } else {
-        easing((t - lead) / (1. - lead))
-    }
+fn grow_way(index: usize) -> ginga_gpui::Tween {
+    ginga_gpui::Tween::new(MOTION_GROW, ginga_gpui::Easing::OutExpo).delay(cascade_delay(
+        index,
+        GROW_STEP_MS,
+        GROW_MAX_STEPS,
+    ))
 }
 
 pub fn enter_offset(from: Enter, rest: f32) -> (f32, f32) {
@@ -1539,22 +1592,19 @@ pub fn enter_offset(from: Enter, rest: f32) -> (f32, f32) {
     }
 }
 
-pub fn breathe<E: Styled + IntoElement + 'static>(
-    id: impl Into<ElementId>,
-    element: E,
-) -> AnimationElement<E> {
-    element.with_animation(
-        id,
-        Animation::new(std::time::Duration::from_millis(1600))
-            .repeat()
-            .with_max_fps(MOTION_LOOP_FPS)
-            .with_easing(bounce(ease_in_out_sine)),
-        |element, delta| element.opacity(1. - 0.55 * delta),
-    )
+/// The AI caret's bar, filling its place, at `opacity` of its [`breath`].
+pub fn ai_caret_bar(roles: Roles, opacity: f32) -> Div {
+    div()
+        .absolute()
+        .top_0()
+        .left_0()
+        .size_full()
+        .bg(roles.ai)
+        .opacity(opacity)
 }
 
-pub fn ai_dots(roles: Roles, still: bool) -> AnyElement {
-    dots(roles.canvas, still)
+pub fn ai_dots(roles: Roles, levels: [f32; 3]) -> Div {
+    dots(roles.canvas, levels)
 }
 
 /// A small button's place while the model works on it: the label and the
@@ -1563,7 +1613,7 @@ pub fn working_button(
     id: impl Into<ElementId>,
     label: impl Into<SharedString>,
     roles: Roles,
-    still: bool,
+    dots_at: [f32; 3],
 ) -> Stateful<Div> {
     sized_button(
         id,
@@ -1575,37 +1625,32 @@ pub fn working_button(
     )
     .bg(roles.fill)
     .text_color(roles.ai)
-    .child(dots(roles.ai, still))
+    .child(dots(roles.ai, dots_at))
 }
 
-fn dots(color: Hsla, still: bool) -> AnyElement {
-    const PERIOD_MS: f32 = 1200.;
-    const STAGGER_MS: f32 = 160.;
-    row()
-        .gap(px(4.))
-        .children((0usize..3).map(move |index| {
-            let shift = STAGGER_MS * index as f32 / PERIOD_MS;
-            let dot = div().size(px(3.)).bg(color);
-            if still {
-                return dot.into_any_element();
-            }
-            dot.with_animation(
-                ("ai-dot", index),
-                Animation::new(std::time::Duration::from_millis(PERIOD_MS as u64))
-                    .repeat()
-                    .with_max_fps(MOTION_LOOP_FPS),
-                move |dot, delta| dot.opacity(dot_opacity((delta - shift).rem_euclid(1.))),
-            )
-            .into_any_element()
-        }))
-        .into_any_element()
+fn dots(color: Hsla, levels: [f32; 3]) -> Div {
+    row().gap(px(4.)).children(
+        levels
+            .into_iter()
+            .map(move |level| div().size(px(3.)).bg(color).opacity(level)),
+    )
+}
+
+/// The three working dots' opacities at `round`, where a [`dots_round`] is:
+/// each dot rises and falls 160 ms after the one before. Still, they are full.
+pub fn dot_levels(round: f32, still: bool) -> [f32; 3] {
+    if still {
+        return [1.; 3];
+    }
+    [0., 1., 2.].map(|index| dot_opacity((round - DOTS_STAGGER * index).rem_euclid(1.)))
 }
 
 pub fn dot_opacity(phase: f32) -> f32 {
+    let sine = ginga_gpui::Easing::InOutSine;
     let level = if phase < 0.4 {
-        ease_in_out_sine(phase / 0.4)
+        sine.at(phase / 0.4)
     } else {
-        ease_in_out_sine((1. - phase) / 0.6)
+        sine.at((1. - phase) / 0.6)
     };
     0.35 + 0.65 * level
 }
@@ -1992,8 +2037,8 @@ mod tests {
         CaretInk, CaretSpot, SPELL_DOT, bytes_on_screen, caret_quads, dotted_line, word_spans,
     };
     use super::{
-        Enter, cascade_delay, delayed, dot_opacity, ease_in_out_sine, ease_out_expo, enter_looks,
-        enter_offset, enters_in_a_layer, lead_of, lift_at, panel_in_out, slide_at, takes_input,
+        Enter, cascade_delay, dot_levels, dot_opacity, enter_looks, enter_offset,
+        enters_in_a_layer, grow_way, lift_at, panel_in_out, slide_at, takes_input,
     };
     use desafinado_features::caret::{CaretSettings, CaretShape};
     use gpui_kit::{point, px};
@@ -2104,10 +2149,18 @@ mod tests {
     }
 
     #[test]
-    fn the_lead_is_the_share_of_time_spent_waiting() {
+    fn a_bar_waits_its_turn_then_grows_fast_and_lands() {
+        use ginga_gpui::ginga::Motion;
         let ms = std::time::Duration::from_millis;
-        assert_eq!(lead_of(ms(0), ms(260)), 0.);
-        assert!((lead_of(ms(160), ms(240)) - 0.4).abs() < 1e-6);
+        let mut bar = Motion::at(0f32);
+        bar.set_target(80., grow_way(2), ms(0));
+        assert_eq!(bar.sample(ms(48)).value, 0.);
+        assert!(bar.sample(ms(48 + 84)).value > 0.7 * 80.);
+        assert!(bar.sample(ms(48 + 420)).settled);
+        let mut last = Motion::at(0f32);
+        last.set_target(80., grow_way(50), ms(0));
+        assert_eq!(last.sample(ms(14 * 24)).value, 0.);
+        assert!(last.sample(ms(14 * 24 + 10)).value > 0.);
     }
 
     #[test]
@@ -2117,7 +2170,8 @@ mod tests {
         let mut panel = ginga_gpui::ginga::Presence::absent();
         panel.show((), ways.enter, ms(0));
         let arriving = panel.frame(ms(130)).map(|shown| shown.progress);
-        assert!((arriving.unwrap() - ease_out_expo(0.5)).abs() < 1e-3);
+        let expo = ginga_gpui::Easing::OutExpo.at(0.5);
+        assert!((arriving.unwrap() - expo).abs() < 1e-3);
         panel.hide(ways.exit, ms(1_000));
         let leaving = panel.frame(ms(1_090)).map(|shown| shown.progress);
         assert!((leaving.unwrap() - 0.5f32.powi(4)).abs() < 1e-3);
@@ -2161,25 +2215,13 @@ mod tests {
     }
 
     #[test]
-    fn a_delay_holds_the_start_then_runs_the_easing() {
-        let linear = |t: f32| t;
-        assert_eq!(delayed(linear, 0.25, 0.2), 0.);
-        assert!((delayed(linear, 0.25, 0.625) - 0.5).abs() < 1e-6);
-        assert_eq!(delayed(linear, 0., 0.3), 0.3);
-    }
-
-    #[test]
-    fn ease_in_out_sine_is_symmetric() {
-        assert!(ease_in_out_sine(0.).abs() < 1e-6);
-        assert!((ease_in_out_sine(0.5) - 0.5).abs() < 1e-6);
-        assert!((ease_in_out_sine(1.) - 1.).abs() < 1e-6);
-    }
-
-    #[test]
-    fn ease_out_expo_starts_fast_and_lands_on_one() {
-        assert_eq!(ease_out_expo(0.), 0.);
-        assert!(ease_out_expo(0.2) > 0.7);
-        assert_eq!(ease_out_expo(1.), 1.);
+    fn each_dot_rises_a_little_after_the_one_before() {
+        let [first, second, third] = dot_levels(0.4, false);
+        assert!((first - 1.).abs() < 1e-5);
+        assert!(second < first && third < second);
+        let later = dot_levels(0.4 + 160. / 1200., false);
+        assert!((later[1] - 1.).abs() < 1e-5);
+        assert_eq!(dot_levels(0.4, true), [1.; 3]);
     }
 
     #[test]
