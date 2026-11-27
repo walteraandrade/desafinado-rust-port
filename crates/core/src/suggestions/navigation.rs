@@ -1,8 +1,13 @@
 use super::state::suggestion_at;
 use super::types::{Direction, Suggestion, SuggestionsState};
 
+/// The Suggestions with something to review, in document order. A request still waiting for the
+/// model shows in the requests tray, not on the text map or under `Alt+↑` and `Alt+↓`.
 fn in_document_order(items: &[Suggestion]) -> Vec<&Suggestion> {
-    let mut ordered: Vec<&Suggestion> = items.iter().collect();
+    let mut ordered: Vec<&Suggestion> = items
+        .iter()
+        .filter(|item| !matches!(item, Suggestion::Pending(_)))
+        .collect();
     ordered.sort_by_key(|item| (item.from, item.to));
     ordered
 }
@@ -54,6 +59,11 @@ pub fn next_from(state: &SuggestionsState, offset: usize) -> Option<usize> {
         .map(|item| anchor_of(state, item))
 }
 
+/// The Suggestions the text map marks and its chips count, in the order the keys visit them.
+pub fn on_text_map(state: &SuggestionsState) -> Vec<&Suggestion> {
+    in_document_order(&state.items)
+}
+
 /// Where the caret goes to stand in a Suggestion, so that its Card opens.
 pub fn suggestion_anchor(state: &SuggestionsState, id: &str) -> Option<usize> {
     let target = state.items.iter().find(|item| item.id == id)?;
@@ -63,8 +73,12 @@ pub fn suggestion_anchor(state: &SuggestionsState, id: &str) -> Option<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::suggestions::state::{begin_suggestion, empty_suggestions};
-    use crate::suggestions::types::{Instruction, SuggestionDraft, TargetSource};
+    use crate::suggestions::state::{
+        begin_suggestion, empty_suggestions, fail_suggestion, resolve_suggestion,
+    };
+    use crate::suggestions::types::{
+        ClientError, Instruction, SuggestionDraft, SuggestionResult, TargetSource,
+    };
 
     fn draft(id: &str, from: usize, to: usize) -> SuggestionDraft {
         SuggestionDraft {
@@ -78,21 +92,31 @@ mod tests {
         }
     }
 
-    fn state() -> SuggestionsState {
-        [draft("a", 0, 10), draft("b", 20, 30), draft("c", 40, 50)]
+    fn answered(state: &SuggestionsState, id: &str) -> SuggestionsState {
+        let result = SuggestionResult {
+            replacement: "y".into(),
+            rationale: String::new(),
+            unchanged: false,
+        };
+        resolve_suggestion(state, id, &result)
+    }
+
+    fn with(drafts: impl IntoIterator<Item = SuggestionDraft>) -> SuggestionsState {
+        drafts
             .into_iter()
             .fold(empty_suggestions(), |state, draft| {
-                begin_suggestion(&state, draft)
+                let id = draft.id.clone();
+                answered(&begin_suggestion(&state, draft), &id)
             })
+    }
+
+    fn state() -> SuggestionsState {
+        with([draft("a", 0, 10), draft("b", 20, 30), draft("c", 40, 50)])
     }
 
     #[test]
     fn moves_on_to_a_suggestion_that_starts_where_the_last_one_ended_and_never_wraps() {
-        let after_accepting_a = [draft("b", 10, 20), draft("c", 40, 50)]
-            .into_iter()
-            .fold(empty_suggestions(), |state, draft| {
-                begin_suggestion(&state, draft)
-            });
+        let after_accepting_a = with([draft("b", 10, 20), draft("c", 40, 50)]);
         assert_eq!(next_from(&after_accepting_a, 10), Some(10));
         assert_eq!(
             step_suggestion(&after_accepting_a, 10, Direction::Forward),
@@ -101,6 +125,35 @@ mod tests {
         );
         assert_eq!(next_from(&after_accepting_a, 21), Some(40));
         assert_eq!(next_from(&after_accepting_a, 51), None);
+    }
+
+    #[test]
+    fn leaves_requests_still_waiting_for_the_model_off_the_map_and_the_keys() {
+        let drafts = [draft("c", 40, 50), draft("b", 20, 30), draft("a", 0, 10)];
+        let waiting = drafts
+            .into_iter()
+            .fold(empty_suggestions(), |state, draft| {
+                begin_suggestion(&state, draft)
+            });
+        assert!(on_text_map(&waiting).is_empty());
+        assert_eq!(step_suggestion(&waiting, 15, Direction::Backward), None);
+
+        let failed = fail_suggestion(
+            &waiting,
+            "a",
+            ClientError::Network {
+                message: "down".into(),
+            },
+        );
+        let mixed = answered(&failed, "c");
+        let ids: Vec<&str> = on_text_map(&mixed)
+            .iter()
+            .map(|item| item.id.as_str())
+            .collect();
+        assert_eq!(ids, ["a", "c"], "b still waits for the model");
+        assert_eq!(step_suggestion(&mixed, 5, Direction::Forward), Some(40));
+        assert_eq!(step_suggestion(&mixed, 45, Direction::Backward), Some(0));
+        assert_eq!(next_from(&mixed, 11), Some(40));
     }
 
     #[test]
@@ -144,7 +197,7 @@ mod tests {
             step_suggestion(&empty_suggestions(), 0, Direction::Forward),
             None
         );
-        let single = begin_suggestion(&empty_suggestions(), draft("a", 0, 10));
+        let single = with([draft("a", 0, 10)]);
         assert_eq!(step_suggestion(&single, 5, Direction::Forward), None);
     }
 }
