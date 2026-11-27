@@ -151,7 +151,7 @@ Rules for changes, for people and coding agents alike, are in [AGENTS.md](AGENTS
 
 To check a change against the real model, `cargo run -p desafinado-runtime --bin ai-check` sends one suggestion, two review-mode decisions to Jev, one Comment review and one review pass to OpenRouter and prints what they cost. It spends real money (a fraction of a cent).
 
-**Workspace.** Logic lives in plain Rust crates with unit tests; only `app` knows about GPUI. The AI caret's trip and the toast's way out come from [ginga](https://github.com/walteraandrade/ginga), a motion library pinned to one revision of its repository in `crates/ai` and `crates/app`.
+**Workspace.** Logic lives in plain Rust crates with unit tests; only `app` knows about GPUI. The AI caret's trip and the toast's way out come from [ginga](https://github.com/walteraandrade/ginga), a motion library pinned to one revision of its repository in the root `Cargo.toml`.
 
 | Crate | What it holds |
 |---|---|
