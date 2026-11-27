@@ -6,6 +6,7 @@ pub mod editor;
 pub mod edits;
 pub mod errors;
 pub mod generation;
+pub mod list_rows;
 pub mod model;
 pub mod model_choice;
 pub mod notes;
@@ -17,8 +18,8 @@ pub mod request;
 pub mod review_mode;
 pub mod review_stream;
 pub mod schemas;
+pub mod surface;
 pub mod text;
-pub mod ui;
 
 #[cfg(test)]
 mod testing;
