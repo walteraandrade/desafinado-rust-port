@@ -154,6 +154,55 @@ pub fn ready_job(state: &SuggestionsState, id: &str, left_out: bool) -> Option<J
     })
 }
 
+/// Where the tray lays out the mark of each working request, by request, so
+/// the marks can breathe in a view of their own over the tray. `B` is the
+/// place a mark takes, such as its bounds in the window.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MarkSpots<B> {
+    spots: Vec<(String, B)>,
+}
+
+impl<B> Default for MarkSpots<B> {
+    fn default() -> Self {
+        Self { spots: Vec::new() }
+    }
+}
+
+impl<B: PartialEq> MarkSpots<B> {
+    /// Notes that the mark of request `id` is laid out `at`. Whether that is
+    /// news: a new mark, or one that moved. The same place again is not, so a
+    /// still tray asks for nothing.
+    pub fn place(&mut self, id: &str, at: B) -> bool {
+        match self.spots.iter_mut().find(|(known, _)| known == id) {
+            Some((_, known)) if *known == at => false,
+            Some((_, known)) => {
+                *known = at;
+                true
+            }
+            None => {
+                self.spots.push((id.to_string(), at));
+                true
+            }
+        }
+    }
+
+    /// Lets go of the marks of requests that `jobs` no longer shows working.
+    /// Whether any went.
+    pub fn keep_working(&mut self, jobs: &[Job]) -> bool {
+        let before = self.spots.len();
+        self.spots.retain(|(id, _)| {
+            jobs.iter()
+                .any(|job| &job.id == id && job.phase == JobPhase::Working)
+        });
+        self.spots.len() != before
+    }
+
+    /// Each mark's request and place, in the order they were first laid out.
+    pub fn iter(&self) -> impl Iterator<Item = (&str, &B)> {
+        self.spots.iter().map(|(id, at)| (id.as_str(), at))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -267,5 +316,53 @@ mod tests {
         assert_eq!(ready_job(&state, "gone", false), None);
         let refining = begin_refine(&state, "a", free("warmer"));
         assert_eq!(ready_job(&refining, "a", false), None);
+    }
+}
+
+#[cfg(test)]
+mod mark_spot_tests {
+    use super::*;
+
+    fn job(id: &str, phase: JobPhase) -> Job {
+        Job {
+            id: id.into(),
+            kind: JobKind::Ask,
+            phase,
+            label: String::new(),
+            detail: String::new(),
+        }
+    }
+
+    #[test]
+    fn a_new_mark_and_a_moved_one_are_news_and_a_still_one_is_not() {
+        let mut spots = MarkSpots::default();
+        assert!(spots.place("a", (37.5, 212.)));
+        assert!(!spots.place("a", (37.5, 212.)));
+        assert!(spots.place("a", (37.5, 240.)));
+        assert_eq!(spots.iter().collect::<Vec<_>>(), [("a", &(37.5, 240.))]);
+    }
+
+    #[test]
+    fn each_request_keeps_one_mark() {
+        let mut spots = MarkSpots::default();
+        spots.place("a", 1);
+        spots.place("b", 2);
+        spots.place("a", 3);
+        assert_eq!(spots.iter().collect::<Vec<_>>(), [("a", &3), ("b", &2)]);
+    }
+
+    #[test]
+    fn a_request_that_answers_or_goes_loses_its_mark() {
+        let mut spots = MarkSpots::default();
+        spots.place("ready", 1);
+        spots.place("gone", 2);
+        spots.place("working", 3);
+        let jobs = [
+            job("ready", JobPhase::Ready),
+            job("working", JobPhase::Working),
+        ];
+        assert!(spots.keep_working(&jobs));
+        assert_eq!(spots.iter().collect::<Vec<_>>(), [("working", &3)]);
+        assert!(!spots.keep_working(&jobs));
     }
 }

@@ -583,6 +583,33 @@ pub fn job_mark(id: impl Into<ElementId>, working: bool, roles: Roles) -> AnyEle
     }
 }
 
+/// A layer the size of the editor pane, which clips what it holds, for a view
+/// that draws over the cached pane: the AI caret and the tray's marks.
+pub fn over_pane(area: Size<Pixels>) -> Div {
+    div()
+        .absolute()
+        .top_0()
+        .left_0()
+        .w(area.width)
+        .h(area.height)
+        .overflow_hidden()
+}
+
+/// The place of a working request's mark in the tray, left empty: the mark
+/// itself breathes in a view of its own over the pane (`tray_marks_view`), so
+/// its frames do not render the pane. `place` is told where the spot is laid
+/// out on each frame that draws the pane; a frame that reuses the cached pane
+/// does not call it.
+pub fn job_mark_spot(place: impl Fn(Bounds<Pixels>, &mut Window, &mut App) + 'static) -> Div {
+    div().flex_none().size(px(8.)).child(
+        canvas(
+            move |bounds, window, cx| place(bounds, window, cx),
+            |_, (), _, _| {},
+        )
+        .size_full(),
+    )
+}
+
 /// What a request asked for over where it is and how long it has run; the mark beside it
 /// carries the AI color, so the words stay readable on the row's hover fill.
 pub fn job_text(

@@ -42,6 +42,7 @@ mod spend_view;
 mod start_error;
 mod text_map_view;
 mod theme;
+mod tray_marks_view;
 mod ui;
 mod workspace;
 
