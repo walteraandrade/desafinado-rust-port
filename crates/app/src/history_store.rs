@@ -9,8 +9,11 @@ use desafinado_features::history::{
     types::{
         AcceptedChange, SuggestionOrigin, VersionCause, VersionId, VersionList, VersionSummary,
     },
+    untitled::current_untitled,
 };
 use desafinado_platform::history::{self as db, HistoryDb, HistoryStore as _};
+
+use crate::document::SCRATCH_KEY;
 
 pub struct DbHistoryStore {
     db: Arc<HistoryDb>,
@@ -122,10 +125,16 @@ impl HistoryStore for DbHistoryStore {
         if first {
             self.db.thin(key, (self.now)()).map_err(failed)?;
         }
-        self.db
+        let versions: VersionList = self
+            .db
             .list(key)
             .map(|list| list.into_iter().map(summary_from_db).collect())
-            .map_err(failed)
+            .map_err(failed)?;
+        Ok(if key == SCRATCH_KEY {
+            current_untitled(versions)
+        } else {
+            versions
+        })
     }
 
     fn text(&self, key: &str, id: VersionId) -> Result<Option<String>, StoreError> {
@@ -212,6 +221,24 @@ mod tests {
                 },
             )
             .unwrap();
+    }
+
+    #[test]
+    fn an_untitled_document_lists_only_its_own_versions() {
+        let (_dir, store) = store();
+        let opened = || VersionCause::Opened {
+            name: "Untitled".into(),
+        };
+        for key in [SCRATCH_KEY, "/a.md"] {
+            record(&store, key, VersionCause::Edited, "first draft");
+            record(&store, key, opened(), "");
+            record(&store, key, VersionCause::Edited, "second draft");
+        }
+        let untitled = store.list(SCRATCH_KEY).unwrap();
+        assert_eq!(untitled.len(), 2);
+        assert_eq!(untitled[0].cause, opened());
+        assert_eq!(untitled[1].cause, VersionCause::Edited);
+        assert_eq!(store.list("/a.md").unwrap().len(), 3);
     }
 
     #[test]

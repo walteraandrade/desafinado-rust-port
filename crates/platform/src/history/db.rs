@@ -464,7 +464,13 @@ impl HistoryStore for HistoryDb {
             in_transaction(connection, || {
                 let file_id = Self::file_id_of(connection, path)?;
                 let latest = Self::latest_of(connection, file_id)?;
-                if latest.as_ref().map(|l| l.hash.as_str()) != Some(hash.as_str()) {
+                // A `Started` or `Opened` version begins a Document, so it is kept even when the
+                // text matches the last version.
+                let begins = matches!(
+                    input.cause,
+                    VersionCause::Started | VersionCause::Opened { .. }
+                );
+                if begins || latest.as_ref().map(|l| l.hash.as_str()) != Some(hash.as_str()) {
                     Self::append(connection, file_id, input, &hash, &body, latest.as_ref())?;
                 }
                 Ok(())
@@ -879,6 +885,39 @@ mod tests {
         let versions = db.list(PATH).unwrap();
         assert_eq!(versions[0].cause, VersionCause::Started);
         assert_eq!((versions[0].at, versions[0].words), (5, 3));
+    }
+
+    #[test]
+    fn records_a_new_document_even_when_its_text_equals_the_last_version() {
+        let f = fixture();
+        let db = open(&f);
+        db.record(PATH, &edit("", 1)).unwrap();
+        db.record(
+            PATH,
+            &RecordInput {
+                at: 2,
+                cause: VersionCause::Opened {
+                    name: "Untitled".into(),
+                },
+                text: String::new(),
+            },
+        )
+        .unwrap();
+        let causes: Vec<VersionCause> = db
+            .list(PATH)
+            .unwrap()
+            .into_iter()
+            .map(|v| v.cause)
+            .collect();
+        assert_eq!(
+            causes,
+            [
+                VersionCause::Started,
+                VersionCause::Opened {
+                    name: "Untitled".into()
+                }
+            ]
+        );
     }
 
     #[test]
