@@ -10,7 +10,7 @@ diff -ru ~/.cargo/registry/src/*/gpui-base-0.9.1/src vendor/gpui-base/src
 
 ## What changed
 
-Six changes. The first is in `src/text`:
+Seven changes. The first is in `src/text`:
 
 - **Reading view options** on `TextView` (`text/text_view.rs`, `text/state.rs`, `text/document.rs`), used by `crates/app/src/reading_view.rs`:
   - `lazy_measure(true)`: a scrollable view measures only the blocks it shows. The list is built without `measure_all` and `render_root` gives every block an estimated height (`estimated_block_height`), so the scrollbar thumb settles as blocks are measured instead of being exact from the first frame. Without it the first frame lays out the whole document.
@@ -43,6 +43,7 @@ The other three are in `src/input`:
   - Convergence: `InputBaseState::start_wrap_refinement` runs `refine_wrap_slice` in 5 ms slices between frames and input (`TextWrapper::refine_lines` replaces estimated lines with the production wrap, lines after the viewport first). The result equals a full wrap: `text_wrapper/progressive_tests.rs` compares them with a fake and the native text system, and `a_large_document_opens_estimated_and_ends_with_the_rows_of_a_full_wrap` through the editor.
   - The view does not move: `InputBaseState::refine_wrap` moves the scroll offset by the rows that lines above the viewport gained or lost (`the_text_on_screen_stays_put_while_estimated_rows_become_exact`).
   - `DisplayMap::has_estimated_rows` tells a consumer that the row count is still changing; the app's text map keeps the lines it measured until the rows are exact.
+- **A scroll redraws what read the layout**: `base/element.rs`, `TextElement::prepaint`. When the visible lines or their offset changed since the last layout, the input asks GPUI for the next frame and notifies its state then. Whatever placed itself from the old layout in this frame (the app's Cards and its AI caret, read through `range_to_bounds`) is drawn again with the new one. Before, such a frame only notified when the caret on screen moved, and a notify made while drawing schedules no frame, so with the editor unfocused they stayed a scroll step behind until something else redrew.
 
 Tests for inlays and zones are in `inlays.rs`, `text_wrapper.rs`, `inline_line.rs` and at the end of `base/element.rs` (through `InputState` in a test window). The `gpui-base` CI job runs the crate's whole library suite and checks its format. From this folder:
 

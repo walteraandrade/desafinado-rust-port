@@ -11,6 +11,7 @@ serde_json.workspace = true
 log.workspace = true
 desafinado-core = { path = "../core" }
 desafinado-ai = { path = "../ai" }
+ginga-gpui.workspace = true
 futures = "0.3"
 desafinado-platform = { path = "../platform" }
 desafinado-runtime = { path = "../runtime" }

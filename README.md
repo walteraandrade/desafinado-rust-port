@@ -36,7 +36,7 @@ The app talks to [OpenRouter](https://openrouter.ai) directly. You bring your ow
 Every feature of the Electron build works here; [docs/PARITY.md](docs/PARITY.md) lists them one by one, with each place the native build behaves differently. The main differences come from GPUI:
 
 - In the editor, headings are bold but keep the body text size, and code uses the body font. The Reading view shows both as they should be.
-- Menus, the bubble, Cards, toasts and the Library fade and slide in, and the AI caret breathes, as in Electron (without its slight scale and blur). Beyond Electron, the Library and Preferences also slide out to their own sides, the bubble fades out and its Quick action rows enter one after another, the Quick actions list in Preferences glides on reorder and shrinks a deleted row, and the AI spend charts grow in. Scrollbars always show in the editor (or the text map in its place), the Reading view and the scrolling pages and panels (not yet in the Evals run dialog). Still missing: the caret glide, the shimmer, the word-by-word reveal, the rise of the Review toolbar and Refine row, hover transitions, the unfold of descriptions and lists, the exit motion of menus, Cards and toasts, and the theme crossfade. With reduced motion on in the desktop (the XDG portal setting GNOME and KDE back), surfaces appear at rest and the AI caret's dots hold still.
+- Menus, the bubble, Cards, toasts and the Library fade and slide in, and the AI caret breathes and glides from place to place, as in Electron (without its slight scale and blur). Beyond Electron, the Library and Preferences also slide out to their own sides, the bubble fades out and its Quick action rows enter one after another, the Quick actions list in Preferences glides on reorder and shrinks a deleted row, a toast fades and drops out, and the AI spend charts grow in. Scrollbars always show in the editor (or the text map in its place), the Reading view and the scrolling pages and panels (not yet in the Evals run dialog). Still missing: the shimmer, the word-by-word reveal, the rise of the Review toolbar and Refine row, hover transitions, the unfold of descriptions and lists, the exit motion of menus and Cards, and the theme crossfade. With reduced motion on in the desktop (the XDG portal setting GNOME and KDE back), surfaces appear at rest and the AI caret's dots hold still.
 
 Linux only. There is no distribution package yet: you build and install it from this repository. The decision to build on GPUI is recorded in [ADR 0001](docs/adr/0001-native-app-on-rust-and-gpui.md).
 
@@ -151,7 +151,7 @@ Rules for changes, for people and coding agents alike, are in [AGENTS.md](AGENTS
 
 To check a change against the real model, `cargo run -p desafinado-runtime --bin ai-check` sends one suggestion, two review-mode decisions to Jev, one Comment review and one review pass to OpenRouter and prints what they cost. It spends real money (a fraction of a cent).
 
-**Workspace.** Logic lives in plain Rust crates with unit tests; only `app` knows about GPUI.
+**Workspace.** Logic lives in plain Rust crates with unit tests; only `app` knows about GPUI. The AI caret's trip and the toast's way out come from [ginga](https://github.com/walteraandrade/ginga), a motion library pinned to one revision of its repository in the root `Cargo.toml`.
 
 | Crate | What it holds |
 |---|---|

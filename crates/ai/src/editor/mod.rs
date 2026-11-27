@@ -2,6 +2,7 @@ pub mod ai_caret;
 pub mod ask_bubble;
 pub mod ask_menu;
 pub mod card_placement;
+pub mod caret_travel;
 pub mod focus_cycle;
 pub mod geometry;
 pub mod inline_diff;

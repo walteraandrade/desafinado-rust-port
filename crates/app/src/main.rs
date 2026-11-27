@@ -9,6 +9,7 @@ macro_rules! perf_span {
 macro_rules! perf_span {
     ($name:expr) => {};
 }
+mod ai_caret_view;
 mod caret;
 mod comment_review;
 mod crash_log;

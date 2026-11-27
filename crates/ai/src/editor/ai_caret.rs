@@ -1,5 +1,5 @@
 use desafinado_core::suggestions::{
-    RefineState, Suggestion, SuggestionOrigin, SuggestionsState, instruction_label,
+    RefineState, Suggestion, SuggestionId, SuggestionOrigin, SuggestionsState, instruction_label,
 };
 
 pub const REVIEW_LABEL: &str = "Reviewing";
@@ -8,6 +8,8 @@ pub const REVIEW_LABEL: &str = "Reviewing";
 pub struct AiCaret {
     pub pos: usize,
     pub label: String,
+    /// The Suggestion the caret marks; `None` while a Review pass has none yet.
+    pub target: Option<SuggestionId>,
 }
 
 fn latest<'a>(items: impl Iterator<Item = &'a Suggestion>) -> Option<&'a Suggestion> {
@@ -23,6 +25,7 @@ pub fn ai_caret_of(state: &SuggestionsState, reviewing: bool) -> Option<AiCaret>
             RefineState::Working { instruction } => Some(AiCaret {
                 pos: ready.to,
                 label: instruction_label(instruction).to_string(),
+                target: Some(ready.id.clone()),
             }),
             _ => None,
         },
@@ -43,6 +46,7 @@ pub fn ai_caret_of(state: &SuggestionsState, reviewing: bool) -> Option<AiCaret>
     Some(AiCaret {
         pos: reviewed.map_or(0, |item| item.to),
         label: REVIEW_LABEL.to_string(),
+        target: reviewed.map(|item| item.id.clone()),
     })
 }
 
@@ -114,7 +118,8 @@ mod tests {
             ai_caret_of(&state, false),
             Some(AiCaret {
                 pos: 4,
-                label: "warmer".into()
+                label: "warmer".into(),
+                target: Some("a".into()),
             })
         );
     }
@@ -125,7 +130,8 @@ mod tests {
             ai_caret_of(&empty_suggestions(), true),
             Some(AiCaret {
                 pos: 0,
-                label: "Reviewing".into()
+                label: "Reviewing".into(),
+                target: None,
             })
         );
         let state = begin_suggestion(
@@ -133,7 +139,8 @@ mod tests {
             draft("r1", 5, 9, Some(SuggestionOrigin::Review)),
         );
         let state = resolve_suggestion(&state, "r1", &result());
-        assert_eq!(ai_caret_of(&state, true).unwrap().pos, 9);
+        let caret = ai_caret_of(&state, true).unwrap();
+        assert_eq!((caret.pos, caret.target.as_deref()), (9, Some("r1")));
         assert_eq!(ai_caret_of(&state, false), None);
     }
 }
