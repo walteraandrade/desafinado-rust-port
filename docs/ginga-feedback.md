@@ -91,3 +91,51 @@ Not changed: Preferences stays on `Presence` instead of `present` for now. `pres
 4. `present` that hands its progress and phase to `draw`, or honors size in `arrive_from`/`leave_to` (the Library column).
 5. Cover and blur for `Presence` while it leaves, e.g. `shown.cover(element)`.
 6. Small reads on `Presence`: `wanted() -> Option<&T>`, `sample(cx)`, and a `leaving(content, exit, cx)` constructor.
+
+## Batch 2: the ways in
+
+Every `ui::enter`, `ui::enter_after` and `ui::enter_in_turn` (the Ask bubble and its rows, Suggestion cards, the note card, the Spend page, the AI caret's flag) now arrive through a declared look: `element.look(id, rest, tween.delay(d)).from(start)` in `ui::entering`. The File and Edit menus and the Review popover already came and went through `Presence` (#56); the Library and Preferences through #57.
+
+### 8. A look's offset replaces an absolutely placed element's place
+
+- Wanted: `card.look(id, Look::new().offset(0., 0.).opacity(1.), way).from(Look::new().offset(8., 0.).opacity(0.))` on a Suggestion card that is `.absolute().left(x).top(y)`, so it slides 8 px into its place.
+- Got (documented on `Looked`): for an absolute element the offset *is* `left`/`top`, so the card would jump to its parent's corner. The docs say to give the element its place as the offset, but then any later change of place (a scroll, a reflow) is animated by the same tween: cards would lag behind the text.
+- Had to: in `ui::entering`, an absolute element enters inside a layer `div().absolute().top_0().left_0().size_full()` that covers its parent, and the layer takes the look (`crates/app/src/ui.rs`). The AI caret's flag, placed with `right(0)` when flipped, needed this too: a `left` from the look would have stretched it.
+- Wanted: an offset that adds to the element's own `left`/`top` (a translate), at least when they are in pixels; or a `Looked::translate` that never touches the element's place.
+
+### 9. `.look()` turns the element into `Looked<E>`
+
+- The old helpers returned `AnimationElement<E>`; these return `AnyElement`. No caller needed `E` back, so it cost nothing here. `Looked<E>` still takes children (`ParentElement`), but not more styling or `on_click`, so the look has to come after those. (The `AnyElement` itself comes from item 8's two branches, not from `Looked`.)
+
+### 10. What got simpler
+
+- A delay is `Tween::delay`, which holds the start look until it is over: the `lead_of`/`delayed` easing wrapper is no longer needed for entries (it is still used by the Spend bars, batch 3).
+- Reduced motion: `Looked` takes a look at once when the desktop asks for less motion, as GPUI's `with_animation` already did. No change there.
+- But under reduced motion ginga's `unless_reduced` turns a delayed tween into `Transition::Instant`, which drops the delay too. The Suggestion card shown on hover used that 160 ms delay as its hover intent. That wait is now a timer in `EditorPane` (`hover_card`, `wait_for_hover_card`), so it no longer depends on motion at all; the card simply arrives 160 ms after the pointer rests on the text.
+- `Rise` and `Slide` moved the element with a margin, which also pushed what came after it in the layout; a look's offset is `relative`, so only the element moves. No visible difference on the surfaces that use them (checked in the recordings).
+
+### 11. No presets for common ways in
+
+- Desafinado keeps its own `Enter::{Rise, Slide, Lift}` and `ui::enter_looks` to turn one into a pair of looks. ginga's examples build the same `Look::new().offset(..).opacity(0.)` by hand each time. A Desafinado need more than a gap (C), unless ginga wants presets like `Look::rise(px)`.
+
+### Evaluator's verdicts (batch 2)
+
+| Item | Verdict | Note |
+|---|---|---|
+| 8. Offset replaces an absolute element's place | A | `styled()` in `look.rs` sets `left`/`top`; a relative element's own `left`/`top` are overwritten too. GPUI has a paint-only offset (`with_element_offset`) a `translate` could use; it would delete about 15 lines here. |
+| 9. `Looked<E>` | A, minor | Corrected above: children still work. |
+| 10. Simpler | – | The reduced-motion claim was wrong and is corrected above; the delay claim holds (`transition.rs`, `motion.rs`). |
+| 11. No presets | C | |
+
+Unlogged friction it found:
+
+- The cover layer becomes the `Looked`'s bounds, so a hover or pressed look on it would react anywhere over the pane. Not used today. (A, part of 8)
+- Branching on `style().position` is fragile: an element made absolute after `ui::enter` would be missed. Now in one tested function, `enters_in_a_layer`. (A, part of 8)
+- `Enter::Lift` and `Enter::Rise` now behave the same (both a relative offset). (C)
+
+Reviewer: no bugs in placement, hit testing (the layer has no hitbox), paint order, ids or timing; it asked for the layer choice to be tested (done) and found the reduced-motion delay (fixed with the timer).
+
+### Proposed ginga issues from batch 2
+
+7. A paint-only `translate` for looks, so an offset never replaces an element's own place (fixes item 8 for absolute and relative elements).
+8. Reduced motion keeps a transition's delay: `unless_reduced` should turn a delayed tween into an instant move *after* the delay, or document that it drops it.
