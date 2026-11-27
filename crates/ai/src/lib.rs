@@ -18,7 +18,6 @@ pub mod review_mode;
 pub mod review_stream;
 pub mod schemas;
 pub mod text;
-pub mod ui;
 
 #[cfg(test)]
 mod testing;
