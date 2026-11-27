@@ -1,12 +1,12 @@
 use desafinado_ai::quick_action_settings::{
     QuickActionDraft, QuickActionDraftErrors, QuickActionSettings, QuickActionSlot,
     add_user_quick_action, check_quick_action_draft, draft_is_valid, is_user_quick_action,
-    move_quick_action, remove_user_quick_action, toggle_quick_action, update_user_quick_action,
+    remove_user_quick_action, toggle_quick_action, update_user_quick_action,
 };
 use desafinado_ai::ui::list_motion::{ListStep, plan_list_change};
 use desafinado_core::log_err::LogErr;
-use desafinado_features::caret::{CaretBlink, CaretSettings, CaretShape, MAX_WIDTH, MIN_WIDTH};
-use desafinado_features::spelling::settings::{MenuKey, SpellSettings};
+use desafinado_features::caret::CaretSettings;
+use desafinado_features::spelling::settings::SpellSettings;
 use desafinado_features::theme::{
     catalog::{ThemeOption, themes_of_mode},
     tokens::ThemeMode,
@@ -17,8 +17,12 @@ use gpui_kit::{
     *,
 };
 
+#[path = "preferences_nav.rs"]
+mod nav;
+
+use nav::{ChoiceGroup, Control, KeyboardFocus, Setting};
+
 use crate::{
-    caret, spelling,
     theme::{self, Roles},
     ui::{self, ButtonKind, ButtonSize, Type as _},
 };
@@ -43,15 +47,26 @@ pub fn version_line() -> String {
 }
 
 pub fn init(cx: &mut App) {
-    cx.bind_keys([
+    cx.bind_keys(key_bindings());
+}
+
+fn key_bindings() -> Vec<KeyBinding> {
+    let mut bindings = nav::key_bindings();
+    bindings.extend([
         KeyBinding::new("escape", ClosePreferences, Some("Preferences")),
         KeyBinding::new("escape", CancelQuickActionDraft, Some("QuickActionForm")),
+        KeyBinding::new(
+            "ctrl-enter",
+            SubmitQuickActionDraft,
+            Some("QuickActionForm > Input"),
+        ),
         KeyBinding::new(
             "enter",
             SubmitQuickActionDraft,
             Some("QuickActionForm > QuickActionName"),
         ),
     ]);
+    bindings
 }
 
 pub enum PreferencesEvent {
@@ -112,6 +127,7 @@ pub struct PreferencesPanel {
     created: u32,
     scroll: ScrollHandle,
     focus: FocusHandle,
+    keyboard: KeyboardFocus,
 }
 
 impl PreferencesPanel {
@@ -129,6 +145,7 @@ impl PreferencesPanel {
             created: 0,
             scroll: ScrollHandle::new(),
             focus,
+            keyboard: KeyboardFocus::default(),
         }
     }
 
@@ -251,12 +268,14 @@ impl PreferencesPanel {
             _subscriptions: subscriptions,
         });
         self.editing = editing;
+        self.keyboard.reveal.set(true);
         cx.notify();
     }
 
     fn end_draft(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.draft = None;
         self.editing = Editing::None;
+        self.keyboard.reveal.set(self.keyboard.control.is_some());
         window.focus(&self.focus, cx);
         cx.notify();
     }
@@ -324,6 +343,10 @@ impl PreferencesPanel {
         cx.emit(PreferencesEvent::Close);
     }
 
+    fn marker(&self, control: &Control) -> Option<impl IntoElement + use<>> {
+        self.keyboard_on(control).then(|| self.reveal_marker())
+    }
+
     fn render_theme_row(
         &self,
         option: &ThemeOption,
@@ -333,11 +356,16 @@ impl PreferencesPanel {
     ) -> AnyElement {
         let checked = option.id == selected;
         let id = option.id.clone();
-        ui::option_row(
+        let control = Control::Theme(option.id.clone());
+        let row = ui::option_row(
             SharedString::from(format!("theme-{}", option.id)),
             false,
             checked,
             roles,
+        );
+        ui::with_reveal(
+            ui::keyboard_ring(row, self.keyboard_on(&control), roles),
+            self.marker(&control),
         )
         .gap(px(12.))
         .px(px(8.))
@@ -389,11 +417,12 @@ impl PreferencesPanel {
         id: &'static str,
         title: &'static str,
         detail: &'static str,
-        action: (&'static str, fn() -> PreferencesEvent),
+        action: (&'static str, Setting),
         roles: Roles,
         cx: &mut Context<Self>,
     ) -> Div {
-        let (label, event) = action;
+        let (label, setting) = action;
+        let control = Control::Setting(setting);
         ui::row()
             .gap(px(12.))
             .py(px(8.))
@@ -405,8 +434,18 @@ impl PreferencesPanel {
                     .child(ui::meta(detail, roles)),
             )
             .child(
-                ui::small_button(id, label, ButtonKind::Default, roles)
-                    .on_click(cx.listener(move |_, _, _, cx| cx.emit(event()))),
+                ui::with_reveal(
+                    ui::sized_button(
+                        id,
+                        label,
+                        ButtonKind::Default,
+                        ButtonSize::Small,
+                        ui::Control::focused(self.keyboard_on(&control)),
+                        roles,
+                    ),
+                    self.marker(&control),
+                )
+                .on_click(cx.listener(move |_, _, _, cx| cx.emit(setting.event()))),
             )
     }
 
@@ -429,6 +468,8 @@ impl PreferencesPanel {
         div()
             .id("quick-action-form")
             .key_context("QuickActionForm")
+            .relative()
+            .child(self.reveal_marker())
             .my(px(8.))
             .p(px(12.))
             .bg(roles.canvas)
@@ -512,26 +553,33 @@ impl PreferencesPanel {
             .h(px(QUICK_ACTION_ROW))
             .gap(px(8.))
             .child(
-                ui::option_row(("quick-action-toggle", index), false, false, roles)
-                    .min_w_0()
-                    .flex_1()
-                    .px(px(8.))
-                    .py(px(8.))
-                    .gap(px(12.))
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.change(|s| toggle_quick_action(s, &toggle_id, !on), cx);
-                    }))
-                    .child(ui::check(on, roles))
-                    .child(
-                        div()
-                            .min_w_0()
-                            .flex_1()
-                            .truncate()
-                            .child(slot.action.label.clone()),
-                    )
-                    .when(slot.action.skill_only, |this| {
-                        this.child(ui::meta("Skill", roles).flex_none())
-                    }),
+                ui::with_reveal(
+                    ui::keyboard_ring(
+                        ui::option_row(("quick-action-toggle", index), false, false, roles),
+                        self.keyboard_on(&Control::QuickToggle(id.clone())),
+                        roles,
+                    ),
+                    self.marker(&Control::QuickToggle(id.clone())),
+                )
+                .min_w_0()
+                .flex_1()
+                .px(px(8.))
+                .py(px(8.))
+                .gap(px(12.))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.change(|s| toggle_quick_action(s, &toggle_id, !on), cx);
+                }))
+                .child(ui::check(on, roles))
+                .child(
+                    div()
+                        .min_w_0()
+                        .flex_1()
+                        .truncate()
+                        .child(slot.action.label.clone()),
+                )
+                .when(slot.action.skill_only, |this| {
+                    this.child(ui::meta("Skill", roles).flex_none())
+                }),
             )
             .child(self.render_quick_action_buttons(index, slot, roles, cx))
             .into_any_element()
@@ -562,20 +610,39 @@ impl PreferencesPanel {
                 ui::row()
                     .gap(px(4.))
                     .child(
-                        ui::small_button(("keep", index), "Keep", ButtonKind::Default, roles)
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                if this.editing == Editing::Delete(keep.clone()) {
-                                    this.editing = Editing::None;
-                                    cx.notify();
-                                }
-                            })),
+                        ui::with_reveal(
+                            ui::sized_button(
+                                ("keep", index),
+                                "Keep",
+                                ButtonKind::Default,
+                                ButtonSize::Small,
+                                ui::Control::focused(
+                                    self.keyboard_on(&Control::QuickKeep(id.clone())),
+                                ),
+                                roles,
+                            ),
+                            self.marker(&Control::QuickKeep(id.clone())),
+                        )
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            if this.editing == Editing::Delete(keep.clone()) {
+                                this.editing = Editing::None;
+                                cx.notify();
+                            }
+                        })),
                     )
                     .child(
-                        ui::small_button(
-                            ("confirm-delete", index),
-                            "Delete",
-                            ButtonKind::Danger,
-                            roles,
+                        ui::with_reveal(
+                            ui::sized_button(
+                                ("confirm-delete", index),
+                                "Delete",
+                                ButtonKind::Danger,
+                                ButtonSize::Small,
+                                ui::Control::focused(
+                                    self.keyboard_on(&Control::QuickConfirm(id.clone())),
+                                ),
+                                roles,
+                            ),
+                            self.marker(&Control::QuickConfirm(id.clone())),
                         )
                         .on_click(cx.listener(move |this, _, _, cx| {
                             this.editing = Editing::None;
@@ -597,59 +664,66 @@ impl PreferencesPanel {
         let last = index + 1 == self.settings.len();
         let busy = matches!(self.editing, Editing::New | Editing::Edit(_));
         let mine = is_user_quick_action(&slot.action);
-        let up_id = id.clone();
-        let down_id = id.clone();
-        let edit_slot = slot.clone();
-        let small = |name: &'static str, label: &'static str, kind: ButtonKind, disabled: bool| {
-            ui::sized_button(
-                SharedString::from(format!("{name}-{index}")),
-                label,
-                kind,
-                ButtonSize::Small,
-                ui::Control::disabled(disabled),
-                roles,
+        let small = |name: &'static str, label: &'static str, kind, disabled, control: Control| {
+            ui::with_reveal(
+                ui::sized_button(
+                    SharedString::from(format!("{name}-{index}")),
+                    label,
+                    kind,
+                    ButtonSize::Small,
+                    ui::Control {
+                        disabled,
+                        focused: self.keyboard_on(&control),
+                    },
+                    roles,
+                ),
+                self.marker(&control),
             )
+            .when(!disabled, |this| {
+                this.on_click(cx.listener(move |this, _, window, cx| {
+                    this.press_quick_action(control.clone(), window, cx);
+                    cx.notify();
+                }))
+            })
         };
+        let up = small(
+            "up",
+            "↑",
+            ButtonKind::Default,
+            index == 0,
+            Control::QuickUp(id.clone()),
+        );
+        let down = small(
+            "down",
+            "↓",
+            ButtonKind::Default,
+            last,
+            Control::QuickDown(id.clone()),
+        );
+        let own = mine.then(|| {
+            [
+                small(
+                    "edit",
+                    "Edit",
+                    ButtonKind::Default,
+                    busy,
+                    Control::QuickEdit(id.clone()),
+                ),
+                small(
+                    "delete",
+                    "Delete",
+                    ButtonKind::Danger,
+                    false,
+                    Control::QuickDelete(id),
+                ),
+            ]
+        });
         ui::row()
             .flex_none()
             .gap(px(4.))
-            .child(
-                small("up", "↑", ButtonKind::Default, index == 0).when(index > 0, |this| {
-                    this.on_click(cx.listener(move |this, _, _, cx| {
-                        this.change(|s| move_quick_action(s, &up_id, -1), cx);
-                    }))
-                }),
-            )
-            .child(
-                small("down", "↓", ButtonKind::Default, last).when(!last, |this| {
-                    this.on_click(cx.listener(move |this, _, _, cx| {
-                        this.change(|s| move_quick_action(s, &down_id, 1), cx);
-                    }))
-                }),
-            )
-            .when(mine, |this| {
-                this.child(
-                    small("edit", "Edit", ButtonKind::Default, busy).when(!busy, |this| {
-                        this.on_click(cx.listener(move |this, _, window, cx| {
-                            this.start_draft(
-                                Editing::Edit(edit_slot.action.id.clone()),
-                                draft_of(&edit_slot),
-                                window,
-                                cx,
-                            );
-                        }))
-                    }),
-                )
-                .child(
-                    small("delete", "Delete", ButtonKind::Danger, false).on_click(cx.listener(
-                        move |this, _, _, cx| {
-                            this.editing = Editing::Delete(id.clone());
-                            this.draft = None;
-                            cx.notify();
-                        },
-                    )),
-                )
-            })
+            .child(up)
+            .child(down)
+            .children(own.into_iter().flatten())
     }
 
     fn render_theme_section(&self, roles: Roles, cx: &mut Context<Self>) -> Div {
@@ -682,100 +756,51 @@ impl PreferencesPanel {
             ).mt(px(20.)))
     }
 
-    /// A labeled row of toggle buttons, one per choice; the pressed one equals `current`.
-    fn render_choices<T: Copy + PartialEq + 'static>(
-        &self,
-        label: &'static str,
-        choices: Vec<(SharedString, T, bool)>,
-        current: T,
-        event: fn(T) -> PreferencesEvent,
-        roles: Roles,
-        cx: &mut Context<Self>,
-    ) -> Div {
+    /// A labeled row of toggle buttons, one per choice.
+    fn render_choices(&self, group: ChoiceGroup, roles: Roles, cx: &mut Context<Self>) -> Div {
+        let label = group.label;
         div().mt(px(16.)).child(ui::label(label, roles)).child(
             ui::row()
                 .flex_wrap()
                 .gap(px(4.))
-                .children(choices.into_iter().map(|(name, value, disabled)| {
-                    let id = SharedString::from(format!("choice-{label}-{name}"));
-                    ui::toggle_button(
-                        id,
-                        name,
-                        value == current,
-                        ui::Control::disabled(disabled),
-                        roles,
+                .children(group.choices.into_iter().map(|choice| {
+                    let id = SharedString::from(format!("choice-{label}-{}", choice.name));
+                    let control = Control::Choice(label, choice.name.clone());
+                    let state = ui::Control {
+                        disabled: choice.disabled,
+                        focused: self.keyboard_on(&control),
+                    };
+                    let value = choice.value;
+                    ui::with_reveal(
+                        ui::toggle_button(id, choice.name, choice.pressed, state, roles),
+                        self.marker(&control),
                     )
-                    .when(!disabled, |this| {
-                        this.on_click(cx.listener(move |_, _, _, cx| {
-                            cx.emit(event(value));
-                        }))
+                    .when(!choice.disabled, |this| {
+                        this.on_click(cx.listener(move |_, _, _, cx| cx.emit(value.event())))
                     })
                 })),
         )
     }
 
     fn render_caret_section(&self, roles: Roles, cx: &mut Context<Self>) -> Div {
-        let current = caret::settings(cx);
-        let shapes = CaretShape::ALL
-            .iter()
-            .map(|&shape| {
-                (
-                    shape.label().into(),
-                    CaretSettings { shape, ..current },
-                    false,
-                )
-            })
-            .collect();
-        let widths = (MIN_WIDTH..=MAX_WIDTH)
-            .map(|width| {
-                (
-                    format!("{width} px").into(),
-                    current.with_width(width),
-                    !current.shape.has_width(),
-                )
-            })
-            .collect();
-        let blinks = CaretBlink::ALL
-            .iter()
-            .map(|&blink| {
-                (
-                    blink.label().into(),
-                    CaretSettings { blink, ..current },
-                    false,
-                )
-            })
-            .collect();
         div()
             .child(ui::title("Caret", roles).mt(px(24.)))
-            .child(self.render_choices("Shape", shapes, current, PreferencesEvent::Caret, roles, cx))
-            .child(self.render_choices("Width", widths, current, PreferencesEvent::Caret, roles, cx))
-            .child(self.render_choices("Blink", blinks, current, PreferencesEvent::Caret, roles, cx))
+            .children(
+                nav::caret_groups(cx)
+                    .into_iter()
+                    .map(|group| self.render_choices(group, roles, cx)),
+            )
             .child(ui::meta("The caret takes the theme's accent color. A block covers the next character, as in Vim.", roles).mt(px(8.)))
     }
 
     fn render_spelling_section(&self, roles: Roles, cx: &mut Context<Self>) -> Div {
-        let current = spelling::settings(cx);
-        let switch = [("On", true), ("Off", false)]
-            .into_iter()
-            .map(|(name, enabled)| (name.into(), SpellSettings { enabled, ..current }, false))
-            .collect();
-        let keys = MenuKey::ALL
-            .iter()
-            .map(|&menu_key| {
-                (
-                    menu_key.label().into(),
-                    SpellSettings {
-                        menu_key,
-                        ..current
-                    },
-                    !current.enabled,
-                )
-            })
-            .collect();
         div()
             .child(ui::title("Spelling", roles).mt(px(24.)))
-            .child(self.render_choices("Check spelling", switch, current, PreferencesEvent::Spelling, roles, cx))
-            .child(self.render_choices("Suggestions key", keys, current, PreferencesEvent::Spelling, roles, cx))
+            .children(
+                nav::spelling_groups(cx)
+                    .into_iter()
+                    .map(|group| self.render_choices(group, roles, cx)),
+            )
             .child(ui::meta("The key opens the suggestions of the marked word under the caret. \"?\" does it only inside the word; at its end it types \"?\". F8 opens the word under the caret too, then goes to the next mistake; Shift+F8 to the previous one.", roles).mt(px(8.)))
     }
 
@@ -786,7 +811,7 @@ impl PreferencesPanel {
                 "preferences-model",
                 "Model",
                 "The OpenRouter model that writes Suggestions",
-                ("Change", || PreferencesEvent::OpenModel),
+                ("Change", Setting::Model),
                 roles,
                 cx,
             ))
@@ -794,7 +819,7 @@ impl PreferencesPanel {
                 "preferences-key",
                 "OpenRouter key",
                 "Lets Desafinado call OpenRouter",
-                ("Change", || PreferencesEvent::OpenKey),
+                ("Change", Setting::Key),
                 roles,
                 cx,
             ))
@@ -802,7 +827,7 @@ impl PreferencesPanel {
                 "preferences-spend",
                 "AI spend",
                 "Calls and cost from this machine's records",
-                ("Show", || PreferencesEvent::OpenSpend),
+                ("Show", Setting::Spend),
                 roles,
                 cx,
             ))
@@ -861,13 +886,19 @@ impl PreferencesPanel {
                 Some(form) => this.child(form),
                 None => this.child(
                     div().mt(px(12.)).flex().child(
-                        ui::sized_button(
-                            "quick-action-new",
-                            "New Quick action",
-                            ButtonKind::Default,
-                            ButtonSize::Regular,
-                            ui::Control::disabled(editing_any),
-                            roles,
+                        ui::with_reveal(
+                            ui::sized_button(
+                                "quick-action-new",
+                                "New Quick action",
+                                ButtonKind::Default,
+                                ButtonSize::Regular,
+                                ui::Control {
+                                    disabled: editing_any,
+                                    focused: self.keyboard_on(&Control::NewQuickAction),
+                                },
+                                roles,
+                            ),
+                            self.marker(&Control::NewQuickAction),
                         )
                         .when(!editing_any, |this| {
                             this.on_click(cx.listener(|this, _, window, cx| {
@@ -898,10 +929,15 @@ impl Focusable for PreferencesPanel {
 impl Render for PreferencesPanel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let roles = theme::roles(cx);
-        div()
+        let root = div()
             .id("preferences")
             .key_context("Preferences")
             .track_focus(&self.focus)
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, _, _, cx| this.forget_keyboard(cx)),
+            );
+        self.on_keyboard_actions(root, cx)
             .on_action(cx.listener(Self::close))
             .on_action(cx.listener(Self::cancel_draft))
             .on_action(cx.listener(Self::submit_draft))
@@ -920,8 +956,18 @@ impl Render for PreferencesPanel {
                     .py(px(16.))
                     .child(ui::title("Preferences", roles))
                     .child(
-                        ui::button("preferences-done", "Done", ButtonKind::Default, roles)
-                            .on_click(cx.listener(|_, _, _, cx| cx.emit(PreferencesEvent::Close))),
+                        ui::with_reveal(
+                            ui::sized_button(
+                                "preferences-done",
+                                "Done",
+                                ButtonKind::Default,
+                                ButtonSize::Regular,
+                                ui::Control::focused(self.keyboard_on(&Control::Done)),
+                                roles,
+                            ),
+                            self.marker(&Control::Done),
+                        )
+                        .on_click(cx.listener(|_, _, _, cx| cx.emit(PreferencesEvent::Close))),
                     ),
             )
             .child(ui::scrolled_rest(
@@ -946,7 +992,69 @@ impl Render for PreferencesPanel {
 
 #[cfg(test)]
 mod tests {
-    use super::{new_user_id, version_line};
+    use super::{key_bindings, new_user_id, version_line};
+    use gpui_kit::{KeyContext, Keymap, Keystroke};
+
+    fn bound(key: &'static str, names: &[&str]) -> Vec<&'static str> {
+        let keymap = Keymap::new(key_bindings());
+        let stack: Vec<KeyContext> = names
+            .iter()
+            .map(|name| KeyContext::parse(name).unwrap())
+            .collect();
+        let (bindings, _) = keymap.bindings_for_input(&[Keystroke::parse(key).unwrap()], &stack);
+        bindings
+            .iter()
+            .map(|binding| binding.action().name())
+            .collect()
+    }
+
+    const PANEL: &[&str] = &["Workspace", "Preferences"];
+    const NAME_FIELD: &[&str] = &[
+        "Workspace",
+        "Preferences",
+        "QuickActionForm",
+        "QuickActionName",
+        "Input",
+    ];
+    const INSTRUCTION_FIELD: &[&str] = &["Workspace", "Preferences", "QuickActionForm", "Input"];
+
+    #[test]
+    fn keys_move_through_preferences() {
+        let expected = [
+            ("up", "preferences::PrefUp"),
+            ("down", "preferences::PrefDown"),
+            ("left", "preferences::PrefLeft"),
+            ("right", "preferences::PrefRight"),
+            ("tab", "preferences::PrefNext"),
+            ("shift-tab", "preferences::PrefPrevious"),
+            ("enter", "preferences::PrefPress"),
+            ("space", "preferences::PrefPress"),
+            ("escape", "preferences::ClosePreferences"),
+        ];
+        for (key, action) in expected {
+            assert_eq!(bound(key, PANEL), vec![action], "{key}");
+        }
+    }
+
+    #[test]
+    fn keys_stay_in_the_quick_action_fields() {
+        for field in [NAME_FIELD, INSTRUCTION_FIELD] {
+            for key in ["up", "down", "left", "right", "tab", "space"] {
+                assert!(bound(key, field).is_empty(), "{key} is bound in {field:?}");
+            }
+        }
+        assert_eq!(
+            bound("enter", NAME_FIELD).first(),
+            Some(&"preferences::SubmitQuickActionDraft")
+        );
+        assert!(bound("enter", INSTRUCTION_FIELD).is_empty());
+        for field in [NAME_FIELD, INSTRUCTION_FIELD] {
+            assert_eq!(
+                bound("ctrl-enter", field).first(),
+                Some(&"preferences::SubmitQuickActionDraft")
+            );
+        }
+    }
     use desafinado_ai::quick_action_settings::is_user_quick_action_id;
 
     #[test]
