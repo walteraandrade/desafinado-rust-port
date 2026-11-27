@@ -2688,7 +2688,12 @@ impl EditorPane {
         AiCaretPlace::At(AiCaretAt {
             target: caret.target,
             spot: spot(bounds),
-            takeoff: editor.range_to_bounds(&(head..head)).map(spot),
+            // Above the view, `range_to_bounds` gives the corner of the first
+            // line on screen instead of nothing: no takeoff, the caret shows in place.
+            takeoff: (!self.above_view(head, cx))
+                .then(|| editor.range_to_bounds(&(head..head)))
+                .flatten()
+                .map(spot),
             height: bounds.size.height,
             flipped: bounds.left() + flag_width > pane.origin.x + pane.size.width,
             label: caret.label,
