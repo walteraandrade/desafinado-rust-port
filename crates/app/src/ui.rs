@@ -1254,47 +1254,31 @@ pub fn cascade_delay(index: usize, step_ms: u64, max_steps: usize) -> std::time:
     std::time::Duration::from_millis(step_ms * index.min(max_steps) as u64)
 }
 
-pub fn ease_out_quart(delta: f32) -> f32 {
-    1. - (1. - delta.clamp(0., 1.)).powi(4)
-}
-
-pub fn leave<E: Styled + IntoElement + 'static>(
-    id: impl Into<ElementId>,
-    element: E,
-    to: Enter,
-) -> AnimationElement<E> {
-    element.with_animation(
-        id,
-        Animation::new(MOTION_LEAVE).with_easing(ease_out_quart),
-        move |element, delta| {
-            let (x, y) = enter_offset(to, delta);
-            match to {
-                Enter::Lift(lift) => lifted(element, lift, 1. - delta),
-                Enter::Rise(_) => element.opacity(1. - delta).mt(px(y)),
-                Enter::Slide(_) => element.opacity(1. - delta).ml(px(x)),
-            }
-        },
+/// How a side panel (the Library, Preferences) arrives and how it leaves.
+pub fn panel_in_out() -> ginga_gpui::InOut {
+    ginga_gpui::InOut::new(
+        ginga_gpui::Tween::new(MOTION_ENTER, ginga_gpui::Easing::OutExpo),
+        ginga_gpui::Tween::new(MOTION_LEAVE, ginga_gpui::Easing::OutQuart),
     )
 }
 
-pub fn column_motion(
-    id: impl Into<ElementId>,
-    column: Div,
-    full: Pixels,
-    opening: bool,
-) -> AnimationElement<Div> {
-    let animation = if opening {
-        Animation::new(MOTION_ENTER).with_easing(ease_out_expo)
-    } else {
-        Animation::new(MOTION_LEAVE).with_easing(ease_out_quart)
-    };
-    column.with_animation(id, animation, move |column, delta| {
-        column.w(full * column_share(opening, delta))
-    })
+/// `element` as much on screen as `progress` says: it fades and sits `slide`
+/// pixels to the side of its place, by its left margin, as `progress` falls.
+pub fn slid<E: Styled>(element: E, slide: f32, progress: f32) -> E {
+    let (opacity, x) = slide_at(slide, progress);
+    element.opacity(opacity).ml(px(x))
 }
 
-pub fn column_share(opening: bool, delta: f32) -> f32 {
-    if opening { delta } else { 1. - delta }
+/// The opacity and the offset from its place of something that slides
+/// `slide` pixels into place, `progress` of the way in.
+pub fn slide_at(slide: f32, progress: f32) -> (f32, f32) {
+    let progress = progress.clamp(0., 1.);
+    (progress, enter_offset(Enter::Slide(slide), 1. - progress).0)
+}
+
+/// A column `progress` of its `full` width open.
+pub fn column_at(column: Div, full: Pixels, progress: f32) -> Div {
+    column.w(full * progress.clamp(0., 1.))
 }
 
 /// How a row of a list arrives and leaves: it lifts in and shrinks away, or
@@ -1969,8 +1953,8 @@ mod tests {
         CaretInk, CaretSpot, SPELL_DOT, bytes_on_screen, caret_quads, dotted_line, word_spans,
     };
     use super::{
-        Enter, cascade_delay, column_share, delayed, dot_opacity, ease_in_out_sine, ease_out_expo,
-        ease_out_quart, enter_offset, lead_of, lift_at, takes_input,
+        Enter, cascade_delay, delayed, dot_opacity, ease_in_out_sine, ease_out_expo, enter_offset,
+        lead_of, lift_at, panel_in_out, slide_at, takes_input,
     };
     use desafinado_features::caret::{CaretSettings, CaretShape};
     use gpui_kit::{point, px};
@@ -2088,19 +2072,25 @@ mod tests {
     }
 
     #[test]
-    fn a_column_opens_from_nothing_and_closes_to_nothing() {
-        assert_eq!(column_share(true, 0.), 0.);
-        assert_eq!(column_share(true, 1.), 1.);
-        assert_eq!(column_share(false, 0.), 1.);
-        assert_eq!(column_share(false, 1.), 0.);
+    fn a_panel_arrives_and_leaves_on_the_curves_it_always_had() {
+        let ms = std::time::Duration::from_millis;
+        let ways = panel_in_out();
+        let mut panel = ginga_gpui::ginga::Presence::absent();
+        panel.show((), ways.enter, ms(0));
+        let arriving = panel.frame(ms(130)).map(|shown| shown.progress);
+        assert!((arriving.unwrap() - ease_out_expo(0.5)).abs() < 1e-3);
+        panel.hide(ways.exit, ms(1_000));
+        let leaving = panel.frame(ms(1_090)).map(|shown| shown.progress);
+        assert!((leaving.unwrap() - 0.5f32.powi(4)).abs() < 1e-3);
+        assert!(panel.frame(ms(1_180)).is_none());
     }
 
     #[test]
-    fn ease_out_quart_lands_on_one_and_clamps() {
-        assert_eq!(ease_out_quart(0.), 0.);
-        assert_eq!(ease_out_quart(1.), 1.);
-        assert!(ease_out_quart(0.5) > 0.9);
-        assert_eq!(ease_out_quart(2.), 1.);
+    fn a_panel_slides_in_from_its_side_and_rests_in_place() {
+        assert_eq!(slide_at(-16., 0.), (0., -16.));
+        assert_eq!(slide_at(-16., 0.5), (0.5, -8.));
+        assert_eq!(slide_at(16., 1.), (1., 0.));
+        assert_eq!(slide_at(16., 1.5), (1., 0.));
     }
 
     #[test]
