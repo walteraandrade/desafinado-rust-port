@@ -220,6 +220,7 @@ pub(super) struct KeyboardFocus {
     pub control: Option<Control>,
     at: Option<(usize, usize)>,
     pub reveal: Rc<Cell<bool>>,
+    pub form_reveal: Rc<Cell<bool>>,
 }
 
 impl PreferencesPanel {
@@ -322,6 +323,11 @@ impl PreferencesPanel {
         self.keyboard.control = Some(control.clone());
         self.keyboard.reveal.set(true);
         cx.notify();
+    }
+
+    pub(super) fn settle_after_keep(&mut self) {
+        self.editing = Editing::None;
+        self.keyboard.reveal.set(self.keyboard.control.is_some());
     }
 
     pub(super) fn forget_keyboard(&mut self, cx: &mut Context<Self>) {
@@ -457,8 +463,16 @@ impl PreferencesPanel {
 
     /// An invisible layer over the focused control that scrolls it into view once after a key moves it.
     pub(super) fn reveal_marker(&self) -> impl IntoElement + use<> {
+        self.marker_for(Rc::clone(&self.keyboard.reveal))
+    }
+
+    /// Scrolls a Quick action form into view once, when it opens.
+    pub(super) fn form_reveal_marker(&self) -> impl IntoElement + use<> {
+        self.marker_for(Rc::clone(&self.keyboard.form_reveal))
+    }
+
+    fn marker_for(&self, pending: Rc<Cell<bool>>) -> impl IntoElement + use<> {
         let scroll = self.scroll.clone();
-        let pending = Rc::clone(&self.keyboard.reveal);
         canvas(
             move |bounds, window, _| {
                 if !pending.replace(false) {

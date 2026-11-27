@@ -32,7 +32,8 @@ actions!(
     [
         ClosePreferences,
         CancelQuickActionDraft,
-        SubmitQuickActionDraft
+        SubmitQuickActionDraft,
+        ToggleSkillOnly
     ]
 );
 
@@ -55,6 +56,7 @@ fn key_bindings() -> Vec<KeyBinding> {
     bindings.extend([
         KeyBinding::new("escape", ClosePreferences, Some("Preferences")),
         KeyBinding::new("escape", CancelQuickActionDraft, Some("QuickActionForm")),
+        KeyBinding::new("alt-s", ToggleSkillOnly, Some("QuickActionForm")),
         KeyBinding::new(
             "ctrl-enter",
             SubmitQuickActionDraft,
@@ -268,7 +270,7 @@ impl PreferencesPanel {
             _subscriptions: subscriptions,
         });
         self.editing = editing;
-        self.keyboard.reveal.set(true);
+        self.keyboard.form_reveal.set(true);
         cx.notify();
     }
 
@@ -340,7 +342,21 @@ impl PreferencesPanel {
     }
 
     fn close(&mut self, _: &ClosePreferences, _: &mut Window, cx: &mut Context<Self>) {
+        if let Editing::Delete(id) = &self.editing {
+            let keep = nav::Control::QuickDelete(id.clone());
+            self.keyboard.control = self.keyboard.control.as_ref().map(|_| keep);
+            self.settle_after_keep();
+            cx.notify();
+            return;
+        }
         cx.emit(PreferencesEvent::Close);
+    }
+
+    fn toggle_skill_only(&mut self, _: &ToggleSkillOnly, _: &mut Window, cx: &mut Context<Self>) {
+        if let Some(draft) = self.draft.as_mut() {
+            draft.skill_only = !draft.skill_only;
+            cx.notify();
+        }
     }
 
     fn marker(&self, control: &Control) -> Option<impl IntoElement + use<>> {
@@ -357,44 +373,41 @@ impl PreferencesPanel {
         let checked = option.id == selected;
         let id = option.id.clone();
         let control = Control::Theme(option.id.clone());
-        let row = ui::option_row(
+        let row = ui::focusable_row(
             SharedString::from(format!("theme-{}", option.id)),
-            false,
+            self.keyboard_on(&control),
             checked,
             roles,
         );
-        ui::with_reveal(
-            ui::keyboard_ring(row, self.keyboard_on(&control), roles),
-            self.marker(&control),
-        )
-        .gap(px(12.))
-        .px(px(8.))
-        .py(px(8.))
-        .on_click(cx.listener(move |_, _, _, cx| theme::choose(&id, cx)))
-        .child(ui::check(checked, roles))
-        .child(
-            div()
-                .min_w_0()
-                .flex_1()
-                .flex()
-                .flex_col()
-                .child(div().truncate().child(option.title.clone()))
-                .child(
-                    div()
-                        .truncate()
-                        .type_small()
-                        .text_color(roles.muted)
-                        .child(option.origin.clone()),
+        ui::with_reveal(row, self.marker(&control))
+            .gap(px(12.))
+            .px(px(8.))
+            .py(px(8.))
+            .on_click(cx.listener(move |_, _, _, cx| theme::choose(&id, cx)))
+            .child(ui::check(checked, roles))
+            .child(
+                div()
+                    .min_w_0()
+                    .flex_1()
+                    .flex()
+                    .flex_col()
+                    .child(div().truncate().child(option.title.clone()))
+                    .child(
+                        div()
+                            .truncate()
+                            .type_small()
+                            .text_color(roles.muted)
+                            .child(option.origin.clone()),
+                    ),
+            )
+            .child(
+                div().flex().flex_row().flex_none().children(
+                    theme::swatches(option)
+                        .into_iter()
+                        .map(|color| div().w(px(12.)).h(px(20.)).bg(color)),
                 ),
-        )
-        .child(
-            div().flex().flex_row().flex_none().children(
-                theme::swatches(option)
-                    .into_iter()
-                    .map(|color| div().w(px(12.)).h(px(20.)).bg(color)),
-            ),
-        )
-        .into_any_element()
+            )
+            .into_any_element()
     }
 
     fn render_theme_group(
@@ -468,8 +481,9 @@ impl PreferencesPanel {
         div()
             .id("quick-action-form")
             .key_context("QuickActionForm")
+            .on_action(cx.listener(Self::toggle_skill_only))
             .relative()
-            .child(self.reveal_marker())
+            .child(self.form_reveal_marker())
             .my(px(8.))
             .p(px(12.))
             .bg(roles.canvas)
@@ -501,14 +515,12 @@ impl PreferencesPanel {
                     .px(px(8.))
                     .py(px(8.))
                     .gap(px(12.))
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        if let Some(draft) = this.draft.as_mut() {
-                            draft.skill_only = !draft.skill_only;
-                            cx.notify();
-                        }
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.toggle_skill_only(&ToggleSkillOnly, window, cx);
                     }))
                     .child(ui::check(skill_only, roles))
-                    .child("Only in skills"),
+                    .child(div().flex_1().child("Only in skills"))
+                    .child(ui::shortcut_hint("Alt+S", false, roles)),
             )
             .child(
                 ui::row()
@@ -554,9 +566,10 @@ impl PreferencesPanel {
             .gap(px(8.))
             .child(
                 ui::with_reveal(
-                    ui::keyboard_ring(
-                        ui::option_row(("quick-action-toggle", index), false, false, roles),
+                    ui::focusable_row(
+                        ("quick-action-toggle", index),
                         self.keyboard_on(&Control::QuickToggle(id.clone())),
+                        false,
                         roles,
                     ),
                     self.marker(&Control::QuickToggle(id.clone())),
@@ -1009,6 +1022,16 @@ mod tests {
     }
 
     const PANEL: &[&str] = &["Workspace", "Preferences"];
+    const FORM_FIELD: &[&str] = &["Workspace", "Preferences", "QuickActionForm", "Input"];
+
+    #[test]
+    fn alt_s_toggles_only_in_skills_from_the_form() {
+        assert_eq!(
+            bound("alt-s", FORM_FIELD).first(),
+            Some(&"preferences::ToggleSkillOnly")
+        );
+        assert!(bound("alt-s", PANEL).is_empty());
+    }
     const NAME_FIELD: &[&str] = &[
         "Workspace",
         "Preferences",
