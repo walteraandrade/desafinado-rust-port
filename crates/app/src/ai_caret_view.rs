@@ -2,10 +2,12 @@
 //! breathing and its trips ask for frames of this view alone, so the pane,
 //! which the workspace caches, is not rendered again for them.
 //!
-//! So the caret is painted above the pane's Cards, bubble and requests tray
-//! where they overlap. Drawn inside the pane, under them, every frame it asks
-//! for would render the pane again too: GPUI renders again the view that asks
-//! for a frame and every view above it.
+//! So the caret is painted above everything the pane draws over its text,
+//! where they overlap: the text map and its chips, the Notes' marks, an open
+//! Note, the requests tray, the Suggestion Cards, the bubble and the spelling
+//! menu. Drawn inside the pane, under them, every frame it asks for would
+//! render the pane again too: GPUI renders again the view that asks for a
+//! frame and every view above it.
 
 use desafinado_ai::editor::caret_travel::{CaretTravel, Spot};
 use ginga_gpui::Island;

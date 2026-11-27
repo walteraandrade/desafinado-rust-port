@@ -4,7 +4,7 @@ The workspace caches the editor pane (`.cached(..)` in `Workspace::render_editin
 
 ## Result
 
-No flow showed a stale pane. Nothing had to be fixed with a notify. One place changes the pane without notifying it, and it stays, for the reason given under "Static check".
+No flow showed a stale pane, and this check added no notify. The cache needed one, which came with the caret work itself: when the open file becomes or stops being a Skill, `Workspace::refresh_frontmatter` notifies the pane (its Quick actions differ). It notifies only on that change. One place changes the pane without notifying it, and it stays, for the reason given under "Static check".
 
 ## How it was checked
 
@@ -24,7 +24,7 @@ The full run took 46 screenshots, and 43 are identical. The 3 that differ do so 
 | Accept, undo | `Ctrl+Enter` writes the Replacement and drops the Card; `Ctrl+Z` brings the Original back, selected, with the bubble over it | yes |
 | Reject | `Esc` drops the Suggestion and the Card | yes |
 | Refine | The Refine field, then the AI caret with "more formal" while it runs, the new version, `Ctrl+H` / `Ctrl+L` stepping `‹ 1 / 2 ›` | yes (the AI caret's place inside its glide differs by timing) |
-| Review, Comment mode | AI caret "Reviewing", then numbered marks and the Editor's notes panel; a mark opens its Note; a Note picked in the panel (a workspace view) opens on its mark in the pane; Dismiss; Suggest rewrite gives a Suggestion | yes |
+| Review, Comment mode | AI caret "Reviewing", then numbered marks and the Editor's notes panel; a mark opens its Note; a Note picked in the panel (a workspace view) opens on its mark in the pane; Dismiss; Suggest rewrite gives a Suggestion ([screenshot](cached-pane-flows/review-notes-cached.png)) | yes |
 | Review, Revise mode | From the Comment Review, the mode chip runs it again as a Revise: "Review: 1 suggestion", a block Replacement with its Card. From Edit → Review… with the focus "fix the spelling" or "rewrite for clarity", the header chip says Revise and the fake model returns "Review: no suggestions" | yes (dots' pulse) |
 | Spelling menu | A click on "mispeled" opens the menu; a click on "misled" fixes it and the mark goes. `F8` opens the menu with the keys in it (`Enter` on the first fix), and `Enter` takes it. After a click the menu does not take the keys: `Enter` breaks the line in the text, in both modes | yes |
 | Reading view | `Ctrl+Alt+R` shows the rendered text and swaps back | yes |
@@ -50,7 +50,7 @@ Seen once and not again: in the first cached typing run, " Typed wrongg" was in 
 
 ## The AI caret's paint order
 
-It stays above the Cards, the bubble and the requests tray where they overlap. The caret breathes and glides for as long as a Refine or a Review runs, and each of its frames is a frame request from its view. GPUI notifies the view that asks and marks every view above it dirty (`Window::request_animation_frame`, `Window::mark_view_dirty`). Drawn inside the pane, under its Cards, the caret would draw the whole pane again on every one of those frames, which is what caching the pane avoids. Putting it below the Cards and keeping the cache would mean moving the Cards, the bubble and the tray out of the pane into a view of their own, with their actions, for an overlap that is rare: the flag sits above the caret's line, and a floating Card under the range. The reason is in `crates/app/src/ai_caret_view.rs` and the difference in `docs/PARITY.md`.
+It stays above everything the pane draws over its text, where they overlap: the text map and its chips, the Notes' marks, an open Note, the requests tray, the Suggestion Cards, the bubble and the spelling menu. On `main` the caret came before all of them in the pane. The caret breathes and glides for as long as a Refine or a Review runs, and each of its frames is a frame request from its view. GPUI notifies the view that asks and marks every view above it dirty (`Window::request_animation_frame`, `Window::mark_view_dirty`). Drawn inside the pane, under its Cards, the caret would draw the whole pane again on every one of those frames, which is what caching the pane avoids. Putting it below them and keeping the cache would mean moving them out of the pane into a view of their own, with their actions, for an overlap that is rare: the flag sits above the caret's line, and a floating Card under the range. The reason is in `crates/app/src/ai_caret_view.rs` and the difference in `docs/PARITY.md`.
 
 ## A toast's buttons while it leaves
 
@@ -71,8 +71,10 @@ The exit is short on screen: with `Easing::OutQuart` over 180 ms, the toast is n
 
 ![After the clicks: no new toast while leaving (top); a new one after the control's click (bottom)](cached-pane-flows/toast-after-click.png)
 
-The guard is the `is_wanted` check at the top of `Workspace::run_toast_action`.
+The recording was made with only the `is_wanted` check at the top of `Workspace::run_toast_action`. Since then a leaving toast's buttons also take no pointer at all (no click, hover or hand cursor; `ui::toast_takes_clicks`), and the check stays as a second guard.
 
-## Checks
+## Scrolling with the editor unfocused
 
-On this tree: `cargo fmt --all --check` is clean, `cargo clippy --workspace --all-targets -- -D warnings` finishes with no warning, and `cargo test --workspace` passes 2043 tests in 13 binaries, none failing, 1 ignored. `scripts/smoke.sh` under `xvfb-run`: "The app is running after 15s."
+Found in review. With the editor unfocused (a Refine field holding the keys, say), one scroll tick moved the text but left the Cards and the AI caret a step behind, until something else redrew (here the requests tray's clock, up to a second later). Both place themselves from the editor's last layout while a frame is drawn, and the input only asked for another frame when the caret on screen moved. The Cards are inside the pane and read the layout the same way on `main`, so this does not come from the island or the cache (not run on `main` to confirm). The patched `gpui-base` now asks for the next frame when the visible lines move (`vendor/gpui-base/PATCH.md`). Under Xvfb, with reduced motion on and a slow Refine running:
+
+![400 ms after one scroll tick: before, the caret and the Card sit a line low; after, they are on the line they mark](cached-pane-flows/scroll-before-after.png)
