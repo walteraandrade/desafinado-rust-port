@@ -11,9 +11,9 @@ use gpui_kit::{base::TextViewStyle, prelude::FluentBuilder as _, *};
 
 use desafinado_ai::list_rows::ListMotion;
 use desafinado_features::caret::{CaretSettings, CaretShape};
+use ginga_gpui::LookExt as _;
 
 use crate::theme::Roles;
-use ginga_gpui::LookExt as _;
 
 pub const TEXT_SMALL: Pixels = px(12.);
 pub const TEXT_BODY: Pixels = px(14.);
@@ -1204,18 +1204,9 @@ pub fn enter<E: Styled + IntoElement + 'static>(
     entering(id, element, from, std::time::Duration::ZERO, duration)
 }
 
-pub fn enter_after<E: Styled + IntoElement + 'static>(
-    id: impl Into<ElementId>,
-    element: E,
-    from: Enter,
-    delay: std::time::Duration,
-) -> AnyElement {
-    entering(id, element, from, delay, MOTION_ENTER)
-}
-
 /// The looks something that enters starts from and rests at: `from`'s
 /// offset and no opacity, then its place, fully opaque.
-pub fn enter_looks(from: Enter) -> (ginga_gpui::Look, ginga_gpui::Look) {
+fn enter_looks(from: Enter) -> (ginga_gpui::Look, ginga_gpui::Look) {
     let (x, y) = enter_offset(from, 1.);
     (
         ginga_gpui::Look::new().offset(x, y).opacity(0.),
@@ -1236,7 +1227,7 @@ fn entering<E: Styled + IntoElement + 'static>(
 ) -> AnyElement {
     let (start, rest) = enter_looks(from);
     let way = ginga_gpui::Tween::new(duration, ginga_gpui::Easing::OutExpo).delay(delay);
-    if element.style().position == Some(Position::Absolute) {
+    if enters_in_a_layer(element.style()) {
         return div()
             .absolute()
             .top_0()
@@ -1248,6 +1239,12 @@ fn entering<E: Styled + IntoElement + 'static>(
             .into_any_element();
     }
     element.look(id, rest, way).from(start).into_any_element()
+}
+
+/// Whether an element enters inside a layer that covers its parent: a look's
+/// offset would take the place of an absolutely placed element's own.
+fn enters_in_a_layer(style: &StyleRefinement) -> bool {
+    style.position == Some(Position::Absolute)
 }
 
 pub fn enter_in_turn<E: Styled + IntoElement + 'static>(
@@ -1969,7 +1966,7 @@ mod tests {
     };
     use super::{
         Enter, cascade_delay, delayed, dot_opacity, ease_in_out_sine, ease_out_expo, enter_looks,
-        enter_offset, lead_of, lift_at, panel_in_out, slide_at, takes_input,
+        enter_offset, enters_in_a_layer, lead_of, lift_at, panel_in_out, slide_at, takes_input,
     };
     use desafinado_features::caret::{CaretSettings, CaretShape};
     use gpui_kit::{point, px};
@@ -2114,6 +2111,18 @@ mod tests {
             enter_looks(Enter::Rise(6.)).0,
             Look::new().offset(0., 6.).opacity(0.)
         );
+        assert_eq!(
+            enter_looks(Enter::Lift(-4.)).0,
+            Look::new().offset(0., -4.).opacity(0.)
+        );
+    }
+
+    #[test]
+    fn only_an_absolutely_placed_element_enters_in_a_layer() {
+        use gpui_kit::{Styled as _, div};
+        assert!(enters_in_a_layer(div().absolute().left(px(40.)).style()));
+        assert!(!enters_in_a_layer(div().relative().style()));
+        assert!(!enters_in_a_layer(div().style()));
     }
 
     #[test]

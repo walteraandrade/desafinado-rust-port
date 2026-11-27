@@ -275,6 +275,10 @@ pub struct EditorPane {
     /// The Suggestions whose Card the last frame drew.
     pub(crate) drawn_cards: RefCell<Vec<String>>,
     hovered: Option<String>,
+    /// The hovered Suggestion whose card shows: `hovered` once the pointer
+    /// has rested on it for `ui::MOTION_HOVER_DELAY`.
+    hover_card: Option<String>,
+    hover_wait: Option<Task<()>>,
     pub review: Option<ReviewRun>,
     pub(crate) pending: Option<crate::comment_review::PendingReview>,
     pub(crate) mode: Option<crate::comment_review::ReviewModeState>,
@@ -387,6 +391,8 @@ impl EditorPane {
             card_rects: Rc::new(RefCell::new(Vec::new())),
             drawn_cards: RefCell::new(Vec::new()),
             hovered: None,
+            hover_card: None,
+            hover_wait: None,
             review: None,
             pending: None,
             mode: None,
@@ -2006,17 +2012,12 @@ impl EditorPane {
             .left(bounds.origin.x - origin.x)
             .top(bounds.origin.y - origin.y);
         let card = self.render_ready_card(frame, ready, kind, card_focused, roles, cx);
-        let element = ui::enter_after(
+        let element = ui::enter(
             SharedString::from(format!("card-in-{}", item.id)),
             card,
             self.card_enter(item, bounds, cx),
-            if kind == CardKind::Hover {
-                ui::MOTION_HOVER_DELAY
-            } else {
-                std::time::Duration::ZERO
-            },
-        )
-        .into_any_element();
+            ui::MOTION_ENTER,
+        );
         Some((element, bounds.origin.y - origin.y + height + px(8.)))
     }
 
@@ -2659,10 +2660,32 @@ impl EditorPane {
             position.filter(|position| self.bounds.get().contains(position)),
             cx,
         );
-        if next != self.hovered || spelling {
+        if next != self.hovered {
             self.hovered = next;
+            self.wait_for_hover_card(cx);
+        }
+        if spelling {
             cx.notify();
         }
+    }
+
+    /// Shows the hovered Suggestion's card once the pointer has rested on it,
+    /// and hides the card at once when it leaves.
+    fn wait_for_hover_card(&mut self, cx: &mut Context<Self>) {
+        if self.hover_card.is_some() {
+            self.hover_card = None;
+            cx.notify();
+        }
+        self.hover_wait = self.hovered.is_some().then(|| {
+            cx.spawn(async move |this, cx| {
+                cx.background_executor().timer(ui::MOTION_HOVER_DELAY).await;
+                this.update(cx, |this, cx| {
+                    this.hover_card.clone_from(&this.hovered);
+                    cx.notify();
+                })
+                .log_warn();
+            })
+        });
     }
 
     /// Where the AI caret belongs this frame, for the view that draws it.
@@ -2942,7 +2965,7 @@ impl EditorPane {
                 .iter()
                 .map(|item| (item.id.as_str(), card_status(item))),
             active_id.as_deref(),
-            self.hovered.as_deref(),
+            self.hover_card.as_deref(),
         )
         .into_iter()
         .map(|(id, kind)| (id.to_string(), kind))
