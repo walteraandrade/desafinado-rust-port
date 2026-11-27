@@ -11,6 +11,8 @@ serde_json.workspace = true
 log.workspace = true
 desafinado-core = { path = "../core" }
 desafinado-ai = { path = "../ai" }
+# The motion library, pinned to a revision of its GitHub repository.
+ginga-gpui = { git = "https://github.com/walteraandrade/ginga", rev = "44f572c3b77355ce7a198e7af1797391915d98a1" }
 futures = "0.3"
 desafinado-platform = { path = "../platform" }
 desafinado-runtime = { path = "../runtime" }

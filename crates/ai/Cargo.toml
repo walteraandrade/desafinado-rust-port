@@ -11,6 +11,8 @@ serde_json.workspace = true
 regex = "1"
 thiserror.workspace = true
 desafinado-core = { path = "../core" }
+# The motion library, pinned to a revision of its GitHub repository.
+ginga = { git = "https://github.com/walteraandrade/ginga", rev = "44f572c3b77355ce7a198e7af1797391915d98a1" }
 pulldown-cmark.workspace = true
 
 [lints]
