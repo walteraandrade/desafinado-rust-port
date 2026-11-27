@@ -463,8 +463,13 @@ pub struct Workspace {
     pub(crate) timeline: crate::history_view::Timeline,
     pub(crate) utc_offset: i64,
     open_menu: Option<MenuKind>,
+    /// The menu on screen, which may be leaving, and which one it is.
+    menu_shown: ui::Presence<MenuKind>,
+    menu_shown_kind: Option<MenuKind>,
     leave: Option<LeaveIntent>,
     review_focus: Option<Entity<gpui_kit::component::input::InputState>>,
+    /// The Review popover on screen, which may be leaving.
+    review_shown: ui::Presence<Entity<gpui_kit::component::input::InputState>>,
     after_save: Option<LeaveIntent>,
     focus: FocusHandle,
     leave_focus: FocusHandle,
@@ -558,8 +563,11 @@ impl Workspace {
             timeline: crate::history_view::Timeline::default(),
             utc_offset,
             open_menu: None,
+            menu_shown: ui::Presence::absent(),
+            menu_shown_kind: None,
             leave: None,
             review_focus: None,
+            review_shown: ui::Presence::absent(),
             after_save: None,
             focus: cx.focus_handle(),
             leave_focus: cx.focus_handle(),
@@ -2854,6 +2862,38 @@ impl Workspace {
         }
     }
 
+    /// Brings the menu on screen in line with the one that is open: a closed
+    /// menu plays its way out, and another menu replaces a leaving one at once,
+    /// so two never show.
+    fn follow_menu(&mut self, cx: &App) {
+        let in_out = ui::popover_in_out();
+        let Some(kind) = self.open_menu else {
+            if self.menu_shown.is_wanted() {
+                self.menu_shown.hide(in_out.exit, cx);
+            }
+            return;
+        };
+        if self.menu_shown_kind != Some(kind) {
+            self.menu_shown = ui::Presence::absent();
+            self.menu_shown_kind = Some(kind);
+        }
+        if !self.menu_shown.is_wanted() {
+            self.menu_shown.show(kind, in_out.enter, cx);
+        }
+    }
+
+    /// The same for the Review popover.
+    fn follow_review_popover(&mut self, cx: &App) {
+        let in_out = ui::popover_in_out();
+        match &self.review_focus {
+            Some(input) if !self.review_shown.is_wanted() => {
+                self.review_shown.show(input.clone(), in_out.enter, cx);
+            }
+            None if self.review_shown.is_wanted() => self.review_shown.hide(in_out.exit, cx),
+            _ => {}
+        }
+    }
+
     fn render_menu_button(
         &self,
         kind: MenuKind,
@@ -2889,9 +2929,13 @@ impl Workspace {
             }))
     }
 
+    /// A menu, `progress` of the way in. A menu that does not take input, on
+    /// its way out, is drawn the same under a cover, with no focus or keys.
     fn render_menu(
         &self,
         kind: MenuKind,
+        takes_input: bool,
+        progress: f32,
         roles: Roles,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
@@ -2900,7 +2944,23 @@ impl Workspace {
             MenuKind::Edit => px(52.),
         };
         let active = self.menu_active;
+        let rows = self
+            .menu_rows(kind, cx)
+            .into_iter()
+            .enumerate()
+            .map(|(index, item)| self.render_menu_row(index, item, active, roles, cx))
+            .collect::<Vec<_>>();
         let menu = ui::popover_frame("menu", roles)
+            .absolute()
+            .top(px(36.))
+            .left(left)
+            .min_w(px(240.))
+            .py(px(4.))
+            .children(rows);
+        if !takes_input {
+            return ui::risen(menu.child(ui::input_cover("menu-cover")), -4., progress);
+        }
+        let menu = menu
             .key_context("Menu")
             .track_focus(&self.menu_focus)
             .on_action(cx.listener(|this, _: &MenuDown, _, cx| this.move_in_menu(true, cx)))
@@ -2916,27 +2976,8 @@ impl Workspace {
                     this.select_menu_row(index, window, cx);
                 }
             }))
-            .on_action(cx.listener(|this, _: &MenuLeave, window, cx| this.leave_menu(window, cx)))
-            .absolute()
-            .top(px(36.))
-            .left(left)
-            .min_w(px(240.))
-            .py(px(4.))
-            .children(
-                self.menu_rows(kind, cx)
-                    .into_iter()
-                    .enumerate()
-                    .map(|(index, item)| self.render_menu_row(index, item, active, roles, cx)),
-            );
-        ui::enter(
-            match kind {
-                MenuKind::File => "menu-in-file",
-                MenuKind::Edit => "menu-in-edit",
-            },
-            menu,
-            ui::Enter::Rise(-4.),
-            ui::MOTION_ENTER,
-        )
+            .on_action(cx.listener(|this, _: &MenuLeave, window, cx| this.leave_menu(window, cx)));
+        ui::risen(menu, -4., progress)
     }
 
     fn render_menu_row(
@@ -3017,21 +3058,27 @@ impl Workspace {
         cx.notify();
     }
 
+    /// The Review popover, `progress` of the way in. On its way out it is drawn
+    /// the same under a cover, with no keys.
     fn render_review_popover(
         &self,
         input: &Entity<gpui_kit::component::input::InputState>,
+        takes_input: bool,
+        progress: f32,
         roles: Roles,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let left = px(52.);
         let width = px(384.).min(self.viewport_width - left - px(8.));
         let popover = ui::popover_frame("review-popover", roles)
-            .key_context("ReviewPopover")
-            .on_mouse_down_out(cx.listener(|this, _, _, cx| {
-                if this.review_focus.take().is_some() {
-                    cx.notify();
-                }
-            }))
+            .when(takes_input, |this| {
+                this.key_context("ReviewPopover")
+                    .on_mouse_down_out(cx.listener(|this, _, _, cx| {
+                        if this.review_focus.take().is_some() {
+                            cx.notify();
+                        }
+                    }))
+            })
             .absolute()
             .top(px(36.))
             .left(left)
@@ -3052,13 +3099,11 @@ impl Workspace {
                         this.confirm_review(&ConfirmReview, window, cx);
                     }),
                 ),
-            );
-        ui::enter(
-            "review-popover-in",
-            popover,
-            ui::Enter::Rise(-4.),
-            ui::MOTION_ENTER,
-        )
+            )
+            .when(!takes_input, |this| {
+                this.child(ui::input_cover("review-popover-cover"))
+            });
+        ui::risen(popover, -4., progress)
     }
 
     fn render_leave(&self, roles: Roles, cx: &mut Context<Self>) -> impl IntoElement {
@@ -3196,7 +3241,7 @@ impl Workspace {
     ) -> Option<AnyElement> {
         let shown = self.toast.frame(window, cx)?;
         let progress = shown.progress;
-        let takes_clicks = ui::toast_takes_clicks(shown.phase);
+        let takes_clicks = ui::takes_input(shown.phase);
         let toast = shown.content;
         let (text, tone, actions) = (toast.text.clone(), toast.tone, toast.actions.clone());
         Some(
@@ -4051,6 +4096,16 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) -> Stateful<Div> {
         let toast = self.render_toast(roles, window, cx);
+        self.follow_menu(cx);
+        self.follow_review_popover(cx);
+        let menu = self
+            .menu_shown
+            .frame(window, cx)
+            .map(|shown| (*shown.content, shown.phase, shown.progress));
+        let review = self
+            .review_shown
+            .frame(window, cx)
+            .map(|shown| (shown.content.clone(), shown.phase, shown.progress));
         let preferences = self
             .preferences
             .clone()
@@ -4090,17 +4145,25 @@ impl Workspace {
         .when(self.leave.is_some(), |this| {
             this.child(self.render_leave(roles, cx))
         })
-        .when_some(self.review_focus.clone(), |this, input| {
-            this.child(self.render_review_popover(&input, roles, cx))
+        .when_some(review, |this, (input, phase, progress)| {
+            this.child(self.render_review_popover(
+                &input,
+                ui::takes_input(phase),
+                progress,
+                roles,
+                cx,
+            ))
         })
-        .when_some(self.open_menu, |this, kind| {
+        .when(self.open_menu.is_some(), |this| {
             this.child(
                 ui::scrim("menu-scrim").on_click(cx.listener(|this, _, _, cx| {
                     this.open_menu = None;
                     cx.notify();
                 })),
             )
-            .child(self.render_menu(kind, roles, cx))
+        })
+        .when_some(menu, |this, (kind, phase, progress)| {
+            this.child(self.render_menu(kind, ui::takes_input(phase), progress, roles, cx))
         })
     }
 }
