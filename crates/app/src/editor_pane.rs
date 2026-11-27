@@ -3292,6 +3292,28 @@ mod tests {
     }
 
     #[test]
+    fn arrows_move_between_card_controls_like_tab() {
+        for key in ["tab", "right", "down"] {
+            assert_eq!(bound(key, CARD), vec!["editor_pane::CardNext"], "{key}");
+        }
+        for key in ["shift-tab", "left", "up"] {
+            assert_eq!(bound(key, CARD), vec!["editor_pane::CardPrevious"], "{key}");
+        }
+    }
+
+    #[test]
+    fn arrows_move_the_caret_in_the_refine_field() {
+        for key in ["left", "right", "up", "down"] {
+            assert!(
+                bound(key, REFINE_FIELD)
+                    .iter()
+                    .all(|name| !name.starts_with("editor_pane::")),
+                "{key}"
+            );
+        }
+    }
+
+    #[test]
     fn space_types_in_the_refine_field() {
         assert!(bound("space", REFINE_FIELD).is_empty());
     }
