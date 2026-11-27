@@ -9,6 +9,7 @@ use std::rc::Rc;
 use gpui_kit::component::scroll::{ScrollableElement as _, ScrollbarHandle};
 use gpui_kit::{base::TextViewStyle, prelude::FluentBuilder as _, *};
 
+use desafinado_ai::list_rows::ListMotion;
 use desafinado_features::caret::{CaretSettings, CaretShape};
 
 use crate::theme::Roles;
@@ -1296,16 +1297,59 @@ pub fn column_share(opening: bool, delta: f32) -> f32 {
     if opening { delta } else { 1. - delta }
 }
 
-pub fn glide<E: Styled + IntoElement + 'static>(
-    id: impl Into<ElementId>,
-    element: E,
-    from: f32,
-) -> AnimationElement<E> {
-    element.with_animation(
-        id,
-        Animation::new(MOTION_ENTER).with_easing(ease_out_expo),
-        move |element, delta| element.relative().top(px(from * (1. - delta))),
+/// How a row of a list arrives and leaves: it lifts in and shrinks away, or
+/// does neither when the desktop asks for less motion.
+pub fn list_in_out(cx: &App) -> ginga_gpui::InOut {
+    if cx.reduce_motion() {
+        return ginga_gpui::InOut::INSTANT;
+    }
+    ginga_gpui::InOut::new(
+        ginga_gpui::Tween::new(MOTION_ENTER, ginga_gpui::Easing::OutExpo),
+        ginga_gpui::Tween::new(MOTION_LEAVE, ginga_gpui::Easing::OutQuart),
     )
+}
+
+/// How a row of a list glides to its new place.
+pub fn list_glide(cx: &App) -> ginga_gpui::Transition {
+    let glide = ginga_gpui::Tween::new(MOTION_ENTER, ginga_gpui::Easing::OutExpo);
+    ginga_gpui::unless_reduced(glide, cx)
+}
+
+/// How the rows of a list arrive, leave and glide. The rows below a deleted
+/// row close up on its way out (`ListMotion::close_up`).
+pub fn list_motion(cx: &App) -> ListMotion {
+    ListMotion {
+        in_out: list_in_out(cx),
+        glide: list_glide(cx),
+    }
+}
+
+/// How far above its place a row of a list starts as it lifts in.
+const LIST_ROW_LIFT: f32 = -6.;
+
+/// A row of a list as its presence draws it this frame, `offset` away from
+/// where it is laid out. An arriving row lifts in; a leaving row is cut to
+/// `height`, which falls as it shrinks, and fades away.
+pub fn list_row(
+    row: impl IntoElement,
+    phase: ginga_gpui::Phase,
+    progress: f32,
+    offset: f32,
+    height: Pixels,
+) -> Div {
+    let (opacity, lift) = match phase {
+        ginga_gpui::Phase::Entering => lift_at(LIST_ROW_LIFT, progress),
+        ginga_gpui::Phase::Exiting => (progress.clamp(0., 1.), 0.),
+        ginga_gpui::Phase::Present => (1., 0.),
+    };
+    div()
+        .relative()
+        .top(px(lift + offset))
+        .when(phase == ginga_gpui::Phase::Exiting, |row| {
+            row.h(height).overflow_hidden()
+        })
+        .opacity(opacity)
+        .child(row)
 }
 
 /// The clock a view keeps for motion that lives in the plain crates.
@@ -1361,14 +1405,6 @@ pub fn toast_takes_clicks(phase: ginga_gpui::Phase) -> bool {
 pub fn caret_trip(cx: &App) -> ginga_gpui::Transition {
     let trip = ginga_gpui::Tween::new(MOTION_TRAVEL, ginga_gpui::Easing::OutExpo);
     ginga_gpui::unless_reduced(trip, cx)
-}
-
-pub fn collapse(id: impl Into<ElementId>, row: Div, full: Pixels) -> AnimationElement<Div> {
-    row.with_animation(
-        id,
-        Animation::new(MOTION_LEAVE).with_easing(ease_out_quart),
-        move |row, delta| row.h(full * (1. - delta)).opacity(1. - delta),
-    )
 }
 
 pub fn grow_height(

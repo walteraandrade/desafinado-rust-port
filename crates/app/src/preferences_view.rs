@@ -1,10 +1,9 @@
+use desafinado_ai::list_rows::ListRows;
 use desafinado_ai::quick_action_settings::{
     QuickActionDraft, QuickActionDraftErrors, QuickActionSettings, QuickActionSlot,
     add_user_quick_action, check_quick_action_draft, draft_is_valid, is_user_quick_action,
     remove_user_quick_action, toggle_quick_action, update_user_quick_action,
 };
-use desafinado_ai::ui::list_motion::{ListStep, plan_list_change};
-use desafinado_core::log_err::LogErr;
 use desafinado_features::caret::CaretSettings;
 use desafinado_features::spelling::settings::SpellSettings;
 use desafinado_features::theme::{
@@ -111,19 +110,43 @@ fn draft_of(slot: &QuickActionSlot) -> QuickActionDraft {
     }
 }
 
-struct LeavingRow {
-    serial: u32,
-    index: usize,
-    label: SharedString,
-    _done: Task<()>,
+/// A Quick action row as the list draws it this frame.
+struct ShownRow {
+    /// Its place in the settings, or `None` while it leaves.
+    index: Option<usize>,
+    phase: ginga_gpui::Phase,
+    progress: f32,
+    /// How far from where it is laid out to draw it.
+    offset: f32,
+    /// How high it is drawn.
+    height: f32,
+    /// What a leaving row shows.
+    leaving: SharedString,
+}
+
+/// What the confirm row of a Quick action about to be deleted says, and what
+/// the row shows on its way out.
+fn delete_prompt(label: &str) -> String {
+    format!("Delete “{label}”?")
+}
+
+/// The Quick action rows, by id, with what each shows if it is deleted.
+fn rows_of(settings: &QuickActionSettings) -> Vec<(String, SharedString)> {
+    settings
+        .iter()
+        .map(|slot| {
+            (
+                slot.action.id.clone(),
+                delete_prompt(&slot.action.label).into(),
+            )
+        })
+        .collect()
 }
 
 pub struct PreferencesPanel {
     settings: QuickActionSettings,
-    motion: std::collections::BTreeMap<String, ListStep>,
-    motion_round: u32,
-    leaving_rows: Vec<LeavingRow>,
-    leaving_serial: u32,
+    rows: ListRows<String, SharedString>,
+    clock: ui::MotionClock,
     editing: Editing,
     draft: Option<Draft>,
     created: u32,
@@ -136,12 +159,12 @@ impl PreferencesPanel {
     pub fn new(settings: QuickActionSettings, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let focus = cx.focus_handle();
         window.focus(&focus, cx);
+        let mut clock = ui::MotionClock::default();
+        let rows = ListRows::new(rows_of(&settings), QUICK_ACTION_ROW, clock.now(cx));
         Self {
             settings,
-            motion: std::collections::BTreeMap::new(),
-            motion_round: 0,
-            leaving_rows: Vec::new(),
-            leaving_serial: 0,
+            rows,
+            clock,
             editing: Editing::None,
             draft: None,
             created: 0,
@@ -160,67 +183,30 @@ impl PreferencesPanel {
         if next == self.settings {
             return;
         }
-        self.plan_motion(&next, cx);
+        let now = self.clock.now(cx);
+        self.rows.change(rows_of(&next), ui::list_motion(cx), now);
         self.settings.clone_from(&next);
         cx.emit(PreferencesEvent::QuickActions(next));
         cx.notify();
     }
 
-    fn plan_motion(&mut self, next: &QuickActionSettings, cx: &mut Context<Self>) {
-        let ids = |settings: &QuickActionSettings| {
-            settings
-                .iter()
-                .map(|slot| slot.action.id.clone())
-                .collect::<Vec<_>>()
-        };
-        let Some(change) = plan_list_change(
-            &ids(&self.settings),
-            &ids(next),
-            f64::from(QUICK_ACTION_ROW),
-            cx.reduce_motion(),
-        ) else {
-            return;
-        };
-        self.motion = change.steps;
-        self.motion_round += 1;
-        for (index, id) in change.removed {
-            let Some(slot) = self.settings.iter().find(|slot| slot.action.id == id) else {
-                continue;
-            };
-            self.leaving_serial += 1;
-            let serial = self.leaving_serial;
-            let done = cx.spawn(async move |this, cx| {
-                cx.background_executor().timer(ui::MOTION_LEAVE).await;
-                this.update(cx, |this, cx| {
-                    this.leaving_rows.retain(|row| row.serial != serial);
-                    cx.notify();
-                })
-                .log_warn();
-            });
-            self.leaving_rows.push(LeavingRow {
-                serial,
-                index,
-                label: format!("Delete “{}”?", slot.action.label).into(),
-                _done: done,
-            });
-        }
-    }
-
-    fn with_list_motion(&self, id: &str, row: AnyElement) -> AnyElement {
-        let key = SharedString::from(format!("quick-action-motion-{}-{id}", self.motion_round));
-        match self.motion.get(id) {
-            Some(ListStep::Enter) => ui::enter(
-                key,
-                div().child(row),
-                ui::Enter::Lift(-6.),
-                ui::MOTION_ENTER,
-            )
-            .into_any_element(),
-            Some(ListStep::Move { delta }) => {
-                ui::glide(key, div().child(row), *delta as f32).into_any_element()
-            }
-            None => row,
-        }
+    /// The Quick action rows to draw this frame, and whether any of them is
+    /// still on its way.
+    fn shown_rows(&mut self, cx: &mut Context<Self>) -> (Vec<ShownRow>, bool) {
+        let now = self.clock.now(cx);
+        let (rows, moving) = self.rows.frame(now);
+        let shown = rows
+            .into_iter()
+            .map(|row| ShownRow {
+                index: row.index,
+                phase: row.phase,
+                progress: row.progress,
+                offset: row.offset,
+                height: row.height,
+                leaving: row.content.clone(),
+            })
+            .collect();
+        (shown, moving)
     }
 
     fn start_draft(
@@ -617,7 +603,7 @@ impl PreferencesPanel {
                     .flex_1()
                     .truncate()
                     .pl(px(8.))
-                    .child(format!("Delete “{}”?", slot.action.label)),
+                    .child(delete_prompt(&slot.action.label)),
             )
             .child(
                 ui::row()
@@ -848,41 +834,36 @@ impl PreferencesPanel {
 
     fn render_quick_actions_section(
         &self,
+        shown: Vec<ShownRow>,
         roles: Roles,
         window: &Window,
         cx: &mut Context<Self>,
     ) -> Div {
-        let settings = self.settings.clone();
         let editing_any = matches!(self.editing, Editing::Edit(_));
-        let mut quick_actions = settings
-            .iter()
-            .enumerate()
-            .map(|(index, slot)| {
-                let row = self.render_quick_action(index, slot, roles, window, cx);
-                self.with_list_motion(&slot.action.id, row)
-            })
-            .collect::<Vec<_>>();
-        for leaving in &self.leaving_rows {
-            quick_actions.insert(
-                leaving.index.min(quick_actions.len()),
-                ui::collapse(
-                    SharedString::from(format!("quick-action-leave-{}", leaving.serial)),
-                    ui::row()
+        let quick_actions = shown
+            .into_iter()
+            .filter_map(|shown| {
+                let row = match shown.index {
+                    None => ui::row()
                         .h(px(QUICK_ACTION_ROW))
                         .pl(px(8.))
                         .overflow_hidden()
-                        .child(
-                            div()
-                                .min_w_0()
-                                .flex_1()
-                                .truncate()
-                                .child(leaving.label.clone()),
-                        ),
-                    px(QUICK_ACTION_ROW),
-                )
-                .into_any_element(),
-            );
-        }
+                        .child(div().min_w_0().flex_1().truncate().child(shown.leaving))
+                        .into_any_element(),
+                    Some(index) => {
+                        let slot = self.settings.get(index)?;
+                        self.render_quick_action(index, slot, roles, window, cx)
+                    }
+                };
+                Some(ui::list_row(
+                    row,
+                    shown.phase,
+                    shown.progress,
+                    shown.offset,
+                    px(shown.height),
+                ))
+            })
+            .collect::<Vec<_>>();
         let new_form =
             matches!(self.editing, Editing::New).then(|| self.render_draft(roles, window, cx));
         div()
@@ -942,6 +923,10 @@ impl Focusable for PreferencesPanel {
 impl Render for PreferencesPanel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let roles = theme::roles(cx);
+        let (shown, moving) = self.shown_rows(cx);
+        if moving {
+            window.request_animation_frame();
+        }
         let root = div()
             .id("preferences")
             .key_context("Preferences")
@@ -996,7 +981,7 @@ impl Render for PreferencesPanel {
                     .child(self.render_caret_section(roles, cx))
                     .child(self.render_spelling_section(roles, cx))
                     .child(self.render_ai_section(roles, cx))
-                    .child(self.render_quick_actions_section(roles, window, cx))
+                    .child(self.render_quick_actions_section(shown, roles, window, cx))
                     .child(ui::meta(version_line(), roles).mt(px(32.))),
                 &self.scroll,
             ))
