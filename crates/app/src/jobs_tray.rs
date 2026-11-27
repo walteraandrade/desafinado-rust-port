@@ -3,7 +3,9 @@
 //! its Suggestion. The text, the caret and the selection stay free while requests run.
 
 use std::{
+    cell::RefCell,
     collections::HashMap,
+    rc::Rc,
     time::{Duration, Instant},
 };
 
@@ -37,7 +39,13 @@ pub struct JobsState {
     answered: Vec<Answered>,
     pub(crate) review_started: Option<Instant>,
     tick: Option<Task<()>>,
+    /// Where the tray's working marks are laid out, by request: their island
+    /// draws them there.
+    spots: MarkSpots,
 }
+
+/// Where each working request's mark is laid out, shared with the tray's rows.
+type MarkSpots = Rc<RefCell<Vec<(String, Bounds<Pixels>)>>>;
 
 struct Answered {
     id: String,
@@ -164,12 +172,59 @@ impl EditorPane {
         self.show(&job.id, window, cx);
     }
 
+    /// The tray's working marks, by request, from the pane's top left corner,
+    /// for the view that draws them.
+    pub(crate) fn tray_mark_spots(&self) -> Vec<(String, Point<Pixels>)> {
+        let origin = self.pane_bounds().origin;
+        self.jobs
+            .spots
+            .borrow()
+            .iter()
+            .map(|(id, bounds)| (id.clone(), bounds.origin - origin))
+            .collect()
+    }
+
+    /// Lets go of the marks of requests no longer working. When one goes, the
+    /// next frame draws the pane and the marks' island again without it.
+    fn keep_spots_of(&mut self, jobs: &[Job], window: &mut Window) {
+        let mut spots = self.jobs.spots.borrow_mut();
+        let before = spots.len();
+        spots.retain(|(id, _)| {
+            jobs.iter()
+                .any(|job| &job.id == id && job.phase == JobPhase::Working)
+        });
+        if spots.len() != before {
+            window.request_animation_frame();
+        }
+    }
+
+    /// The place of the working mark of request `id`, kept for its island. When
+    /// it moves, the next frame draws the island again with it.
+    fn mark_spot(&self, id: String, cx: &mut Context<Self>) -> Div {
+        let spots = Rc::clone(&self.jobs.spots);
+        let pane = cx.entity().downgrade();
+        ui::job_mark_spot(move |bounds, window, _| {
+            let mut spots = spots.borrow_mut();
+            match spots.iter_mut().find(|(known, _)| *known == id) {
+                Some((_, known)) if *known == bounds => return,
+                Some((_, known)) => *known = bounds,
+                None => spots.push((id.clone(), bounds)),
+            }
+            let pane = pane.clone();
+            window.on_next_frame(move |_, cx| {
+                pane.update(cx, |_, cx| cx.notify()).log_warn();
+            });
+        })
+    }
+
     pub(crate) fn render_jobs_tray(
         &mut self,
         roles: Roles,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
         let jobs = self.jobs();
+        self.keep_spots_of(&jobs, window);
         if jobs.is_empty() {
             return None;
         }
@@ -221,11 +276,15 @@ impl EditorPane {
             this.open_job(&opened, window, cx);
             cx.notify();
         }))
-        .child(ui::job_mark(
-            SharedString::from(format!("job-mark-{}", job.id)),
-            working,
-            roles,
-        ))
+        .child(if working {
+            self.mark_spot(job.id.clone(), cx).into_any_element()
+        } else {
+            ui::job_mark(
+                SharedString::from(format!("job-mark-{}", job.id)),
+                false,
+                roles,
+            )
+        })
         .child(ui::job_text(job.label, job.detail, roles))
         .child(button)
         .into_any_element()

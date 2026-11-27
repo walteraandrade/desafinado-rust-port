@@ -80,6 +80,7 @@ use crate::{
     single_instance::LaunchMessage,
     spend_view::{SpendEvent, SpendView},
     theme::{self, Roles},
+    tray_marks_view::TrayMarksView,
     ui::{self, ButtonKind, ToastTone, Type as _},
 };
 use desafinado_ai::editor::place::{SavedPlace, place_from_json, place_to_json, restore_place};
@@ -459,6 +460,7 @@ enum Watching {
 pub struct Workspace {
     pane: Entity<EditorPane>,
     ai_caret: Entity<AiCaretView>,
+    tray_marks: Entity<TrayMarksView>,
     services: Arc<Services>,
     db: Option<Arc<HistoryDb>>,
     session: Option<FileSession>,
@@ -557,6 +559,7 @@ impl Workspace {
         let (session, conflict) = session_of(start.as_ref(), &initial);
         let mut workspace = Self {
             ai_caret: crate::ai_caret_view::new(&pane, cx),
+            tray_marks: crate::tray_marks_view::new(&pane, cx),
             pane,
             services,
             db,
@@ -3510,7 +3513,6 @@ impl Focusable for Workspace {
 
 impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        perf_span!("workspace.render");
         let roles = theme::roles(cx);
         self.viewport_width = window.viewport_size().width;
         let active = self.open_path_string();
@@ -3639,6 +3641,7 @@ impl Workspace {
                             .clone()
                             .cached(StyleRefinement::default().size_full()),
                     )
+                    .child(self.tray_marks.clone())
                     .child(self.ai_caret.clone()),
             )
             .child(
