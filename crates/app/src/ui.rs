@@ -1264,6 +1264,26 @@ pub fn glide<E: Styled + IntoElement + 'static>(
     )
 }
 
+/// A surface that comes and goes, kept to be drawn while it leaves.
+pub type Presence<T> = ginga_gpui::Presence<T>;
+
+/// How a toast arrives and how it leaves.
+pub fn toast_in_out() -> ginga_gpui::InOut {
+    ginga_gpui::InOut::new(
+        ginga_gpui::Tween::new(MOTION_TOAST, ginga_gpui::Easing::OutExpo),
+        ginga_gpui::Tween::new(MOTION_LEAVE, ginga_gpui::Easing::OutQuart),
+    )
+}
+
+/// `element` as much on screen as `progress` says: it fades in and lifts
+/// `lift` pixels into its place.
+pub fn lifted<E: Styled>(element: E, lift: f32, progress: f32) -> E {
+    element
+        .opacity(progress.clamp(0., 1.))
+        .relative()
+        .top(px(lift * (1. - progress)))
+}
+
 pub fn collapse(id: impl Into<ElementId>, row: Div, full: Pixels) -> AnimationElement<Div> {
     row.with_animation(
         id,

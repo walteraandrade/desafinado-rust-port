@@ -304,7 +304,6 @@ struct Leaving {
 }
 
 struct Toast {
-    serial: u64,
     text: SharedString,
     tone: ToastTone,
     actions: Vec<ToastAction>,
@@ -451,8 +450,7 @@ pub struct Workspace {
     remembered: Option<PathBuf>,
     watcher: Option<ExternalChangesController>,
     watched: Option<Watching>,
-    toast: Option<Toast>,
-    toast_serial: u64,
+    toast: ui::Presence<Toast>,
     pub(crate) mode: HistoryMode,
     pub(crate) hovered: Option<VersionId>,
     pub(crate) flash: Option<(VersionId, Task<()>)>,
@@ -546,8 +544,7 @@ impl Workspace {
             remembered,
             watcher: None,
             watched: None,
-            toast: None,
-            toast_serial: 0,
+            toast: ui::Presence::absent(),
             mode: HistoryMode::Editing,
             hovered: None,
             flash: None,
@@ -852,20 +849,18 @@ impl Workspace {
         let timer = cx.spawn(async move |this, cx| {
             cx.background_executor().timer(duration).await;
             this.update(cx, |this, cx| {
-                this.toast = None;
+                this.toast.hide(ui::toast_in_out().exit, cx);
                 cx.notify();
             })
             .log_warn();
         });
-        self.toast_serial += 1;
-        let serial = self.toast_serial;
-        self.toast = Some(Toast {
-            serial,
+        let toast = Toast {
             text: text.into(),
             tone,
             actions,
             _timer: timer,
-        });
+        };
+        self.toast.show(toast, ui::toast_in_out().enter, cx);
         cx.notify();
     }
 
@@ -1725,7 +1720,10 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.toast = None;
+        if !self.toast.is_wanted() {
+            return;
+        }
+        self.toast.hide(ui::toast_in_out().exit, cx);
         match action {
             ToastAction::ShowEvals { path } => {
                 if self.open_skill(cx).is_some_and(|skill| &skill.path == path) {
@@ -3179,9 +3177,16 @@ impl Workspace {
         .into_any_element()
     }
 
-    fn render_toast(&self, roles: Roles, cx: &mut Context<Self>) -> Option<AnyElement> {
-        let toast = self.toast.as_ref()?;
-        let actions = toast.actions.clone();
+    fn render_toast(
+        &mut self,
+        roles: Roles,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let shown = self.toast.frame(window, cx)?;
+        let progress = shown.progress;
+        let toast = shown.content;
+        let (text, tone, actions) = (toast.text.clone(), toast.tone, toast.actions.clone());
         Some(
             div()
                 .absolute()
@@ -3191,11 +3196,9 @@ impl Workspace {
                 .flex()
                 .justify_center()
                 .px(px(24.))
-                .child(ui::enter(
-                    ("toast-in", toast.serial),
-                    ui::toast_frame("toast", toast.tone, roles)
-                        .child(toast.text.clone())
-                        .children(actions.into_iter().enumerate().map(|(index, action)| {
+                .child(ui::lifted(
+                    ui::toast_frame("toast", tone, roles).child(text).children(
+                        actions.into_iter().enumerate().map(|(index, action)| {
                             ui::small_button(
                                 ("toast-action", index),
                                 action.label(),
@@ -3207,9 +3210,10 @@ impl Workspace {
                                     this.run_toast_action(&action, window, cx);
                                 },
                             ))
-                        })),
-                    ui::Enter::Lift(10.),
-                    ui::MOTION_TOAST,
+                        }),
+                    ),
+                    10.,
+                    progress,
                 ))
                 .into_any_element(),
         )
@@ -3490,7 +3494,7 @@ impl Render for Workspace {
                 ),
             )
             .child(main);
-        self.with_overlays(root, roles, cx)
+        self.with_overlays(root, roles, window, cx)
     }
 }
 
@@ -4014,12 +4018,13 @@ impl Workspace {
     }
 
     fn with_overlays(
-        &self,
+        &mut self,
         root: Stateful<Div>,
         roles: Roles,
+        window: &Window,
         cx: &mut Context<Self>,
     ) -> Stateful<Div> {
-        let toast = self.render_toast(roles, cx);
+        let toast = self.render_toast(roles, window, cx);
         let preferences = self
             .preferences
             .clone()
