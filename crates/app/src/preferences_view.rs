@@ -1,4 +1,4 @@
-use desafinado_ai::quick_action_rows::{QuickActionRows, RowFrame};
+use desafinado_ai::list_rows::ListRows;
 use desafinado_ai::quick_action_settings::{
     QuickActionDraft, QuickActionDraftErrors, QuickActionSettings, QuickActionSlot,
     add_user_quick_action, check_quick_action_draft, draft_is_valid, is_user_quick_action,
@@ -110,15 +110,42 @@ fn draft_of(slot: &QuickActionSlot) -> QuickActionDraft {
     }
 }
 
-fn row_entries(settings: &QuickActionSettings) -> impl Iterator<Item = (String, String)> {
+/// A Quick action row as the list draws it this frame.
+struct ShownRow {
+    /// Its place in the settings, or `None` while it leaves.
+    index: Option<usize>,
+    phase: ginga_gpui::Phase,
+    progress: f32,
+    /// How far from where it is laid out to draw it.
+    offset: f32,
+    /// How high it is drawn.
+    height: f32,
+    /// What a leaving row shows.
+    leaving: SharedString,
+}
+
+/// What the confirm row of a Quick action about to be deleted says, and what
+/// the row shows on its way out.
+fn delete_prompt(label: &str) -> String {
+    format!("Delete “{label}”?")
+}
+
+/// The Quick action rows, by id, with what each shows if it is deleted.
+fn rows_of(settings: &QuickActionSettings) -> Vec<(String, SharedString)> {
     settings
         .iter()
-        .map(|slot| (slot.action.id.clone(), slot.action.label.clone()))
+        .map(|slot| {
+            (
+                slot.action.id.clone(),
+                delete_prompt(&slot.action.label).into(),
+            )
+        })
+        .collect()
 }
 
 pub struct PreferencesPanel {
     settings: QuickActionSettings,
-    rows: QuickActionRows,
+    rows: ListRows<String, SharedString>,
     clock: ui::MotionClock,
     editing: Editing,
     draft: Option<Draft>,
@@ -133,7 +160,7 @@ impl PreferencesPanel {
         let focus = cx.focus_handle();
         window.focus(&focus, cx);
         let mut clock = ui::MotionClock::default();
-        let rows = QuickActionRows::new(row_entries(&settings), QUICK_ACTION_ROW, clock.now(cx));
+        let rows = ListRows::new(rows_of(&settings), QUICK_ACTION_ROW, clock.now(cx));
         Self {
             settings,
             rows,
@@ -156,55 +183,30 @@ impl PreferencesPanel {
         if next == self.settings {
             return;
         }
-        self.plan_motion(&next, cx);
+        let now = self.clock.now(cx);
+        self.rows.change(rows_of(&next), ui::list_motion(cx), now);
         self.settings.clone_from(&next);
         cx.emit(PreferencesEvent::QuickActions(next));
         cx.notify();
     }
 
-    fn plan_motion(&mut self, next: &QuickActionSettings, cx: &mut Context<Self>) {
+    /// The Quick action rows to draw this frame, and whether any of them is
+    /// still on its way.
+    fn shown_rows(&mut self, cx: &mut Context<Self>) -> (Vec<ShownRow>, bool) {
         let now = self.clock.now(cx);
-        self.rows.change(
-            row_entries(next),
-            ui::list_in_out(cx),
-            ui::list_glide(cx),
-            now,
-        );
-    }
-
-    fn row_frames(&mut self, window: &Window, cx: &App) -> Vec<RowFrame> {
-        let (frames, moving) = self.rows.frame(self.clock.now(cx));
-        if moving {
-            window.request_animation_frame();
-        }
-        frames
-    }
-
-    fn with_list_motion(row: &RowFrame, element: AnyElement) -> AnyElement {
-        let element = ui::offset_by(div().child(element), row.offset);
-        if row.phase == ginga_gpui::Phase::Entering {
-            return ui::lifted(div().child(element), -6., row.progress).into_any_element();
-        }
-        element.into_any_element()
-    }
-
-    fn render_leaving_row(row: &RowFrame) -> AnyElement {
-        let row_element = ui::collapsed(
-            ui::row()
-                .h(px(QUICK_ACTION_ROW))
-                .pl(px(8.))
-                .overflow_hidden()
-                .child(
-                    div()
-                        .min_w_0()
-                        .flex_1()
-                        .truncate()
-                        .child(format!("Delete “{}”?", row.label)),
-                ),
-            px(QUICK_ACTION_ROW),
-            row.progress,
-        );
-        ui::offset_by(row_element, row.offset).into_any_element()
+        let (rows, moving) = self.rows.frame(now);
+        let shown = rows
+            .into_iter()
+            .map(|row| ShownRow {
+                index: row.index,
+                phase: row.phase,
+                progress: row.progress,
+                offset: row.offset,
+                height: row.height,
+                leaving: row.content.clone(),
+            })
+            .collect();
+        (shown, moving)
     }
 
     fn start_draft(
@@ -601,7 +603,7 @@ impl PreferencesPanel {
                     .flex_1()
                     .truncate()
                     .pl(px(8.))
-                    .child(format!("Delete “{}”?", slot.action.label)),
+                    .child(delete_prompt(&slot.action.label)),
             )
             .child(
                 ui::row()
@@ -832,25 +834,34 @@ impl PreferencesPanel {
 
     fn render_quick_actions_section(
         &self,
-        frames: &[RowFrame],
+        shown: Vec<ShownRow>,
         roles: Roles,
         window: &Window,
         cx: &mut Context<Self>,
     ) -> Div {
-        let settings = self.settings.clone();
         let editing_any = matches!(self.editing, Editing::Edit(_));
-        let quick_actions = frames
-            .iter()
-            .filter_map(|row| {
-                if row.phase == ginga_gpui::Phase::Exiting {
-                    return Some(Self::render_leaving_row(row));
-                }
-                let (index, slot) = settings
-                    .iter()
-                    .enumerate()
-                    .find(|(_, slot)| slot.action.id == row.id)?;
-                let element = self.render_quick_action(index, slot, roles, window, cx);
-                Some(Self::with_list_motion(row, element))
+        let quick_actions = shown
+            .into_iter()
+            .filter_map(|shown| {
+                let row = match shown.index {
+                    None => ui::row()
+                        .h(px(QUICK_ACTION_ROW))
+                        .pl(px(8.))
+                        .overflow_hidden()
+                        .child(div().min_w_0().flex_1().truncate().child(shown.leaving))
+                        .into_any_element(),
+                    Some(index) => {
+                        let slot = self.settings.get(index)?;
+                        self.render_quick_action(index, slot, roles, window, cx)
+                    }
+                };
+                Some(ui::list_row(
+                    row,
+                    shown.phase,
+                    shown.progress,
+                    shown.offset,
+                    px(shown.height),
+                ))
             })
             .collect::<Vec<_>>();
         let new_form =
@@ -912,7 +923,10 @@ impl Focusable for PreferencesPanel {
 impl Render for PreferencesPanel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let roles = theme::roles(cx);
-        let frames = self.row_frames(window, cx);
+        let (shown, moving) = self.shown_rows(cx);
+        if moving {
+            window.request_animation_frame();
+        }
         let root = div()
             .id("preferences")
             .key_context("Preferences")
@@ -967,7 +981,7 @@ impl Render for PreferencesPanel {
                     .child(self.render_caret_section(roles, cx))
                     .child(self.render_spelling_section(roles, cx))
                     .child(self.render_ai_section(roles, cx))
-                    .child(self.render_quick_actions_section(&frames, roles, window, cx))
+                    .child(self.render_quick_actions_section(shown, roles, window, cx))
                     .child(ui::meta(version_line(), roles).mt(px(32.))),
                 &self.scroll,
             ))

@@ -258,6 +258,28 @@ struct MenuRow {
     separated: bool,
 }
 
+impl Clone for MenuRow {
+    fn clone(&self) -> Self {
+        Self {
+            label: self.label.clone(),
+            danger: self.danger,
+            shortcut: self.shortcut,
+            action: self.action.boxed_clone(),
+            disabled: self.disabled,
+            separated: self.separated,
+        }
+    }
+}
+
+/// How an open menu looks: which one, its rows and the row that is lit. A
+/// menu that leaves is drawn from the face it had when it closed.
+#[derive(Clone)]
+struct MenuFace {
+    kind: MenuKind,
+    active: Option<usize>,
+    rows: Vec<MenuRow>,
+}
+
 pub struct Startup {
     pub launch: Option<PathBuf>,
     pub services: Arc<Services>,
@@ -471,8 +493,12 @@ pub struct Workspace {
     pub(crate) timeline: crate::history_view::Timeline,
     pub(crate) utc_offset: i64,
     open_menu: Option<MenuKind>,
+    /// The menu on screen, which may be leaving.
+    menu_shown: ui::Surface<MenuFace>,
     leave: Option<LeaveIntent>,
     review_focus: Option<Entity<gpui_kit::component::input::InputState>>,
+    /// The Review popover on screen, which may be leaving.
+    review_shown: ui::Surface<Entity<gpui_kit::component::input::InputState>>,
     after_save: Option<LeaveIntent>,
     focus: FocusHandle,
     leave_focus: FocusHandle,
@@ -566,8 +592,10 @@ impl Workspace {
             timeline: crate::history_view::Timeline::default(),
             utc_offset,
             open_menu: None,
+            menu_shown: ui::Surface::default(),
             leave: None,
             review_focus: None,
+            review_shown: ui::Surface::default(),
             after_save: None,
             focus: cx.focus_handle(),
             leave_focus: cx.focus_handle(),
@@ -2492,10 +2520,16 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // The Review popover leaves as the menu opens: the focus goes back to
+        // the text, not into the popover's field on its way out.
+        let leaves_review = self.review_focus.take().is_some();
         if self.open_menu.is_none() {
-            self.menu_return = window.focused(cx);
+            self.menu_return = if leaves_review {
+                None
+            } else {
+                window.focused(cx)
+            };
         }
-        self.review_focus = None;
         self.open_menu = Some(kind);
         self.menu_active = if focus_first {
             next_enabled(&self.enabled_rows(kind, cx), None, true)
@@ -2843,6 +2877,35 @@ impl Workspace {
         }
     }
 
+    /// Brings the menu and the Review popover on screen in line with what is
+    /// open: what closes plays its way out, drawn as it was, and another menu
+    /// replaces a leaving one at once, so two never show. A menu on its way
+    /// out is taken away when the popover opens in its place, and what leaves
+    /// lets go of the focus.
+    fn follow_surfaces(&mut self, window: &Window, cx: &mut Context<Self>) {
+        let menu = self.open_menu.map(|kind| MenuFace {
+            kind,
+            active: self.menu_active,
+            rows: self.menu_rows(kind, cx),
+        });
+        self.menu_shown
+            .follow(menu, |held, face| held.kind == face.kind, cx);
+        if self.review_focus.is_some() {
+            self.menu_shown.drop_leaving();
+        }
+        self.review_shown
+            .follow(self.review_focus.clone(), |_, _| true, cx);
+        let menu_leaves = self.open_menu.is_none() && self.menu_focus.is_focused(window);
+        let review_leaves = self.review_focus.is_none()
+            && self
+                .review_shown
+                .frame(window, cx)
+                .is_some_and(|shown| shown.content.focus_handle(cx).contains_focused(window, cx));
+        if menu_leaves || review_leaves {
+            window.defer(cx, Window::blur);
+        }
+    }
+
     fn render_menu_button(
         &self,
         kind: MenuKind,
@@ -2878,18 +2941,38 @@ impl Workspace {
             }))
     }
 
+    /// A menu, `progress` of the way in. A menu that does not take input, on
+    /// its way out, is drawn the same under a cover, with no focus or keys.
     fn render_menu(
         &self,
-        kind: MenuKind,
+        face: MenuFace,
+        takes_input: bool,
+        progress: f32,
         roles: Roles,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        let left = match kind {
+        let left = match face.kind {
             MenuKind::File => px(8.),
             MenuKind::Edit => px(52.),
         };
-        let active = self.menu_active;
+        let active = face.active;
+        let rows = face
+            .rows
+            .into_iter()
+            .enumerate()
+            .map(|(index, item)| self.render_menu_row(index, item, active, roles, cx))
+            .collect::<Vec<_>>();
         let menu = ui::popover_frame("menu", roles)
+            .absolute()
+            .top(px(36.))
+            .left(left)
+            .min_w(px(240.))
+            .py(px(4.))
+            .children(rows);
+        if !takes_input {
+            return ui::risen(menu.child(ui::input_cover("menu-cover")), -4., progress);
+        }
+        let menu = menu
             .key_context("Menu")
             .track_focus(&self.menu_focus)
             .on_action(cx.listener(|this, _: &MenuDown, _, cx| this.move_in_menu(true, cx)))
@@ -2905,27 +2988,8 @@ impl Workspace {
                     this.select_menu_row(index, window, cx);
                 }
             }))
-            .on_action(cx.listener(|this, _: &MenuLeave, window, cx| this.leave_menu(window, cx)))
-            .absolute()
-            .top(px(36.))
-            .left(left)
-            .min_w(px(240.))
-            .py(px(4.))
-            .children(
-                self.menu_rows(kind, cx)
-                    .into_iter()
-                    .enumerate()
-                    .map(|(index, item)| self.render_menu_row(index, item, active, roles, cx)),
-            );
-        ui::enter(
-            match kind {
-                MenuKind::File => "menu-in-file",
-                MenuKind::Edit => "menu-in-edit",
-            },
-            menu,
-            ui::Enter::Rise(-4.),
-            ui::MOTION_ENTER,
-        )
+            .on_action(cx.listener(|this, _: &MenuLeave, window, cx| this.leave_menu(window, cx)));
+        ui::risen(menu, -4., progress)
     }
 
     fn render_menu_row(
@@ -3006,21 +3070,27 @@ impl Workspace {
         cx.notify();
     }
 
+    /// The Review popover, `progress` of the way in. On its way out it is drawn
+    /// the same under a cover, with no keys.
     fn render_review_popover(
         &self,
         input: &Entity<gpui_kit::component::input::InputState>,
+        takes_input: bool,
+        progress: f32,
         roles: Roles,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let left = px(52.);
         let width = px(384.).min(self.viewport_width - left - px(8.));
         let popover = ui::popover_frame("review-popover", roles)
-            .key_context("ReviewPopover")
-            .on_mouse_down_out(cx.listener(|this, _, _, cx| {
-                if this.review_focus.take().is_some() {
-                    cx.notify();
-                }
-            }))
+            .when(takes_input, |this| {
+                this.key_context("ReviewPopover")
+                    .on_mouse_down_out(cx.listener(|this, _, _, cx| {
+                        if this.review_focus.take().is_some() {
+                            cx.notify();
+                        }
+                    }))
+            })
             .absolute()
             .top(px(36.))
             .left(left)
@@ -3041,13 +3111,11 @@ impl Workspace {
                         this.confirm_review(&ConfirmReview, window, cx);
                     }),
                 ),
-            );
-        ui::enter(
-            "review-popover-in",
-            popover,
-            ui::Enter::Rise(-4.),
-            ui::MOTION_ENTER,
-        )
+            )
+            .when(!takes_input, |this| {
+                this.child(ui::input_cover("review-popover-cover"))
+            });
+        ui::risen(popover, -4., progress)
     }
 
     fn render_leave(&self, roles: Roles, cx: &mut Context<Self>) -> impl IntoElement {
@@ -3185,7 +3253,7 @@ impl Workspace {
     ) -> Option<AnyElement> {
         let shown = self.toast.frame(window, cx)?;
         let progress = shown.progress;
-        let takes_clicks = ui::toast_takes_clicks(shown.phase);
+        let takes_input = ui::takes_input(shown.phase);
         let toast = shown.content;
         let (text, tone, actions) = (toast.text.clone(), toast.tone, toast.actions.clone());
         Some(
@@ -3201,7 +3269,7 @@ impl Workspace {
                     ui::toast_frame("toast", tone, roles).child(text).children(
                         actions.into_iter().enumerate().map(|(index, action)| {
                             let id = ("toast-action", index);
-                            if takes_clicks {
+                            if takes_input {
                                 ui::small_button(id, action.label(), ButtonKind::Default, roles)
                                     .on_click(cx.listener(move |this, _, window, cx| {
                                         this.run_toast_action(&action, window, cx);
@@ -3451,6 +3519,7 @@ impl Render for Workspace {
             && self.visible_mode() == HistoryMode::Editing;
         if !text_shown {
             self.pane.update(cx, |pane, _| pane.forget_bubble());
+            crate::ai_caret_view::land(&self.ai_caret, cx);
         }
         let mode = if evals_shown {
             HistoryMode::Editing
@@ -4002,6 +4071,15 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) -> Stateful<Div> {
         let toast = self.render_toast(roles, window, cx);
+        self.follow_surfaces(window, cx);
+        let menu = self
+            .menu_shown
+            .frame(window, cx)
+            .map(|shown| (shown.content.clone(), shown.phase, shown.progress));
+        let review = self
+            .review_shown
+            .frame(window, cx)
+            .map(|shown| (shown.content.clone(), shown.phase, shown.progress));
         let preferences = self
             .preferences_way
             .frame(window, cx)
@@ -4035,17 +4113,23 @@ impl Workspace {
         .when(self.leave.is_some(), |this| {
             this.child(self.render_leave(roles, cx))
         })
-        .when_some(self.review_focus.clone(), |this, input| {
-            this.child(self.render_review_popover(&input, roles, cx))
+        .when_some(review, |this, (input, phase, progress)| {
+            this.child(self.render_review_popover(
+                &input,
+                ui::takes_input(phase),
+                progress,
+                roles,
+                cx,
+            ))
         })
-        .when_some(self.open_menu, |this, kind| {
+        .when(self.open_menu.is_some(), |this| {
             this.child(
-                ui::scrim("menu-scrim").on_click(cx.listener(|this, _, _, cx| {
-                    this.open_menu = None;
-                    cx.notify();
-                })),
+                ui::scrim("menu-scrim")
+                    .on_click(cx.listener(|this, _, window, cx| this.leave_menu(window, cx))),
             )
-            .child(self.render_menu(kind, roles, cx))
+        })
+        .when_some(menu, |this, (face, phase, progress)| {
+            this.child(self.render_menu(face, ui::takes_input(phase), progress, roles, cx))
         })
     }
 }

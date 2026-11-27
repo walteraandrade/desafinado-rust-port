@@ -6,7 +6,9 @@ Nothing here is filed on the ginga repository until Waltinho approves it.
 
 ## Batch 1: the ways out built by hand
 
-Library close, Preferences close, removed Quick action rows. Each kept a `Task` that slept `MOTION_LEAVE` and then dropped a ghost, next to a GPUI `with_animation` keyed by an id that changed between "in" and "out".
+Library close, Preferences close, removed Quick action rows.
+
+The Quick action rows landed on main first, through #54 (`desafinado_ai::list_rows::ListRows`), while this batch was in review; this batch then took #54's version and dropped its own `quick_action_rows.rs`. The items about the list (1, 5, 6) describe the version written here, and still stand as feedback on ginga: #54 met the same places (its `ListRows` places rows when the list changes, the fix for item 6's post-sweep case). Each kept a `Task` that slept `MOTION_LEAVE` and then dropped a ghost, next to a GPUI `with_animation` keyed by an id that changed between "in" and "out".
 
 ### 1. No GPUI adapter for `PresenceList`
 
@@ -58,7 +60,7 @@ Library close, Preferences close, removed Quick action rows. Each kept a `Task` 
 
 ### Evaluator's verdicts
 
-Full report: an independent evaluator (fresh context, given the diff and this log, not the implementer's conclusions) checked each claim against ginga's source. A = gap in ginga, B = misuse or a feature that was missed, C = Desafinado's own need.
+An independent evaluator (fresh context, given the diff and this log, not the implementer's conclusions) checked each claim against ginga's source. A = gap in ginga, B = misuse or a feature that was missed, C = Desafinado's own need.
 
 | Item | Verdict | Note |
 |---|---|---|

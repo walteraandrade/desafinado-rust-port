@@ -9,6 +9,7 @@ use std::rc::Rc;
 use gpui_kit::component::scroll::{ScrollableElement as _, ScrollbarHandle};
 use gpui_kit::{base::TextViewStyle, prelude::FluentBuilder as _, *};
 
+use desafinado_ai::list_rows::ListMotion;
 use desafinado_features::caret::{CaretSettings, CaretShape};
 
 use crate::theme::Roles;
@@ -1280,31 +1281,59 @@ pub fn column_at(column: Div, full: Pixels, progress: f32) -> Div {
     column.w(full * progress.clamp(0., 1.))
 }
 
-/// `element` drawn `offset` pixels below its place, as a list row on its way
-/// to a new place is.
-pub fn offset_by<E: Styled>(element: E, offset: f32) -> E {
-    element.relative().top(px(offset))
-}
-
-/// How the rows of a list arrive and leave: no motion at all when the
-/// desktop asks for less of it.
+/// How a row of a list arrives and leaves: it lifts in and shrinks away, or
+/// does neither when the desktop asks for less motion.
 pub fn list_in_out(cx: &App) -> ginga_gpui::InOut {
+    if cx.reduce_motion() {
+        return ginga_gpui::InOut::INSTANT;
+    }
     ginga_gpui::InOut::new(
-        ginga_gpui::unless_reduced(
-            ginga_gpui::Tween::new(MOTION_ENTER, ginga_gpui::Easing::OutExpo),
-            cx,
-        ),
-        ginga_gpui::unless_reduced(
-            ginga_gpui::Tween::new(MOTION_LEAVE, ginga_gpui::Easing::OutQuart),
-            cx,
-        ),
+        ginga_gpui::Tween::new(MOTION_ENTER, ginga_gpui::Easing::OutExpo),
+        ginga_gpui::Tween::new(MOTION_LEAVE, ginga_gpui::Easing::OutQuart),
     )
 }
 
-/// How a list row travels to its new place.
+/// How a row of a list glides to its new place.
 pub fn list_glide(cx: &App) -> ginga_gpui::Transition {
     let glide = ginga_gpui::Tween::new(MOTION_ENTER, ginga_gpui::Easing::OutExpo);
     ginga_gpui::unless_reduced(glide, cx)
+}
+
+/// How the rows of a list arrive, leave and glide. The rows below a deleted
+/// row close up on its way out (`ListMotion::close_up`).
+pub fn list_motion(cx: &App) -> ListMotion {
+    ListMotion {
+        in_out: list_in_out(cx),
+        glide: list_glide(cx),
+    }
+}
+
+/// How far above its place a row of a list starts as it lifts in.
+const LIST_ROW_LIFT: f32 = -6.;
+
+/// A row of a list as its presence draws it this frame, `offset` away from
+/// where it is laid out. An arriving row lifts in; a leaving row is cut to
+/// `height`, which falls as it shrinks, and fades away.
+pub fn list_row(
+    row: impl IntoElement,
+    phase: ginga_gpui::Phase,
+    progress: f32,
+    offset: f32,
+    height: Pixels,
+) -> Div {
+    let (opacity, lift) = match phase {
+        ginga_gpui::Phase::Entering => lift_at(LIST_ROW_LIFT, progress),
+        ginga_gpui::Phase::Exiting => (progress.clamp(0., 1.), 0.),
+        ginga_gpui::Phase::Present => (1., 0.),
+    };
+    div()
+        .relative()
+        .top(px(lift + offset))
+        .when(phase == ginga_gpui::Phase::Exiting, |row| {
+            row.h(height).overflow_hidden()
+        })
+        .opacity(opacity)
+        .child(row)
 }
 
 /// The clock a view keeps for motion that lives in the plain crates.
@@ -1350,9 +1379,66 @@ pub fn lift_at(lift: f32, progress: f32) -> (f32, f32) {
     (progress, enter_offset(Enter::Lift(lift), 1. - progress).1)
 }
 
-/// Whether a toast's buttons answer: not once it is on its way out.
-pub fn toast_takes_clicks(phase: ginga_gpui::Phase) -> bool {
+/// Whether a surface that comes and goes takes clicks, keys and the focus:
+/// not once it is on its way out. Toasts, menus and the Review popover follow
+/// it.
+pub fn takes_input(phase: ginga_gpui::Phase) -> bool {
     phase != ginga_gpui::Phase::Exiting
+}
+
+/// How a menu or a popover arrives and leaves: it rises into place and fades
+/// out the way the Ask bubble does.
+pub fn popover_in_out() -> ginga_gpui::InOut {
+    ginga_gpui::InOut::new(
+        ginga_gpui::Tween::new(MOTION_ENTER, ginga_gpui::Easing::OutExpo),
+        bubble_out(),
+    )
+}
+
+/// A menu or a popover on screen, which may be leaving, on its view's clock.
+/// It rises in and fades out with [`popover_in_out`], or moves at once when
+/// the desktop asks for less motion.
+pub struct Surface<T> {
+    surface: desafinado_ai::surface::Surface<T>,
+    clock: MotionClock,
+}
+
+impl<T> Default for Surface<T> {
+    fn default() -> Self {
+        Self {
+            surface: desafinado_ai::surface::Surface::default(),
+            clock: MotionClock::default(),
+        }
+    }
+}
+
+impl<T> Surface<T> {
+    /// Brings the surface in line with `wanted`, the face that should be on
+    /// screen this frame; see [`desafinado_ai::surface::Surface::follow`].
+    pub fn follow(&mut self, wanted: Option<T>, same: impl FnOnce(&T, &T) -> bool, cx: &App) {
+        let in_out = popover_in_out();
+        let in_out = ginga_gpui::InOut::new(
+            ginga_gpui::unless_reduced(in_out.enter, cx),
+            ginga_gpui::unless_reduced(in_out.exit, cx),
+        );
+        let now = self.clock.now(cx);
+        self.surface.follow(wanted, same, in_out, now);
+    }
+
+    /// Takes away at once a surface that is leaving.
+    pub fn drop_leaving(&mut self) {
+        self.surface.drop_leaving();
+    }
+
+    /// What to draw this frame, asking for the next one while it moves.
+    pub fn frame(&mut self, window: &Window, cx: &App) -> Option<ginga_gpui::Shown<'_, T>> {
+        let now = self.clock.now(cx);
+        let shown = self.surface.frame(now);
+        if shown.as_ref().is_some_and(ginga_gpui::Shown::moving) {
+            window.request_animation_frame();
+        }
+        shown
+    }
 }
 
 /// How the AI caret travels to another place in the text: no motion at all
@@ -1360,12 +1446,6 @@ pub fn toast_takes_clicks(phase: ginga_gpui::Phase) -> bool {
 pub fn caret_trip(cx: &App) -> ginga_gpui::Transition {
     let trip = ginga_gpui::Tween::new(MOTION_TRAVEL, ginga_gpui::Easing::OutExpo);
     ginga_gpui::unless_reduced(trip, cx)
-}
-
-/// A row `progress` of its `full` height, fading as it closes.
-pub fn collapsed(row: Div, full: Pixels, progress: f32) -> Div {
-    let progress = progress.clamp(0., 1.);
-    row.h(full * progress).opacity(progress)
 }
 
 pub fn grow_height(
@@ -1874,7 +1954,7 @@ mod tests {
     };
     use super::{
         Enter, cascade_delay, delayed, dot_opacity, ease_in_out_sine, ease_out_expo, enter_offset,
-        lead_of, lift_at, panel_in_out, slide_at, toast_takes_clicks,
+        lead_of, lift_at, panel_in_out, slide_at, takes_input,
     };
     use desafinado_features::caret::{CaretSettings, CaretShape};
     use gpui_kit::{point, px};
@@ -2115,10 +2195,10 @@ mod tests {
     }
 
     #[test]
-    fn a_toast_takes_clicks_until_it_leaves() {
+    fn a_surface_takes_input_until_it_leaves() {
         use ginga_gpui::Phase;
-        assert!(toast_takes_clicks(Phase::Entering));
-        assert!(toast_takes_clicks(Phase::Present));
-        assert!(!toast_takes_clicks(Phase::Exiting));
+        assert!(takes_input(Phase::Entering));
+        assert!(takes_input(Phase::Present));
+        assert!(!takes_input(Phase::Exiting));
     }
 }

@@ -18,7 +18,7 @@ Seven changes. The first is in `src/text`:
   - `scroll_padding(top, bottom)`: space above the first and below the last block that scrolls with the content (carried by the first and last block items, because the list's own padding is ignored by its scrollbar math).
   - Tests: `a_lazy_view_measures_only_the_blocks_it_shows`, `the_scrollbar_end_leaves_the_bottom_padding_below_the_last_block` and `an_eager_view_measures_every_block` in `text/state.rs`, and the estimate in `text/document.rs`.
 
-The other three are in `src/input`:
+The other six are in `src/input`:
 
 - **Inlays**: text drawn inside a line that is not in the buffer. `InputState::set_inlays(Vec<Inlay>)` takes an offset, the text and a `HighlightStyle`.
   - `display_map/inlays.rs` (new): `Inlay`, `BlockZone`, `shift_offset`.
@@ -43,7 +43,7 @@ The other three are in `src/input`:
   - Convergence: `InputBaseState::start_wrap_refinement` runs `refine_wrap_slice` in 5 ms slices between frames and input (`TextWrapper::refine_lines` replaces estimated lines with the production wrap, lines after the viewport first). The result equals a full wrap: `text_wrapper/progressive_tests.rs` compares them with a fake and the native text system, and `a_large_document_opens_estimated_and_ends_with_the_rows_of_a_full_wrap` through the editor.
   - The view does not move: `InputBaseState::refine_wrap` moves the scroll offset by the rows that lines above the viewport gained or lost (`the_text_on_screen_stays_put_while_estimated_rows_become_exact`).
   - `DisplayMap::has_estimated_rows` tells a consumer that the row count is still changing; the app's text map keeps the lines it measured until the rows are exact.
-- **A scroll redraws what read the layout**: `base/element.rs`, `TextElement::prepaint`. When the visible lines or their offset changed since the last layout, the input asks GPUI for the next frame and notifies its state then. Whatever placed itself from the old layout in this frame (the app's Cards and its AI caret, read through `range_to_bounds`) is drawn again with the new one. Before, such a frame only notified when the caret on screen moved, and a notify made while drawing schedules no frame, so with the editor unfocused they stayed a scroll step behind until something else redrew.
+- **A scroll redraws what read the layout**: `base/element.rs`, `TextElement::prepaint`. When the text moved inside the input since the last layout (any scroll, even part of a row or inside a long wrapped line), or the visible lines changed, the input asks GPUI for the next frame and notifies its state then. Whatever placed itself from the old layout in this frame (the app's Cards and its AI caret, read through `range_to_bounds`) is drawn again with the new one. Before, such a frame only notified when the caret on screen moved, and a notify made while drawing schedules no frame, so with the editor unfocused they stayed a scroll step behind until something else redrew. Test: `a_scroll_of_less_than_a_row_asks_for_the_next_frame`.
 
 Tests for inlays and zones are in `inlays.rs`, `text_wrapper.rs`, `inline_line.rs` and at the end of `base/element.rs` (through `InputState` in a test window). The `gpui-base` CI job runs the crate's whole library suite and checks its format. From this folder:
 
