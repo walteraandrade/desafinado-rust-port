@@ -297,11 +297,19 @@ impl ToastAction {
     }
 }
 
-#[derive(Default)]
-struct Leaving {
-    library: Option<Task<()>>,
-    library_reopened: bool,
-    preferences: Option<(Entity<PreferencesPanel>, Task<()>)>,
+#[derive(Default, Clone, Copy)]
+struct Way {
+    progress: f32,
+    leaving: bool,
+}
+
+impl Way {
+    fn of<T>(shown: &ginga_gpui::Shown<'_, T>) -> Self {
+        Self {
+            progress: shown.progress,
+            leaving: shown.phase == ginga_gpui::Phase::Exiting,
+        }
+    }
 }
 
 struct Toast {
@@ -470,8 +478,8 @@ pub struct Workspace {
     leave_focus: FocusHandle,
     leave_index: usize,
     library: Entity<LibraryPanel>,
-    library_open: bool,
-    leaving: Leaving,
+    library_way: ui::Presence<()>,
+    preferences_way: ui::Presence<Entity<PreferencesPanel>>,
     search_unfolded: bool,
     search_opening: bool,
     library_request: Option<LibraryRequest>,
@@ -565,8 +573,8 @@ impl Workspace {
             leave_focus: cx.focus_handle(),
             leave_index: 0,
             library,
-            library_open: false,
-            leaving: Leaving::default(),
+            library_way: ui::Presence::absent(),
+            preferences_way: ui::Presence::absent(),
             search_unfolded: false,
             search_opening: false,
             library_request: None,
@@ -1836,19 +1844,12 @@ impl Workspace {
         library_panel::placement(self.viewport_width)
     }
 
+    fn library_open(&self) -> bool {
+        self.library_way.is_wanted()
+    }
+
     fn fold_library(&mut self, cx: &mut Context<Self>) {
-        self.leaving.library_reopened = false;
-        if self.library_open && !cx.reduce_motion() {
-            self.leaving.library = Some(cx.spawn(async move |this, cx| {
-                cx.background_executor().timer(ui::MOTION_LEAVE).await;
-                this.update(cx, |this, cx| {
-                    this.leaving.library = None;
-                    cx.notify();
-                })
-                .log_warn();
-            }));
-        }
-        self.library_open = false;
+        self.library_way.hide(ui::panel_in_out().exit, cx);
         self.search_unfolded = false;
         cx.notify();
     }
@@ -1862,8 +1863,7 @@ impl Workspace {
     }
 
     fn open_library(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.library_open = true;
-        self.leaving.library_reopened = self.leaving.library.take().is_some();
+        self.library_way.show((), ui::panel_in_out().enter, cx);
         self.library
             .update(cx, |library, cx| library.focus_tree(window, cx));
         cx.notify();
@@ -1879,7 +1879,7 @@ impl Workspace {
             return;
         }
         self.open_menu = None;
-        if !self.library_open {
+        if !self.library_open() {
             self.open_library(window, cx);
         } else if self.library.read(cx).holds_focus(window, cx) {
             self.fold_and_return(window, cx);
@@ -1890,7 +1890,7 @@ impl Workspace {
     }
 
     fn toggle_library_from_rail(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.library_open {
+        if self.library_open() {
             self.fold_and_return(window, cx);
         } else {
             self.open_library(window, cx);
@@ -1902,10 +1902,9 @@ impl Workspace {
             return;
         }
         self.open_menu = None;
-        if !self.library_open {
+        if !self.library_open() {
             self.search_unfolded = true;
-            self.library_open = true;
-            self.leaving.library_reopened = self.leaving.library.take().is_some();
+            self.library_way.show((), ui::panel_in_out().enter, cx);
         }
         self.library
             .update(cx, |library, cx| library.focus_search(window, cx));
@@ -2605,27 +2604,16 @@ impl Workspace {
             },
         );
         self._dialog_subscriptions.push(events);
+        self.preferences_way
+            .show(panel.clone(), ui::panel_in_out().enter, cx);
         self.preferences = Some(panel);
-        self.leaving.preferences = None;
         cx.notify();
     }
 
     fn close_preferences(&mut self, cx: &mut Context<Self>) {
-        let Some(panel) = self.preferences.take() else {
-            return;
-        };
-        if cx.reduce_motion() {
-            return;
+        if self.preferences.take().is_some() {
+            self.preferences_way.hide(ui::panel_in_out().exit, cx);
         }
-        let done = cx.spawn(async move |this, cx| {
-            cx.background_executor().timer(ui::MOTION_LEAVE).await;
-            this.update(cx, |this, cx| {
-                this.leaving.preferences = None;
-                cx.notify();
-            })
-            .log_warn();
-        });
-        self.leaving.preferences = Some((panel, done));
     }
 
     fn change_quick_actions(&mut self, settings: QuickActionSettings, cx: &mut Context<Self>) {
@@ -3403,24 +3391,15 @@ fn save_as_target(chosen: &Path, text: &str) -> FileSaveResult {
     save_markdown_as(&target, text)
 }
 
-fn preferences_motion(panel: Entity<PreferencesPanel>, open: bool) -> AnyElement {
-    let panel = div().relative().size_full().child(panel);
-    if open {
-        ui::enter(
-            "preferences-in",
-            panel,
-            ui::Enter::Slide(16.),
-            ui::MOTION_ENTER,
-        )
-        .into_any_element()
-    } else {
-        ui::leave(
-            "preferences-out",
-            panel.child(ui::input_cover("preferences-cover")),
-            ui::Enter::Slide(16.),
-        )
-        .into_any_element()
-    }
+fn preferences_motion(panel: Entity<PreferencesPanel>, way: Way) -> AnyElement {
+    let panel = div()
+        .relative()
+        .size_full()
+        .child(panel)
+        .when(way.leaving, |this| {
+            this.child(ui::input_cover("preferences-cover"))
+        });
+    ui::slid(panel, 16., way.progress).into_any_element()
 }
 
 pub(crate) fn column_row(content: impl IntoElement) -> Div {
@@ -3481,7 +3460,7 @@ impl Render for Workspace {
             pressed: evals_shown,
             busy: self.evals.read(cx).going().is_some(),
         });
-        let main = self.render_main(mode, evals_shown, evals_button, roles, cx);
+        let main = self.render_main(mode, evals_shown, evals_button, roles, window, cx);
         let root = self
             .with_actions(
                 div()
@@ -3653,7 +3632,7 @@ impl Workspace {
                 ui::icon_button(
                     "rail-library",
                     component::IconName::BookOpen,
-                    self.library_open,
+                    self.library_open(),
                     roles,
                 )
                 .tooltip(tip("Library (Ctrl+B)"))
@@ -3817,8 +3796,13 @@ impl Workspace {
         evals_shown: bool,
         evals_button: Option<EvalsButton>,
         roles: Roles,
+        window: &Window,
         cx: &mut Context<Self>,
     ) -> Div {
+        let library = self
+            .library_way
+            .frame(window, cx)
+            .map(|shown| Way::of(&shown));
         if !self.reading() {
             self.reading_view = None;
         }
@@ -3849,9 +3833,9 @@ impl Workspace {
             .flex()
             .flex_row()
             .child(self.render_rail(roles, cx))
-            .when(
-                self.library_shown() && placement == Placement::Column,
-                |this| this.child(self.render_library_column()),
+            .when_some(
+                library.filter(|_| placement == Placement::Column),
+                |this, way| this.child(self.render_library_column(way)),
             )
             .child(
                 div()
@@ -3876,9 +3860,9 @@ impl Workspace {
                         this.child(self.render_missing_key(roles, cx))
                     }),
             )
-            .when(
-                self.library_shown() && placement == Placement::Overlay,
-                |this| {
+            .when_some(
+                library.filter(|_| placement == Placement::Overlay),
+                |this, way| {
                     this.child(
                         div()
                             .id("library-overlay")
@@ -3889,69 +3873,35 @@ impl Workspace {
                             .left(px(library_panel::RAIL_WIDTH))
                             .w(px(library_panel::LIBRARY_WIDTH))
                             .on_mouse_down_out(cx.listener(|this, _, _, cx| {
-                                if this.library_open && this.placement() == Placement::Overlay {
+                                if this.library_open() && this.placement() == Placement::Overlay {
                                     this.fold_library(cx);
                                 }
                             }))
-                            .child(self.library_in()),
+                            .child(self.library_in(way)),
                     )
                 },
             )
     }
 
-    fn render_library_column(&self) -> AnyElement {
+    fn render_library_column(&self, way: Way) -> AnyElement {
         let column = div().h_full().flex_none().overflow_hidden().child(
             div()
                 .w(px(library_panel::LIBRARY_WIDTH))
                 .h_full()
-                .child(self.library_in()),
+                .child(self.library_in(way)),
         );
-        if self.library_open && self.leaving.library_reopened {
-            return column
-                .w(px(library_panel::LIBRARY_WIDTH))
-                .into_any_element();
-        }
-        ui::column_motion(
-            if self.library_open {
-                "library-column-in"
-            } else {
-                "library-column-out"
-            },
-            column,
-            px(library_panel::LIBRARY_WIDTH),
-            self.library_open,
-        )
-        .into_any_element()
+        ui::column_at(column, px(library_panel::LIBRARY_WIDTH), way.progress).into_any_element()
     }
 
-    fn library_shown(&self) -> bool {
-        self.library_open || self.leaving.library.is_some()
-    }
-
-    fn library_in(&self) -> AnimationElement<Div> {
-        let panel = div().relative().size_full().child(self.library.clone());
-        if self.library_open && self.leaving.library_reopened {
-            return ui::enter(
-                "library-back",
-                panel,
-                ui::Enter::Slide(0.),
-                std::time::Duration::from_millis(1),
-            );
-        }
-        if self.library_open {
-            ui::enter(
-                "library-in",
-                panel,
-                ui::Enter::Slide(-16.),
-                ui::MOTION_ENTER,
-            )
-        } else {
-            ui::leave(
-                "library-out",
-                panel.child(ui::input_cover("library-cover")),
-                ui::Enter::Slide(-16.),
-            )
-        }
+    fn library_in(&self, way: Way) -> Div {
+        let panel = div()
+            .relative()
+            .size_full()
+            .child(self.library.clone())
+            .when(way.leaving, |this| {
+                this.child(ui::input_cover("library-cover"))
+            });
+        ui::slid(panel, -16., way.progress)
     }
 
     fn render_header(&self, roles: Roles, cx: &mut Context<Self>) -> Div {
@@ -4052,16 +4002,10 @@ impl Workspace {
     ) -> Stateful<Div> {
         let toast = self.render_toast(roles, window, cx);
         let preferences = self
-            .preferences
-            .clone()
-            .map(|panel| (panel, true))
-            .or_else(|| {
-                self.leaving
-                    .preferences
-                    .as_ref()
-                    .map(|(panel, _)| (panel.clone(), false))
-            });
-        root.when_some(preferences, |this, (preferences, open)| {
+            .preferences_way
+            .frame(window, cx)
+            .map(|shown| (shown.content.clone(), Way::of(&shown)));
+        root.when_some(preferences, |this, (preferences, way)| {
             this.child(
                 div()
                     .absolute()
@@ -4077,7 +4021,7 @@ impl Workspace {
                             cx.notify();
                         }
                     }))
-                    .child(preferences_motion(preferences, open)),
+                    .child(preferences_motion(preferences, way)),
             )
         })
         .children(toast)
