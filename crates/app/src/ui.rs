@@ -160,8 +160,11 @@ pub fn sized_button(
         .when(size == ButtonSize::Small, Type::type_small)
         .weight_medium()
         .border_2()
-        .when(control.focused, |this| this.border_color(roles.accent))
         .child(label.into());
+    let on_fill = matches!(kind, ButtonKind::Strong | ButtonKind::Primary) && !control.disabled;
+    let base = base.when(control.focused, |this| {
+        this.border_color(if on_fill { roles.canvas } else { roles.accent })
+    });
     if control.disabled {
         return base.text_color(roles.faint);
     }
