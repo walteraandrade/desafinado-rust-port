@@ -2686,7 +2686,7 @@ impl EditorPane {
         let flag_width =
             px(40. + 7. * caret.label.chars().count() as f32).min(ui::AI_CARET_FLAG_MAX_WIDTH);
         AiCaretPlace::At(AiCaretAt {
-            pos: caret.pos,
+            target: caret.target,
             spot: spot(bounds),
             takeoff: editor.range_to_bounds(&(head..head)).map(spot),
             height: bounds.size.height,
@@ -3136,7 +3136,8 @@ pub(crate) enum AiCaretPlace {
 }
 
 pub(crate) struct AiCaretAt {
-    pub pos: usize,
+    /// The Suggestion the caret marks, if it marks one yet.
+    pub target: Option<String>,
     pub spot: Spot,
     /// The writer's caret, where a new AI caret takes off from.
     pub takeoff: Option<Spot>,

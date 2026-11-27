@@ -49,8 +49,14 @@ fn draw(caret: &mut AiCaret, window: &mut Window, cx: &mut Context<AiCaretView>)
         }
         AiCaretPlace::At(at) => at,
     };
-    let (trip, now) = ui::travel(&mut caret.clock, cx);
-    let frame = caret.travel.step(at.pos, at.spot, at.takeoff, trip, now);
+    let now = caret.clock.now(cx);
+    let frame = caret.travel.step(
+        at.target.as_deref(),
+        at.spot,
+        at.takeoff,
+        ui::caret_trip(cx),
+        now,
+    );
     if frame.moving {
         window.request_animation_frame();
     }

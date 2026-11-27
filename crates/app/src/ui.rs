@@ -1288,11 +1288,11 @@ pub fn lifted<E: Styled>(element: E, lift: f32, progress: f32) -> E {
         .top(px(lift * (1. - progress)))
 }
 
-/// A trip between two places in the text, and the time of this frame on
-/// `clock`. The trip is no motion at all when the desktop asks for less of it.
-pub fn travel(clock: &mut MotionClock, cx: &App) -> (ginga_gpui::Transition, std::time::Duration) {
+/// How the AI caret travels to another place in the text: no motion at all
+/// when the desktop asks for less of it.
+pub fn caret_trip(cx: &App) -> ginga_gpui::Transition {
     let trip = ginga_gpui::Tween::new(MOTION_TRAVEL, ginga_gpui::Easing::OutExpo);
-    (ginga_gpui::unless_reduced(trip, cx), clock.now(cx))
+    ginga_gpui::unless_reduced(trip, cx)
 }
 
 pub fn collapse(id: impl Into<ElementId>, row: Div, full: Pixels) -> AnimationElement<Div> {
