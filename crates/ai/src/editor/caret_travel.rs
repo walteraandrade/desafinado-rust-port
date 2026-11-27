@@ -171,6 +171,20 @@ mod tests {
     }
 
     #[test]
+    fn a_move_starts_where_the_caret_was_drawn_even_with_a_writers_caret_in_view() {
+        let mut travel = CaretTravel::default();
+        travel.step(A, FIRST, None, linear(), ms(0));
+        assert_eq!(
+            travel.step(B, SECOND, Some(WRITER), linear(), ms(1_000)),
+            on_its_way(FIRST)
+        );
+        assert_eq!(
+            travel.step(B, SECOND, Some(WRITER), linear(), ms(1_100)),
+            at_rest(SECOND)
+        );
+    }
+
+    #[test]
     fn a_move_in_the_middle_of_a_glide_does_not_jump() {
         let mut travel = CaretTravel::default();
         travel.step(A, FIRST, Some(WRITER), linear(), ms(0));
