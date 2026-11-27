@@ -3936,16 +3936,22 @@ impl<M: InputModeKind> Element for TextElement<M> {
         // screen to move with it. Whatever read the old layout this frame (a card
         // placed at a line, say) is drawn again on the next one: a notify made
         // while drawing schedules no frame, so the next frame is asked for.
-        let scrolled = self
-            .state
-            .read(cx)
-            .last_layout
-            .as_ref()
-            .is_some_and(|layout| {
+        // The text's place inside the input carries the scroll offset, so a
+        // scroll of part of a row, or inside a long wrapped line, counts too.
+        let scrolled = {
+            let state = self.state.read(cx);
+            state.last_bounds.is_some_and(|last| {
+                let before = last.origin - state.input_bounds.origin;
+                let now = bounds.origin - input_bounds.origin;
+                (before.x - now.x).abs() >= px(0.01) || (before.y - now.y).abs() >= px(0.01)
+            }) || state.last_layout.as_ref().is_some_and(|layout| {
                 layout.visible_top != last_layout.visible_top
                     || layout.visible_range_offset != last_layout.visible_range_offset
-            });
+            })
+        };
         if scrolled {
+            #[cfg(test)]
+            self.state.update(cx, |state, _| state.scroll_redraws += 1);
             let state = self.state.clone();
             window.on_next_frame(move |_, cx| state.update(cx, |_, cx| cx.notify()));
         }
@@ -7541,6 +7547,36 @@ mod tests {
         assert_eq!(
             cx.update(|_, cx| editor.read(cx).scroll_offset()),
             point(px(0.), px(-500.))
+        );
+    }
+
+    #[gpui::test]
+    fn a_scroll_of_less_than_a_row_asks_for_the_next_frame(cx: &mut TestAppContext) {
+        let text = (0..60)
+            .map(|line| format!("line {line}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let (editor, window) = decoration_editor(cx, &text, false);
+        let mut cx = VisualTestContext::from_window(window.into(), cx);
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        let redraws =
+            |cx: &mut VisualTestContext| cx.update(|_, cx| editor.read(cx).scroll_redraws);
+        let scroll_to = |cx: &mut VisualTestContext, y: f32| {
+            editor.update(cx, |state, cx| {
+                state.set_scroll_offset_exact(point(px(0.), px(y)), cx)
+            });
+            cx.update(|window, cx| window.draw(cx).clear(cx));
+        };
+        let before = redraws(&mut cx);
+        scroll_to(&mut cx, -200.);
+        assert_eq!(redraws(&mut cx), before + 1, "a scroll of several rows");
+        scroll_to(&mut cx, -205.);
+        assert_eq!(redraws(&mut cx), before + 2, "a scroll of less than a row");
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        assert_eq!(
+            redraws(&mut cx),
+            before + 2,
+            "no scroll, no frame asked for"
         );
     }
 

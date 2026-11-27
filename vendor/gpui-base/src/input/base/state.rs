@@ -542,6 +542,9 @@ pub struct InputBaseState<M: InputModeKind> {
     pub(super) overscroll: Overscroll,
     /// The deferred scroll offset to apply on next layout.
     pub(crate) deferred_scroll_offset: Option<Point<Pixels>>,
+    /// How many layouts asked for the next frame because the text scrolled.
+    #[cfg(test)]
+    pub(crate) scroll_redraws: usize,
     /// The size of the scrollable content.
     pub(crate) scroll_size: gpui::Size<Pixels>,
     pub(super) editor_scrollbar_snapshot: Cell<Option<EditorScrollbarSnapshot>>,
@@ -1284,6 +1287,8 @@ impl<M: InputModeKind> InputBaseState<M> {
             longest_line_width: Cell::new(None),
             editor_paddings: Edges::default(),
             deferred_scroll_offset: None,
+            #[cfg(test)]
+            scroll_redraws: 0,
             placeholder: SharedString::default(),
             mask_pattern: MaskPattern::default(),
             mask_pattern_set: false,
