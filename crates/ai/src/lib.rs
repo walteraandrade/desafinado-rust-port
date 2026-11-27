@@ -6,6 +6,7 @@ pub mod editor;
 pub mod edits;
 pub mod errors;
 pub mod generation;
+pub mod list_rows;
 pub mod model;
 pub mod model_choice;
 pub mod notes;

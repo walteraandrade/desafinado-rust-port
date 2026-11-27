@@ -1,3 +1,4 @@
+use desafinado_ai::list_rows::ListRows;
 use desafinado_ai::quick_action_settings::{
     QuickActionDraft, QuickActionDraftErrors, QuickActionSettings, QuickActionSlot,
     add_user_quick_action, check_quick_action_draft, draft_is_valid, is_user_quick_action,
@@ -111,13 +112,22 @@ fn draft_of(slot: &QuickActionSlot) -> QuickActionDraft {
 
 /// A Quick action row as the list draws it this frame.
 struct ShownRow {
-    id: String,
+    /// Its place in the settings, or `None` while it leaves.
+    index: Option<usize>,
     phase: ginga_gpui::Phase,
     progress: f32,
     /// How far from where it is laid out to draw it.
     offset: f32,
+    /// How high it is drawn.
+    height: f32,
     /// What a leaving row shows.
     leaving: SharedString,
+}
+
+/// What the confirm row of a Quick action about to be deleted says, and what
+/// the row shows on its way out.
+fn delete_prompt(label: &str) -> String {
+    format!("Delete “{label}”?")
 }
 
 /// The Quick action rows, by id, with what each shows if it is deleted.
@@ -127,7 +137,7 @@ fn rows_of(settings: &QuickActionSettings) -> Vec<(String, SharedString)> {
         .map(|slot| {
             (
                 slot.action.id.clone(),
-                format!("Delete “{}”?", slot.action.label).into(),
+                delete_prompt(&slot.action.label).into(),
             )
         })
         .collect()
@@ -135,10 +145,8 @@ fn rows_of(settings: &QuickActionSettings) -> Vec<(String, SharedString)> {
 
 pub struct PreferencesPanel {
     settings: QuickActionSettings,
-    rows: ginga_gpui::PresenceList<String, SharedString>,
+    rows: ListRows<String, SharedString>,
     clock: ui::MotionClock,
-    /// A row was deleted: the rows below close up on its way out, once.
-    closing_up: bool,
     editing: Editing,
     draft: Option<Draft>,
     created: u32,
@@ -152,13 +160,11 @@ impl PreferencesPanel {
         let focus = cx.focus_handle();
         window.focus(&focus, cx);
         let mut clock = ui::MotionClock::default();
-        let mut rows = ginga_gpui::PresenceList::new();
-        rows.sync(rows_of(&settings), ui::list_in_out(cx), clock.now(cx));
+        let rows = ListRows::new(rows_of(&settings), QUICK_ACTION_ROW, clock.now(cx));
         Self {
             settings,
             rows,
             clock,
-            closing_up: false,
             editing: Editing::None,
             draft: None,
             created: 0,
@@ -178,55 +184,26 @@ impl PreferencesPanel {
             return;
         }
         let now = self.clock.now(cx);
-        self.closing_up = next.len() < self.settings.len();
-        self.rows.sync(rows_of(&next), ui::list_in_out(cx), now);
+        self.rows.change(rows_of(&next), ui::list_motion(cx), now);
         self.settings.clone_from(&next);
         cx.emit(PreferencesEvent::QuickActions(next));
         cx.notify();
     }
 
     /// The Quick action rows to draw this frame, and whether any of them is
-    /// still on its way. The list is told each row's place as if the leaving
-    /// rows were gone, and a row is drawn from where it is laid out, below the
-    /// leaving rows still shrinking above it: on a delete the two cancel out,
-    /// and the rows below keep to the deleted row's bottom edge.
+    /// still on its way.
     fn shown_rows(&mut self, cx: &mut Context<Self>) -> (Vec<ShownRow>, bool) {
         let now = self.clock.now(cx);
-        let transition = if std::mem::take(&mut self.closing_up) {
-            ui::list_close_up(cx)
-        } else {
-            ui::list_glide(cx)
-        };
-        let mut top = 0.;
-        self.rows.place_all(
-            |_, row| {
-                let at = top;
-                if row.phase != ginga_gpui::Phase::Exiting {
-                    top += QUICK_ACTION_ROW;
-                }
-                at
-            },
-            transition,
-            now,
-        );
-        let mut leaving_above = 0.;
-        let mut moving = false;
-        let shown = self
-            .rows
-            .frame(now)
-            .map(|row| {
-                moving |= row.moving();
-                let offset = row.offset - leaving_above;
-                if row.phase == ginga_gpui::Phase::Exiting {
-                    leaving_above += QUICK_ACTION_ROW * row.progress.clamp(0., 1.);
-                }
-                ShownRow {
-                    id: row.key.clone(),
-                    phase: row.phase,
-                    progress: row.progress,
-                    offset,
-                    leaving: row.content.clone(),
-                }
+        let (rows, moving) = self.rows.frame(now);
+        let shown = rows
+            .into_iter()
+            .map(|row| ShownRow {
+                index: row.index,
+                phase: row.phase,
+                progress: row.progress,
+                offset: row.offset,
+                height: row.height,
+                leaving: row.content.clone(),
             })
             .collect();
         (shown, moving)
@@ -626,7 +603,7 @@ impl PreferencesPanel {
                     .flex_1()
                     .truncate()
                     .pl(px(8.))
-                    .child(format!("Delete “{}”?", slot.action.label)),
+                    .child(delete_prompt(&slot.action.label)),
             )
             .child(
                 ui::row()
@@ -862,30 +839,28 @@ impl PreferencesPanel {
         window: &Window,
         cx: &mut Context<Self>,
     ) -> Div {
-        let settings = self.settings.clone();
         let editing_any = matches!(self.editing, Editing::Edit(_));
         let quick_actions = shown
             .into_iter()
             .filter_map(|shown| {
-                let row = if shown.phase == ginga_gpui::Phase::Exiting {
-                    ui::row()
+                let row = match shown.index {
+                    None => ui::row()
                         .h(px(QUICK_ACTION_ROW))
                         .pl(px(8.))
                         .overflow_hidden()
                         .child(div().min_w_0().flex_1().truncate().child(shown.leaving))
-                        .into_any_element()
-                } else {
-                    let index = settings
-                        .iter()
-                        .position(|slot| slot.action.id == shown.id)?;
-                    self.render_quick_action(index, &settings[index], roles, window, cx)
+                        .into_any_element(),
+                    Some(index) => {
+                        let slot = self.settings.get(index)?;
+                        self.render_quick_action(index, slot, roles, window, cx)
+                    }
                 };
                 Some(ui::list_row(
                     row,
                     shown.phase,
                     shown.progress,
                     shown.offset,
-                    px(QUICK_ACTION_ROW),
+                    px(shown.height),
                 ))
             })
             .collect::<Vec<_>>();

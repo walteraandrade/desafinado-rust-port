@@ -9,6 +9,7 @@ use std::rc::Rc;
 use gpui_kit::component::scroll::{ScrollableElement as _, ScrollbarHandle};
 use gpui_kit::{base::TextViewStyle, prelude::FluentBuilder as _, *};
 
+use desafinado_ai::list_rows::ListMotion;
 use desafinado_features::caret::{CaretSettings, CaretShape};
 
 use crate::theme::Roles;
@@ -1314,20 +1315,21 @@ pub fn list_glide(cx: &App) -> ginga_gpui::Transition {
     ginga_gpui::unless_reduced(glide, cx)
 }
 
-/// How the rows below a deleted row close up: on the curve the deleted row
-/// shrinks on, so they keep to its bottom edge instead of running over it.
-pub fn list_close_up(cx: &App) -> ginga_gpui::Transition {
-    let close = ginga_gpui::Tween::new(MOTION_LEAVE, ginga_gpui::Easing::OutQuart);
-    ginga_gpui::unless_reduced(close, cx)
+/// How the rows of a list arrive, leave and glide. The rows below a deleted
+/// row close up on its way out (`ListMotion::close_up`).
+pub fn list_motion(cx: &App) -> ListMotion {
+    ListMotion {
+        in_out: list_in_out(cx),
+        glide: list_glide(cx),
+    }
 }
 
 /// How far above its place a row of a list starts as it lifts in.
 const LIST_ROW_LIFT: f32 = -6.;
 
-/// A row of a list as its presence draws it this frame. An arriving row lifts
-/// in; a row in place is drawn `offset` away from where it is laid out while
-/// it glides; a leaving row, `height` high, shrinks and fades away, and the
-/// rows below close up behind it (`list_close_up`).
+/// A row of a list as its presence draws it this frame, `offset` away from
+/// where it is laid out. An arriving row lifts in; a leaving row is cut to
+/// `height`, which falls as it shrinks, and fades away.
 pub fn list_row(
     row: impl IntoElement,
     phase: ginga_gpui::Phase,
@@ -1335,21 +1337,17 @@ pub fn list_row(
     offset: f32,
     height: Pixels,
 ) -> Div {
-    if phase == ginga_gpui::Phase::Exiting {
-        return div()
-            .h(height * progress.clamp(0., 1.))
-            .opacity(progress.clamp(0., 1.))
-            .overflow_hidden()
-            .child(row);
-    }
-    let (opacity, lift) = if phase == ginga_gpui::Phase::Entering {
-        lift_at(LIST_ROW_LIFT, progress)
-    } else {
-        (1., 0.)
+    let (opacity, lift) = match phase {
+        ginga_gpui::Phase::Entering => lift_at(LIST_ROW_LIFT, progress),
+        ginga_gpui::Phase::Exiting => (progress.clamp(0., 1.), 0.),
+        ginga_gpui::Phase::Present => (1., 0.),
     };
     div()
         .relative()
         .top(px(lift + offset))
+        .when(phase == ginga_gpui::Phase::Exiting, |row| {
+            row.h(height).overflow_hidden()
+        })
         .opacity(opacity)
         .child(row)
 }
