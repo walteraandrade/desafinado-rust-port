@@ -3471,6 +3471,7 @@ impl Render for Workspace {
             && self.visible_mode() == HistoryMode::Editing;
         if !text_shown {
             self.pane.update(cx, |pane, _| pane.forget_bubble());
+            crate::ai_caret_view::land(&self.ai_caret, cx);
         }
         let mode = if evals_shown {
             HistoryMode::Editing
@@ -3821,13 +3822,6 @@ impl Workspace {
     ) -> Div {
         if !self.reading() {
             self.reading_view = None;
-        }
-        let editing = self.spend.is_none()
-            && !evals_shown
-            && matches!(mode, HistoryMode::Editing)
-            && !self.reading();
-        if !editing {
-            crate::ai_caret_view::land(&self.ai_caret, cx);
         }
         let header = self.render_header(roles, cx);
         let conflict = self
