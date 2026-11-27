@@ -5,7 +5,7 @@
 
 use desafinado_core::{
     log_err::LogErr,
-    suggestions::{RefineState, Suggestion, active_suggestion, suggestion_anchor},
+    suggestions::{RefineState, Suggestion, active_suggestion, on_text_map, suggestion_anchor},
     text_map::{
         MapLine, MapMark, MarkTone, TextMap, View, fill_rows, line_shapes, locate, map_lines,
         mark_near, off_screen, reveal_first_row, scroll_row_for, step_in_view, text_map_bars,
@@ -268,8 +268,7 @@ impl EditorPane {
         let (lines, view, line_height) = self.rows_on_screen(kind, cx)?;
         let active = active_suggestion(&self.suggestions, Some(state.cursor()))
             .map(|ready| ready.id.clone());
-        let mut items: Vec<&Suggestion> = self.suggestions.items.iter().collect();
-        items.sort_by_key(|item| (item.from, item.to));
+        let items = on_text_map(&self.suggestions);
         let marks: Rc<[MapMark]> = items
             .iter()
             .map(|item| MapMark {
