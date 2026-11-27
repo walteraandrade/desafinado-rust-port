@@ -1367,6 +1367,52 @@ pub fn popover_in_out() -> ginga_gpui::InOut {
     )
 }
 
+/// A menu or a popover on screen, which may be leaving, on its view's clock.
+/// It rises in and fades out with [`popover_in_out`], or moves at once when
+/// the desktop asks for less motion.
+pub struct Surface<T> {
+    surface: desafinado_ai::ui::surface::Surface<T>,
+    clock: MotionClock,
+}
+
+impl<T> Default for Surface<T> {
+    fn default() -> Self {
+        Self {
+            surface: desafinado_ai::ui::surface::Surface::default(),
+            clock: MotionClock::default(),
+        }
+    }
+}
+
+impl<T> Surface<T> {
+    /// Brings the surface in line with `wanted`, the face that should be on
+    /// screen this frame; see [`desafinado_ai::ui::surface::Surface::follow`].
+    pub fn follow(&mut self, wanted: Option<T>, same: impl FnOnce(&T, &T) -> bool, cx: &App) {
+        let in_out = popover_in_out();
+        let in_out = ginga_gpui::InOut::new(
+            ginga_gpui::unless_reduced(in_out.enter, cx),
+            ginga_gpui::unless_reduced(in_out.exit, cx),
+        );
+        let now = self.clock.now(cx);
+        self.surface.follow(wanted, same, in_out, now);
+    }
+
+    /// Takes away at once a surface that is leaving.
+    pub fn drop_leaving(&mut self) {
+        self.surface.drop_leaving();
+    }
+
+    /// What to draw this frame, asking for the next one while it moves.
+    pub fn frame(&mut self, window: &Window, cx: &App) -> Option<ginga_gpui::Shown<'_, T>> {
+        let now = self.clock.now(cx);
+        let shown = self.surface.frame(now);
+        if shown.as_ref().is_some_and(ginga_gpui::Shown::moving) {
+            window.request_animation_frame();
+        }
+        shown
+    }
+}
+
 /// How the AI caret travels to another place in the text: no motion at all
 /// when the desktop asks for less of it.
 pub fn caret_trip(cx: &App) -> ginga_gpui::Transition {
