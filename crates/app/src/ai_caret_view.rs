@@ -83,13 +83,7 @@ fn caret_over_pane(at: &AiCaretAt, spot: Spot, cx: &App) -> AnyElement {
         "ai-caret-bar",
         div().absolute().top_0().left_0().size_full().bg(roles.ai),
     );
-    div()
-        .absolute()
-        .top_0()
-        .left_0()
-        .w(at.area.width)
-        .h(at.area.height)
-        .overflow_hidden()
+    ui::over_pane(at.area)
         .child(
             div()
                 .absolute()

@@ -3493,6 +3493,7 @@ impl Focusable for Workspace {
 
 impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        perf_span!("workspace.render");
         let roles = theme::roles(cx);
         self.viewport_width = window.viewport_size().width;
         let active = self.open_path_string();
