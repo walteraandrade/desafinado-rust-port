@@ -281,6 +281,12 @@ pub fn option_row(
         .hover(move |this| this.bg(if chosen { roles.selection } else { roles.fill }))
 }
 
+/// Places `marker`, when there is one, over the whole element: used to scroll a control into
+/// view when the keyboard reaches it.
+pub fn with_reveal(element: Stateful<Div>, marker: Option<impl IntoElement>) -> Stateful<Div> {
+    element.relative().when_some(marker, ParentElement::child)
+}
+
 /// A row of the ask bubble: the highlight is the AI's color.
 pub fn ai_option_row(id: impl Into<ElementId>, active: bool, roles: Roles) -> Stateful<Div> {
     div()
