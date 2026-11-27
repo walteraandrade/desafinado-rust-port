@@ -345,6 +345,16 @@ pub fn ask_option_row(id: impl Into<ElementId>, active: bool, roles: Roles) -> S
         .justify_between()
 }
 
+/// An Ask AI row in a bubble on its way out: drawn the same, with no pointer,
+/// since it takes no clicks.
+pub fn leaving_ask_option_row(
+    id: impl Into<ElementId>,
+    active: bool,
+    roles: Roles,
+) -> Stateful<Div> {
+    ask_option_row(id, active, roles).cursor_default()
+}
+
 /// The label of an Ask AI row: wraps inside the bubble, up to three lines, then an ellipsis.
 pub fn ask_option_label(text: impl IntoElement) -> Div {
     div()
@@ -1356,6 +1366,20 @@ pub fn toast_in_out() -> ginga_gpui::InOut {
         ginga_gpui::Tween::new(MOTION_TOAST, ginga_gpui::Easing::OutExpo),
         ginga_gpui::Tween::new(MOTION_LEAVE, ginga_gpui::Easing::OutQuart),
     )
+}
+
+/// How the Ask bubble leaves.
+pub fn bubble_out() -> ginga_gpui::Tween {
+    ginga_gpui::Tween::new(MOTION_LEAVE, ginga_gpui::Easing::OutQuart)
+}
+
+/// `element` as much on screen as `progress` says: it fades and sits `rise`
+/// pixels from its place as `progress` falls, by its top margin, so an
+/// absolutely placed element keeps its place.
+pub fn risen<E: Styled>(element: E, rise: f32, progress: f32) -> E {
+    element
+        .opacity(progress.clamp(0., 1.))
+        .mt(px(rise * (1. - progress)))
 }
 
 /// `element` as much on screen as `progress` says: it fades in and lifts
