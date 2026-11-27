@@ -2,6 +2,7 @@
 //! affordance of the UI is decided here, so the screens only arrange them.
 //! Hierarchy is carried by color: two text sizes, and borders only for the
 //! keyboard focus ring, an invalid field and the empty data marks.
+//! A new way out (something that leaves with motion) uses `Presence`, from ginga.
 
 use std::rc::Rc;
 
@@ -135,12 +136,43 @@ pub fn small_button(
     )
 }
 
+/// A small button that keeps its look but takes no pointer: no click, hover
+/// or hand cursor, as on a surface on its way out.
+pub fn small_button_at_rest(
+    id: impl Into<ElementId>,
+    label: impl Into<SharedString>,
+    kind: ButtonKind,
+    roles: Roles,
+) -> Stateful<Div> {
+    any_button(
+        id,
+        label,
+        kind,
+        ButtonSize::Small,
+        Control::default(),
+        false,
+        roles,
+    )
+}
+
 pub fn sized_button(
     id: impl Into<ElementId>,
     label: impl Into<SharedString>,
     kind: ButtonKind,
     size: ButtonSize,
     control: Control,
+    roles: Roles,
+) -> Stateful<Div> {
+    any_button(id, label, kind, size, control, true, roles)
+}
+
+fn any_button(
+    id: impl Into<ElementId>,
+    label: impl Into<SharedString>,
+    kind: ButtonKind,
+    size: ButtonSize,
+    control: Control,
+    takes_pointer: bool,
     roles: Roles,
 ) -> Stateful<Div> {
     let (height, padding) = match size {
@@ -175,18 +207,21 @@ pub fn sized_button(
         ButtonKind::Quiet => (None, roles.muted, roles.fill),
         ButtonKind::Danger => (Some(roles.fill), roles.danger, roles.danger_fill),
     };
-    base.when_some(background, gpui_kit::Styled::bg)
+    let base = base
+        .when_some(background, gpui_kit::Styled::bg)
         .when(kind == ButtonKind::Strong, Type::weight_strong)
-        .text_color(text)
-        .cursor_pointer()
-        .hover(move |this| {
-            let this = this.bg(hover);
-            if kind == ButtonKind::Quiet {
-                this.text_color(roles.ink)
-            } else {
-                this
-            }
-        })
+        .text_color(text);
+    if !takes_pointer {
+        return base;
+    }
+    base.cursor_pointer().hover(move |this| {
+        let this = this.bg(hover);
+        if kind == ButtonKind::Quiet {
+            this.text_color(roles.ink)
+        } else {
+            this
+        }
+    })
 }
 
 pub fn toggle_button(
@@ -1180,11 +1215,10 @@ fn entering<E: Styled + IntoElement + 'static>(
         move |element, delta| {
             let rest = 1. - delta;
             let (x, y) = enter_offset(from, rest);
-            let element = element.opacity(delta);
             match from {
-                Enter::Lift(_) => element.relative().top(px(y)),
-                Enter::Rise(_) => element.mt(px(y)),
-                Enter::Slide(_) => element.ml(px(x)),
+                Enter::Lift(lift) => lifted(element, lift, delta),
+                Enter::Rise(_) => element.opacity(delta).mt(px(y)),
+                Enter::Slide(_) => element.opacity(delta).ml(px(x)),
             }
         },
     )
@@ -1223,11 +1257,10 @@ pub fn leave<E: Styled + IntoElement + 'static>(
         Animation::new(MOTION_LEAVE).with_easing(ease_out_quart),
         move |element, delta| {
             let (x, y) = enter_offset(to, delta);
-            let element = element.opacity(1. - delta);
             match to {
-                Enter::Lift(_) => element.relative().top(px(y)),
-                Enter::Rise(_) => element.mt(px(y)),
-                Enter::Slide(_) => element.ml(px(x)),
+                Enter::Lift(lift) => lifted(element, lift, 1. - delta),
+                Enter::Rise(_) => element.opacity(1. - delta).mt(px(y)),
+                Enter::Slide(_) => element.opacity(1. - delta).ml(px(x)),
             }
         },
     )
@@ -1280,12 +1313,23 @@ pub fn toast_in_out() -> ginga_gpui::InOut {
 }
 
 /// `element` as much on screen as `progress` says: it fades in and lifts
-/// `lift` pixels into its place.
+/// `lift` pixels into its place. Entering, leaving and the toast all lift
+/// with it.
 pub fn lifted<E: Styled>(element: E, lift: f32, progress: f32) -> E {
-    element
-        .opacity(progress.clamp(0., 1.))
-        .relative()
-        .top(px(lift * (1. - progress)))
+    let (opacity, top) = lift_at(lift, progress);
+    element.opacity(opacity).relative().top(px(top))
+}
+
+/// The opacity and the offset from its place of something that lifts `lift`
+/// pixels into place, `progress` of the way in.
+pub fn lift_at(lift: f32, progress: f32) -> (f32, f32) {
+    let progress = progress.clamp(0., 1.);
+    (progress, enter_offset(Enter::Lift(lift), 1. - progress).1)
+}
+
+/// Whether a toast's buttons answer: not once it is on its way out.
+pub fn toast_takes_clicks(phase: ginga_gpui::Phase) -> bool {
+    phase != ginga_gpui::Phase::Exiting
 }
 
 /// How the AI caret travels to another place in the text: no motion at all
@@ -1809,7 +1853,7 @@ mod tests {
     };
     use super::{
         Enter, cascade_delay, column_share, delayed, dot_opacity, ease_in_out_sine, ease_out_expo,
-        ease_out_quart, enter_offset, lead_of,
+        ease_out_quart, enter_offset, lead_of, lift_at, toast_takes_clicks,
     };
     use desafinado_features::caret::{CaretSettings, CaretShape};
     use gpui_kit::{point, px};
@@ -2026,5 +2070,28 @@ mod tests {
     fn an_empty_range_when_every_row_is_above_the_screen() {
         let bytes = bytes_on_screen(0..100, rows_of_20_bytes(20.), screen(1_000., 1_200.));
         assert_eq!(bytes, 100..100);
+    }
+
+    #[test]
+    fn a_lift_fades_in_as_it_rises_into_place() {
+        assert_eq!(lift_at(10., 0.), (0., 10.));
+        assert_eq!(lift_at(10., 0.5), (0.5, 5.));
+        assert_eq!(lift_at(10., 1.), (1., 0.));
+    }
+
+    #[test]
+    fn the_toast_lifts_as_an_entering_lift_does() {
+        for progress in [0., 0.5, 1.] {
+            let entering = (progress, enter_offset(Enter::Lift(10.), 1. - progress).1);
+            assert_eq!(lift_at(10., progress), entering);
+        }
+    }
+
+    #[test]
+    fn a_toast_takes_clicks_until_it_leaves() {
+        use ginga_gpui::Phase;
+        assert!(toast_takes_clicks(Phase::Entering));
+        assert!(toast_takes_clicks(Phase::Present));
+        assert!(!toast_takes_clicks(Phase::Exiting));
     }
 }

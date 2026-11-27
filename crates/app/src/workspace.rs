@@ -863,6 +863,9 @@ impl Workspace {
             actions,
             _timer: timer,
         };
+        // Each toast comes in from the start, as a new one: a toast still up
+        // or leaving does not hand its place over.
+        self.toast = ui::Presence::absent();
         self.toast.show(toast, ui::toast_in_out().enter, cx);
         cx.notify();
     }
@@ -3191,6 +3194,7 @@ impl Workspace {
     ) -> Option<AnyElement> {
         let shown = self.toast.frame(window, cx)?;
         let progress = shown.progress;
+        let takes_clicks = ui::toast_takes_clicks(shown.phase);
         let toast = shown.content;
         let (text, tone, actions) = (toast.text.clone(), toast.tone, toast.actions.clone());
         Some(
@@ -3205,17 +3209,20 @@ impl Workspace {
                 .child(ui::lifted(
                     ui::toast_frame("toast", tone, roles).child(text).children(
                         actions.into_iter().enumerate().map(|(index, action)| {
-                            ui::small_button(
-                                ("toast-action", index),
-                                action.label(),
-                                ButtonKind::Default,
-                                roles,
-                            )
-                            .on_click(cx.listener(
-                                move |this, _, window, cx| {
-                                    this.run_toast_action(&action, window, cx);
-                                },
-                            ))
+                            let id = ("toast-action", index);
+                            if takes_clicks {
+                                ui::small_button(id, action.label(), ButtonKind::Default, roles)
+                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                        this.run_toast_action(&action, window, cx);
+                                    }))
+                            } else {
+                                ui::small_button_at_rest(
+                                    id,
+                                    action.label(),
+                                    ButtonKind::Default,
+                                    roles,
+                                )
+                            }
                         }),
                     ),
                     10.,
