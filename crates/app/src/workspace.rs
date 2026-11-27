@@ -171,7 +171,11 @@ actions!(
 );
 
 pub fn init(cx: &mut App) {
-    cx.bind_keys([
+    cx.bind_keys(key_bindings());
+}
+
+fn key_bindings() -> Vec<KeyBinding> {
+    vec![
         KeyBinding::new("ctrl-n", NewDocument, None),
         KeyBinding::new("ctrl-o", OpenDocument, None),
         KeyBinding::new("ctrl-s", SaveDocument, None),
@@ -198,13 +202,17 @@ pub fn init(cx: &mut App) {
         KeyBinding::new("escape", LeaveCancel, Some("LeaveDialog")),
         KeyBinding::new("tab", LeaveNext, Some("LeaveDialog")),
         KeyBinding::new("shift-tab", LeavePrevious, Some("LeaveDialog")),
+        KeyBinding::new("right", LeaveNext, Some("LeaveDialog")),
+        KeyBinding::new("down", LeaveNext, Some("LeaveDialog")),
+        KeyBinding::new("left", LeavePrevious, Some("LeaveDialog")),
+        KeyBinding::new("up", LeavePrevious, Some("LeaveDialog")),
         KeyBinding::new("enter", LeavePress, Some("LeaveDialog")),
         KeyBinding::new("space", LeavePress, Some("LeaveDialog")),
         KeyBinding::new("left", DotLeft, Some("HistoryView")),
         KeyBinding::new("right", DotRight, Some("HistoryView")),
         KeyBinding::new("home", DotHome, Some("HistoryView")),
         KeyBinding::new("end", DotEnd, Some("HistoryView")),
-    ]);
+    ]
 }
 
 pub fn now_ms() -> i64 {
@@ -4101,5 +4109,44 @@ mod frontmatter_scroll_tests {
             frontmatter_scroll(px(60.), px(300.), px(120.), true),
             px(0.)
         );
+    }
+}
+
+#[cfg(test)]
+mod key_binding_tests {
+    use super::key_bindings;
+    use gpui_kit::{KeyContext, Keymap, Keystroke};
+
+    fn bound(key: &'static str, names: &[&str]) -> Vec<&'static str> {
+        let keymap = Keymap::new(key_bindings());
+        let stack: Vec<KeyContext> = names
+            .iter()
+            .map(|name| KeyContext::parse(name).unwrap())
+            .collect();
+        let (bindings, _) = keymap.bindings_for_input(&[Keystroke::parse(key).unwrap()], &stack);
+        bindings
+            .iter()
+            .map(|binding| binding.action().name())
+            .collect()
+    }
+
+    const LEAVE: &[&str] = &["Workspace", "LeaveDialog"];
+
+    #[test]
+    fn arrows_move_between_leave_dialog_buttons_like_tab() {
+        for key in ["tab", "right", "down"] {
+            assert_eq!(
+                bound(key, LEAVE).first(),
+                Some(&"desafinado::LeaveNext"),
+                "{key}"
+            );
+        }
+        for key in ["shift-tab", "left", "up"] {
+            assert_eq!(
+                bound(key, LEAVE).first(),
+                Some(&"desafinado::LeavePrevious"),
+                "{key}"
+            );
+        }
     }
 }

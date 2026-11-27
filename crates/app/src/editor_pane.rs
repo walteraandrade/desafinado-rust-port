@@ -156,6 +156,10 @@ fn key_bindings() -> Vec<KeyBinding> {
         KeyBinding::new("shift-tab", CardPrevious, Some("RefineInput > Input")),
         KeyBinding::new("tab", CardNext, Some("SuggestionCard")),
         KeyBinding::new("shift-tab", CardPrevious, Some("SuggestionCard")),
+        KeyBinding::new("right", CardNext, Some(CARD_NOT_REFINING)),
+        KeyBinding::new("down", CardNext, Some(CARD_NOT_REFINING)),
+        KeyBinding::new("left", CardPrevious, Some(CARD_NOT_REFINING)),
+        KeyBinding::new("up", CardPrevious, Some(CARD_NOT_REFINING)),
         KeyBinding::new("enter", CardPress, Some(CARD_NOT_REFINING)),
         KeyBinding::new("space", CardPress, Some(CARD_NOT_REFINING)),
         KeyBinding::new("escape", CardLeave, Some("SuggestionCard")),
@@ -3285,6 +3289,28 @@ mod tests {
             bound("ctrl-h", CARD).first(),
             Some(&"editor_pane::PreviousVersion")
         );
+    }
+
+    #[test]
+    fn arrows_move_between_card_controls_like_tab() {
+        for key in ["tab", "right", "down"] {
+            assert_eq!(bound(key, CARD), vec!["editor_pane::CardNext"], "{key}");
+        }
+        for key in ["shift-tab", "left", "up"] {
+            assert_eq!(bound(key, CARD), vec!["editor_pane::CardPrevious"], "{key}");
+        }
+    }
+
+    #[test]
+    fn arrows_move_the_caret_in_the_refine_field() {
+        for key in ["left", "right", "up", "down"] {
+            assert!(
+                bound(key, REFINE_FIELD)
+                    .iter()
+                    .all(|name| !name.starts_with("editor_pane::")),
+                "{key}"
+            );
+        }
     }
 
     #[test]
