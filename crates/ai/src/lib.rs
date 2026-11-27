@@ -18,6 +18,7 @@ pub mod request;
 pub mod review_mode;
 pub mod review_stream;
 pub mod schemas;
+pub mod surface;
 pub mod text;
 
 #[cfg(test)]

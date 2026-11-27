@@ -71,7 +71,7 @@ The exit is short on screen: with `Easing::OutQuart` over 180 ms, the toast is n
 
 ![After the clicks: no new toast while leaving (top); a new one after the control's click (bottom)](cached-pane-flows/toast-after-click.png)
 
-The recording was made with only the `is_wanted` check at the top of `Workspace::run_toast_action`. Since then a leaving toast's buttons also take no pointer at all (no click, hover or hand cursor; `ui::toast_takes_clicks`), and the check stays as a second guard.
+The recording was made with only the `is_wanted` check at the top of `Workspace::run_toast_action`. Since then a leaving toast's buttons also take no pointer at all (no click, hover or hand cursor; `ui::takes_input`), and the check stays as a second guard.
 
 ## Scrolling with the editor unfocused
 
