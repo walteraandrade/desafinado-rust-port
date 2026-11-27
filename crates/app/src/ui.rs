@@ -1317,9 +1317,9 @@ pub fn bubble_out() -> ginga_gpui::Tween {
     ginga_gpui::Tween::new(MOTION_LEAVE, ginga_gpui::Easing::OutQuart)
 }
 
-/// `element` as much on screen as `progress` says: it fades in and rises
-/// `rise` pixels into its place, by its top margin, so an absolutely placed
-/// element keeps its place.
+/// `element` as much on screen as `progress` says: it fades and sits `rise`
+/// pixels from its place as `progress` falls, by its top margin, so an
+/// absolutely placed element keeps its place.
 pub fn risen<E: Styled>(element: E, rise: f32, progress: f32) -> E {
     element
         .opacity(progress.clamp(0., 1.))
