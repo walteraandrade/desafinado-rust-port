@@ -1210,7 +1210,9 @@ pub enum Enter {
     Lift(f32),
 }
 
-/// The least time between two frames of a slow loop: about 30 a second.
+/// The least time between two frames of a slow loop. GPUI draws the next one
+/// at the display's following frame, so at 60 Hz it is about 20 a second, as
+/// `with_max_fps(30.)` was.
 const MOTION_LOOP_FRAME: std::time::Duration = std::time::Duration::from_millis(33);
 const DOTS_ROUND: std::time::Duration = std::time::Duration::from_millis(1200);
 const DOTS_STAGGER: f32 = 160. / 1200.;
@@ -1244,41 +1246,55 @@ impl<const N: usize> Looping<N> {
     }
 }
 
-fn round_trip(rest: f32, far: f32, half: u64, easing: ginga_gpui::Easing) -> Looping<2> {
-    let keys = ginga_gpui::Keyframes::new([
+type LoopStops = [ginga_gpui::Stop<f32>; 2];
+
+/// A round trip played forever: `rest` to `far` in `half` ms, and back.
+fn round_trip(rest: f32, far: f32, half: u64, easing: ginga_gpui::Easing) -> LoopStops {
+    [
         ginga_gpui::Stop::new(std::time::Duration::ZERO, rest, ginga_gpui::Easing::Linear),
         ginga_gpui::Stop::new(std::time::Duration::from_millis(half), far, easing),
-    ])
-    .expect("two stops in order from zero")
-    .forever()
-    .mirrored()
-    .at_most_every(MOTION_LOOP_FRAME);
-    Looping::new(keys)
+    ]
+}
+
+fn looping(stops: LoopStops, mirrored: bool) -> Looping<2> {
+    let keys = ginga_gpui::Keyframes::new(stops)
+        .expect("two stops in order from zero")
+        .forever()
+        .at_most_every(MOTION_LOOP_FRAME);
+    Looping::new(if mirrored { keys.mirrored() } else { keys })
+}
+
+fn breath_stops() -> LoopStops {
+    round_trip(1., 0.45, 800, ginga_gpui::Easing::InOutSine)
+}
+
+fn gauge_stops() -> LoopStops {
+    round_trip(1., 0.25, 1800, ginga_gpui::Easing::Custom(ease_in_out))
+}
+
+fn dots_stops() -> LoopStops {
+    [
+        ginga_gpui::Stop::new(std::time::Duration::ZERO, 0., ginga_gpui::Easing::Linear),
+        ginga_gpui::Stop::new(DOTS_ROUND, 1., ginga_gpui::Easing::Linear),
+    ]
 }
 
 /// The opacity of a mark while the model works: down to 0.45 and back up,
 /// 1.6 s a round.
 pub fn breath() -> Looping<2> {
-    round_trip(1., 0.45, 800, ginga_gpui::Easing::InOutSine)
+    looping(breath_stops(), true)
 }
 
 /// The opacity of the Evals icon while a run goes on: slower and deeper than
 /// a [`breath`], 3.6 s a round.
 pub fn gauge_breath() -> Looping<2> {
-    round_trip(1., 0.25, 1800, ginga_gpui::Easing::Custom(ease_in_out))
+    looping(gauge_stops(), true)
 }
 
 /// Where the working dots are in their round, from 0 to 1, 1.2 s a round;
 /// [`dot_levels`] turns it into each dot's opacity.
 pub fn dots_round() -> Looping<2> {
-    let keys = ginga_gpui::Keyframes::new([
-        ginga_gpui::Stop::new(std::time::Duration::ZERO, 0., ginga_gpui::Easing::Linear),
-        ginga_gpui::Stop::new(DOTS_ROUND, 1., ginga_gpui::Easing::Linear),
-    ])
-    .expect("two stops in order from zero")
-    .forever()
-    .at_most_every(MOTION_LOOP_FRAME);
-    Looping::new(keys)
+    looping(dots_stops(), false)
 }
 
 pub fn enter<E: Styled + IntoElement + 'static>(
@@ -2040,6 +2056,7 @@ mod tests {
         Enter, cascade_delay, dot_levels, dot_opacity, enter_looks, enter_offset,
         enters_in_a_layer, grow_way, lift_at, panel_in_out, slide_at, takes_input,
     };
+    use super::{breath_stops, dots_stops, gauge_stops};
     use desafinado_features::caret::{CaretSettings, CaretShape};
     use gpui_kit::{point, px};
 
@@ -2212,6 +2229,24 @@ mod tests {
         assert_eq!(slide_at(-16., 0.5), (0.5, -8.));
         assert_eq!(slide_at(16., 1.), (1., 0.));
         assert_eq!(slide_at(16., 1.5), (1., 0.));
+    }
+
+    #[test]
+    fn a_breath_goes_down_to_045_and_back_in_1600_ms() {
+        use ginga_gpui::ginga::Keyframes;
+        let ms = std::time::Duration::from_millis;
+        let breath = Keyframes::new(breath_stops()).unwrap().forever().mirrored();
+        assert!((breath.sample(ms(0)).value - 1.).abs() < 1e-5);
+        assert!((breath.sample(ms(800)).value - 0.45).abs() < 1e-5);
+        assert!((breath.sample(ms(400)).value - 0.725).abs() < 1e-3);
+        assert!((breath.sample(ms(1600)).value - 1.).abs() < 1e-5);
+        let gauge = Keyframes::new(gauge_stops()).unwrap().forever().mirrored();
+        assert!((gauge.sample(ms(1800)).value - 0.25).abs() < 1e-5);
+        assert!((gauge.sample(ms(900)).value - 0.625).abs() < 1e-3);
+        assert!((gauge.sample(ms(450)).value - (1. - 0.75 * 0.125)).abs() < 1e-3);
+        let dots = Keyframes::new(dots_stops()).unwrap().forever();
+        assert!((dots.sample(ms(300)).value - 0.25).abs() < 1e-5);
+        assert!((dots.sample(ms(1500)).value - 0.25).abs() < 1e-5);
     }
 
     #[test]

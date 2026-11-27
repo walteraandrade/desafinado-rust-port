@@ -979,6 +979,14 @@ impl EditorPane {
                 .is_some_and(|refine| refine.input.read(cx).focus_handle(cx).is_focused(window))
     }
 
+    /// The pane is not on screen: its loops start over when it is again.
+    pub fn loops_away(&mut self, cx: &mut App) {
+        self.refining.away();
+        if let Some(marks) = self.jobs.marks_view.as_ref().and_then(WeakEntity::upgrade) {
+            crate::tray_marks_view::away(&marks, cx);
+        }
+    }
+
     pub fn forget_bubble(&mut self) {
         self.bubble_shown = false;
         self.last_bubble.replace(None);
@@ -2955,11 +2963,13 @@ fn accepted_change(ready: &ReadySuggestion) -> AcceptedChange {
 }
 
 impl EditorPane {
-    fn step_refine_dots(&mut self, window: &Window, cx: &App) {
-        let refining = self.suggestions.items.iter().any(|item| {
-            matches!(item, Suggestion::Ready(ready) if matches!(ready.refine, RefineState::Working { .. }))
+    /// The Refining dots' levels this frame, while a card that shows them is drawn.
+    fn step_refine_dots(&mut self, shown: &HashMap<String, CardKind>, window: &Window, cx: &App) {
+        let refining = self.suggestions.items.iter().map(|item| {
+            let working = matches!(item, Suggestion::Ready(ready) if matches!(ready.refine, RefineState::Working { .. }));
+            (item.id.as_str(), working)
         });
-        self.refine_dots = if refining {
+        self.refine_dots = if refining_on_screen(refining, shown) {
             ui::dot_levels(self.refining.frame(window, cx), cx.reduce_motion())
         } else {
             self.refining.away();
@@ -2973,7 +2983,6 @@ impl EditorPane {
         roles: Roles,
         cx: &mut Context<Self>,
     ) -> Vec<AnyElement> {
-        self.step_refine_dots(window, cx);
         let active_id = self.active(cx).map(|item| item.id.clone());
         let card_focused = self.card_focus.is_focused(window);
         let mut items = self.suggestions.items.clone();
@@ -2988,6 +2997,7 @@ impl EditorPane {
         .into_iter()
         .map(|(id, kind)| (id.to_string(), kind))
         .collect();
+        self.step_refine_dots(&shown, window, cx);
         self.card_rects.borrow_mut().clear();
         self.drawn_cards.borrow_mut().clear();
         let mut cards: Vec<AnyElement> = Vec::new();
@@ -3288,10 +3298,32 @@ pub(crate) fn hits_text_range(
     x >= start && x <= end
 }
 
+/// Whether a Suggestion being refined has its card among the `shown` ones.
+fn refining_on_screen<'a>(
+    mut suggestions: impl Iterator<Item = (&'a str, bool)>,
+    shown: &HashMap<String, CardKind>,
+) -> bool {
+    suggestions.any(|(id, working)| working && shown.contains_key(id))
+}
+
 #[cfg(test)]
 mod tests {
-    use super::key_bindings;
+    use super::{CardKind, HashMap, key_bindings, refining_on_screen};
     use gpui_kit::{KeyContext, Keymap, Keystroke};
+
+    #[test]
+    fn the_refining_dots_run_only_while_a_refining_card_shows() {
+        let shown = HashMap::from([("b".to_string(), CardKind::Active)]);
+        assert!(refining_on_screen(
+            [("a", false), ("b", true)].into_iter(),
+            &shown
+        ));
+        assert!(!refining_on_screen(
+            [("a", true), ("b", false)].into_iter(),
+            &shown
+        ));
+        assert!(!refining_on_screen(std::iter::empty(), &shown));
+    }
 
     fn stack(names: &[&str]) -> Vec<KeyContext> {
         names

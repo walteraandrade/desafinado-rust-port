@@ -153,7 +153,7 @@ The breath of the AI caret's bar and of a working request's mark in the tray, th
 ### 13. A loop that leaves the screen does not start over when it comes back
 
 - `with_animation` keeps its start in the element's state, so a mark that is drawn again starts from the top of its breath. `Keyframes` start on the first frame that draws them and then run on: a caret that shows again comes back mid-breath, at whatever opacity the time gives.
-- Had to: `ui::Looping`, a wrapper with `frame` (restarts the keyframes on the first frame after an absence) and `away` (called on each frame that leaves the loop out). Every owner has to remember to call `away` on each path that does not draw.
+- Had to: `ui::Looping`, a wrapper with `frame` (restarts the keyframes on the first frame after an absence) and `away` (called on each frame that leaves the loop out). Every owner has to remember to call `away` on each path that does not draw, and when the owner is not rendered at all (the editor hidden behind Spend, Evals, Reading or the history), someone else has to call it: `Workspace` does, through `ai_caret_view::land` and `EditorPane::loops_away`.
 - Wanted: item 12 would fix this for free (state kept under an id dies when the element is not drawn), or a `Keyframes::restart_when_drawn()`.
 
 ### 14. Staggered items cannot share one loop at different points of it
@@ -171,9 +171,37 @@ The breath of the AI caret's bar and of a working request's mark in the tray, th
 
 - The tray's marks used to breathe each on its own, from when each appeared. One `Keyframes` per mark would give each its own frame timer, so the tray would ask for frames up to once per mark per 33 ms. They now share one breath and breathe together. A visible change, small: two marks that run at once are in step.
 - In `Workspace` and `EditorPane`, which are not islands, other motions ask for every frame anyway while they move, as the docs say.
+- The Refining dots of every Suggestion share one round too: a refine started later joins it mid-round, where each button used to start its dots from the top. They run only while a Refining card is drawn (`refining_on_screen`).
+- The Evals icon's breath had no frame cap; it now has the same 33 ms one as the other loops (about 20 frames a second at 60 Hz, as GPUI's `with_max_fps(30.)` gave).
 
 ### 17. What got simpler
 
-- The ease curves and the delay arithmetic are ginga's now. The Spend bars are a look with a delayed tween, as the entries are; when the period changes, the bars now glide to their new length instead of jumping.
+- The ease curves and the delay arithmetic are ginga's now. The Spend bars are a look with a delayed tween, as the entries are. A change of period still grows the share bars from nothing (their ids include the period). When the data under the same ids changes (Reload, or the 14 days rolling over at midnight) the bars now glide to their new length after their cascade delay (up to 336 ms) instead of jumping; a row can glide from the size of the model or day that held its place before.
 - Reduced motion: GPUI's `with_animation` already rested a loop on its start and a one-shot on its end; `Keyframes` rest on their first stop and `Looked` jumps to its look. Same result on screen.
+
+### Evaluator's verdicts (batch 3)
+
+| Item | Verdict | Note |
+|---|---|---|
+| 12. No keyframes element | A | Nothing keeps keyframes under an id; `look`/`look_with` only move toward a target. `Island` keeps state as a view's field too. GPUI's `window.use_keyed_state` could hold them but needs `&mut Window`, which the card methods do not have. |
+| 13. Loop does not start over | A | True: the clock starts at the first frame and runs on. The first version missed owners that are not rendered at all; fixed with `land` / `loops_away`. |
+| 14. Staggered dots | A | All claims hold; also under reduced motion the linear round rests on 0, so `dot_levels` needs its own `still`. |
+| 15. `InOut` vs `ease_in_out` | C | `Custom` takes GPUI's curve exactly; ginga could document that `InOut` is cubic. |
+| 16. `at_most_every` per keyframes | A, low | Overstated at first: GPUI's `with_max_fps` also kept one timer per element, so breathing in step is a saving, not a cost ginga forced. |
+| 17. Simpler | – | Reduced-motion claims hold; the Spend glide claim was wrong and is corrected above. |
+
+Unlogged friction it found:
+
+- The Evals icon and the Refining dots are capped loops outside an island, against ginga's advice: during an Evals run the whole `Workspace` renders at about 20 frames a second (it rendered at 60 before). An island for the icon would render only it. (B, left for later)
+- `dots_round` is keyframes used as a clock, with no rest of its own (part of 14).
+- Every literal set of keyframes needs `.expect(..)`; a round-trip preset would cover all three loops here. (A, minor)
+- The Refining dots' shared round and the gauge's new frame cap were not logged; now they are (16).
+
+Reviewer: one bug, the Refining dots asked for pane frames while no Refining card was drawn (fixed: `refining_on_screen`, tested); loops not restarting when the editor came back from another screen (fixed); a wrong comment on the frame cap (fixed); the loops' periods and depths untested (now tested through the engine's `Keyframes::sample`). It found the timing, depths, easing, stagger, cascade, reduced motion and the view that frames are asked for all as before.
+
+### Proposed ginga issues from batch 3
+
+9. A keyframes element kept under an id, dropped when it is not drawn (fixes items 12 and 13, and gives each item its own loop).
+10. A phase for keyframes that starts partway through a round, on the engine and the adapter, and `starting_at` in the adapter (item 14).
+11. Low: one frame-cap timer per view instead of per keyframes, or a doc line that GPUI's `with_max_fps` behaves the same (item 16).
 

@@ -42,7 +42,11 @@ pub fn new(pane: &Entity<EditorPane>, cx: &mut App) -> Entity<AiCaretView> {
 /// The editor is not on screen: the AI caret it shows next takes off again
 /// from the writer's caret instead of gliding from where it was last drawn.
 pub fn land(view: &Entity<AiCaretView>, cx: &mut App) {
-    view.update(cx, |island, _| island.state_mut().travel.land());
+    view.update(cx, |island, _| {
+        let caret = island.state_mut();
+        caret.travel.land();
+        caret.away();
+    });
 }
 
 fn draw(caret: &mut AiCaret, window: &mut Window, cx: &mut Context<AiCaretView>) -> AnyElement {

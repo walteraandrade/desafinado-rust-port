@@ -38,6 +38,11 @@ pub fn new(pane: &Entity<EditorPane>, cx: &mut App) -> Entity<TrayMarksView> {
     view
 }
 
+/// The pane is not on screen: the marks breathe from the top when it is again.
+pub fn away(view: &Entity<TrayMarksView>, cx: &mut App) {
+    view.update(cx, |island, _| island.state_mut().breath.away());
+}
+
 fn draw(marks: &mut TrayMarks, window: &mut Window, cx: &mut Context<TrayMarksView>) -> AnyElement {
     let Some(pane) = marks.pane.upgrade() else {
         marks.breath.away();

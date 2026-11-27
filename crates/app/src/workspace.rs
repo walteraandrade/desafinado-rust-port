@@ -3521,7 +3521,10 @@ impl Render for Workspace {
             && self.spend.is_none()
             && self.visible_mode() == HistoryMode::Editing;
         if !text_shown {
-            self.pane.update(cx, |pane, _| pane.forget_bubble());
+            self.pane.update(cx, |pane, cx| {
+                pane.forget_bubble();
+                pane.loops_away(cx);
+            });
             crate::ai_caret_view::land(&self.ai_caret, cx);
         }
         let mode = if evals_shown {
