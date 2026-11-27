@@ -44,6 +44,7 @@ Library close, Preferences close, removed Quick action rows. Each kept a `Task` 
 - Side effect: a row still gliding from a reorder when another row's exit ends is snapped to its place. Rare (a glide is 260 ms, an exit 180 ms) but real.
 - The docs suggest a running total that follows the leaving row's height, but with a tween that "starts over at each change" the rows below lag behind the layout; only a spring follows it smoothly, and the old motion was a 260 ms OutExpo tween.
 - Wanted: a way to tell the list that a place change comes from layout (no travel), or a `place_all` that handles "an item before this one was swept" itself.
+- Found in review: `sync` sweeps too, so a change made right after a row finished leaving (before a frame ran) glided the rows below one row wrong. `QuickActionRows::change` now re-places instantly before it syncs (`crates/ai/src/quick_action_rows.rs`, tested).
 
 ### 7. Exit-only presences take two calls
 
@@ -52,5 +53,39 @@ Library close, Preferences close, removed Quick action rows. Each kept a `Task` 
 ### What got simpler
 
 - `struct Leaving` (two `Task`s and a `library_reopened` flag) is gone. Reopening the Library or Preferences on its way out now turns around from where it is, where before it snapped open (the flag existed to stop GPUI's `with_animation` restarting from zero).
-- `crates/ai/src/ui/list_motion.rs` (the diff of two id lists into enter/move/remove steps, 153 lines with tests) is gone: `PresenceList::sync` + `place_all` do it.
-- Reduced motion for the panels comes from `Presence` itself instead of an early `return` in each close function.
+- `crates/ai/src/ui/list_motion.rs` (the diff of two id lists into enter/move/remove steps, 153 lines with tests) is replaced by `crates/ai/src/quick_action_rows.rs`, a thin wrapper over `PresenceList::sync` + `place_all` with the same cases as tests.
+- Reduced motion for the panels comes from `Presence` itself instead of an early `return` in each close function. Opening them under reduced motion is now instant too; before, only closing was.
+
+### Evaluator's verdicts
+
+Full report: an independent evaluator (fresh context, given the diff and this log, not the implementer's conclusions) checked each claim against ginga's source. A = gap in ginga, B = misuse or a feature that was missed, C = Desafinado's own need.
+
+| Item | Verdict | Note |
+|---|---|---|
+| 1. No adapter for `PresenceList` | A | The README's own GPUI list example has the same boilerplate. |
+| 2. `Presence` has no content read | B | Preferences only slides and fades, which `ginga_gpui::present` already does (and it would also blur focus while leaving). A small `wanted() -> Option<&T>` is still missing. |
+| 3. `present` cannot draw with progress | A | Only for the Library column's width. |
+| 4. Input cover is the caller's | A, low | `present` covers and blurs; `Presence` users write it each time. |
+| 5. `Shown` borrows | B for the list, A (small) for `Presence` | `PresenceList::sample(&self)` exists; `&mut cx` does not clash with `&self`. |
+| 6. A sweep looks like a move | A | Plus the unlogged post-sweep `sync` case, now fixed here. |
+| 7. Exit-only takes two calls | A, trivial | |
+
+Friction the log missed:
+
+- U1 (A): `slid`, `slide_at`, `column_at`, `offset_by`, `collapsed` (and `lifted` from #53) all re-implement "apply a `Look` mixed by a progress", because `ginga_gpui`'s `styled` is `pub(crate)`. The only public way to apply a look is `.look(id, look, Instant)`, which keeps a motion in element state for nothing.
+- U2 (A, part of 1): `list_in_out` is `panel_in_out` with `unless_reduced` around each half; `InOut` has no reduced form.
+- U4 (B, design): the list's content could be the whole slot instead of a label, drawing every row from `row.content`.
+- U7 (A, part of 4): a leaving panel keeps keyboard focus (as before); `present` would blur it.
+
+Fixed in this batch after review: rows arriving or leaving now keep their glide offset; `close_preferences` notifies, so Preferences slides out even when Spend was already open.
+
+Not changed: Preferences stays on `Presence` instead of `present` for now. `present` would make a reopen during the exit a swap of two panels, where `Presence` turns the one panel around. Worth trying in batch 2, where the entries move too.
+
+### Proposed ginga issues (waiting for Waltinho's approval)
+
+1. `ginga_gpui::PresenceList` with its own clock, reduced motion and frame requests (about 30 lines here).
+2. Place changes caused by a sweep are not travel: keep a glide in progress (fixes a visible snap).
+3. Apply a look to an element without motion: make `styled` public, e.g. `element.with_look(look)` (about 34 lines here).
+4. `present` that hands its progress and phase to `draw`, or honors size in `arrive_from`/`leave_to` (the Library column).
+5. Cover and blur for `Presence` while it leaves, e.g. `shown.cover(element)`.
+6. Small reads on `Presence`: `wanted() -> Option<&T>`, `sample(cx)`, and a `leaving(content, exit, cx)` constructor.

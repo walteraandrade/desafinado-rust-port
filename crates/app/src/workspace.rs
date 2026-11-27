@@ -297,7 +297,7 @@ impl ToastAction {
     }
 }
 
-#[derive(Default, Clone, Copy)]
+#[derive(Clone, Copy)]
 struct Way {
     progress: f32,
     leaving: bool,
@@ -2613,6 +2613,7 @@ impl Workspace {
     fn close_preferences(&mut self, cx: &mut Context<Self>) {
         if self.preferences.take().is_some() {
             self.preferences_way.hide(ui::panel_in_out().exit, cx);
+            cx.notify();
         }
     }
 

@@ -10,6 +10,7 @@ pub mod model;
 pub mod model_choice;
 pub mod notes;
 pub mod prompts;
+pub mod quick_action_rows;
 pub mod quick_action_settings;
 pub mod quick_actions;
 pub mod records;
