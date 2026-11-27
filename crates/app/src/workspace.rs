@@ -1996,8 +1996,10 @@ impl Workspace {
             },
         );
         self.pane.update(cx, |pane, cx| {
-            pane.is_skill = is_skill;
-            cx.notify();
+            if pane.is_skill != is_skill {
+                pane.is_skill = is_skill;
+                cx.notify();
+            }
         });
         self.frontmatter
             .update(cx, |view, cx| view.refresh(text, report, window, cx));
